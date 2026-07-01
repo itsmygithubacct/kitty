@@ -124,6 +124,8 @@ class WindowTitleBarScreen:
         self.cell_width = cell_width
         self.screen = Screen(None, 1, 10, 0, cell_width, cell_height)
         self.screen.reset_mode(DECAWM)
+        # kilix fork: maps title-bar cell columns -> kitty action string, for clickable chrome buttons
+        self.button_cols: dict[int, str] = {}
 
     def layout(self, geometry: WindowGeometry) -> None:
         ncells = max(4, (geometry.right - geometry.left) // self.cell_width)
@@ -186,4 +188,31 @@ class WindowTitleBarScreen:
             s.insert_characters(pad)
             s.cursor.x = 0
             s.erase_characters(pad)
+
+        # kilix fork: draw clickable chrome buttons flush-right, recording each button's
+        # cells -> action. Drawn last so title text/alignment can never overwrite them.
+        # Dispatched by TabManager.handle_window_title_bar_mouse on a single left-click.
+        self.button_cols = {}
+        segments = (
+            ('[|]', 'launch --location=vsplit --cwd=current'),   # split right (side-by-side)
+            (' ', ''),
+            ('[-]', 'launch --location=hsplit --cwd=current'),   # split down (stacked)
+            (' ', ''),
+            ('[□]', 'toggle_layout stack'),                      # maximize / zoom pane
+            (' ', ''),
+            ('[x]', 'close_window'),                             # close pane
+        )
+        total = sum(len(text) for text, _ in segments)
+        if s.columns > total:
+            s.cursor.x = s.columns - total
+            s.cursor.fg = fg
+            s.cursor.bg = bg
+            s.cursor.bold = True                                 # make the buttons stand out
+            for text, action in segments:
+                start = s.cursor.x
+                draw_attributed_string(text, s)
+                if action:
+                    for col in range(start, s.cursor.x):
+                        self.button_cols[col] = action
+            s.cursor.bold = False
         return title_str

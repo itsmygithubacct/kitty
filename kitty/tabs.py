@@ -1871,10 +1871,24 @@ class TabManager:  # {{{
 
         dragged_window_id, drag_started = get_window_being_dragged()[:2]
         set_window_being_dragged()
+        # kilix fork: single left-click on a title-bar chrome button dispatches its action
+        # to that pane. Checked before the rename handler; gated to click_count()==1 so a
+        # double-click cannot fire the action twice.
+        if not drag_started and self.recent_title_bar_mouse_events.click_count() == 1:
+            w = boss.window_id_map.get(window_id)
+            pts = getattr(w, '_title_bar_screen', None)
+            if w is not None and pts is not None and getattr(pts, 'cell_width', 0) and getattr(pts, 'geometry', None) is not None:
+                col = int((x - pts.geometry.left) // pts.cell_width)
+                act = getattr(pts, 'button_cols', {}).get(col)
+                if act:
+                    self.recent_title_bar_mouse_events.clear()
+                    boss.combine(act, window_for_dispatch=w)
+                    return
         if not drag_started and self.recent_title_bar_mouse_events.click_count() == 2:
+            # kilix fork: double-click the pane title bar toggles maximize/zoom (Tilix behavior)
             self.recent_title_bar_mouse_events.clear()
             if (w := boss.window_id_map.get(window_id)) is not None:
-                w.set_window_title()
+                boss.combine('toggle_layout stack', window_for_dispatch=w)
 
     def start_window_drag(self, pixels: bytes, width: int, height: int) -> None:
         window_id = get_window_being_dragged()[0]
@@ -2009,9 +2023,18 @@ class TabManager:  # {{{
                     case DragOverlayMode.axis_x:
                         direction = 'right' if dx > 0 else 'left'
                     case DragOverlayMode.free:
-                        direction = ('right' if dx > 0 else 'left') if abs(dx) >= abs(dy) else ('bottom' if dy > 0 else 'top')
+                        # kilix fork: Tilix-style diagonal quadrants — the pane's true
+                        # corner-to-corner diagonals split it into 4 triangles, so the
+                        # highlighted half follows the diagonals on non-square panes.
+                        hw = (g.right - g.left) / 2 or 1
+                        hh = (g.bottom - g.top) / 2 or 1
+                        if abs(dx) * hh >= abs(dy) * hw:
+                            direction = 'right' if dx > 0 else 'left'
+                        else:
+                            direction = 'bottom' if dy > 0 else 'top'
                     case DragOverlayMode.full:
-                        self._set_drag_target_window(dest_window.id, 6)
+                        # kilix fork: reject drops on a maximized/stacked pane (Tilix behavior)
+                        self._set_drag_target_window(0)
                         return
                 self._set_drag_target_window(dest_window.id, quad_map[direction])
             else:
@@ -2086,8 +2109,18 @@ class TabManager:  # {{{
                     direction: Literal['left', 'right', 'top', 'bottom'] = 'bottom' if dy > 0 else 'top'
                 case DragOverlayMode.axis_x:
                     direction = 'right' if dx > 0 else 'left'
-                case DragOverlayMode.free | DragOverlayMode.full:
-                    direction = ('right' if dx > 0 else 'left') if abs(dx) >= abs(dy) else ('bottom' if dy > 0 else 'top')
+                case DragOverlayMode.free:
+                    # kilix fork: same Tilix-style diagonal quadrants as the live preview,
+                    # so the split that lands matches the highlighted half exactly.
+                    hw = (g.right - g.left) / 2 or 1
+                    hh = (g.bottom - g.top) / 2 or 1
+                    if abs(dx) * hh >= abs(dy) * hw:
+                        direction = 'right' if dx > 0 else 'left'
+                    else:
+                        direction = 'bottom' if dy > 0 else 'top'
+                case _:
+                    # kilix fork: maximized/stacked (DragOverlayMode.full) — reject the split
+                    return
             boss._insert_window_in_direction(w, dest_window, direction)
 
     def update_progress(self) -> None:
