@@ -1247,6 +1247,36 @@ class Boss:
             return ans
         return None
 
+    def show_window_title_menu(self, window: 'Window') -> None:
+        # kilix fork: Tilix-style actions menu opened by single-clicking a pane title bar.
+        wid = window.id
+        actions = {
+            'r': 'set_window_title',                        # interactive rename over this pane
+            'e': 'set_window_title ""',                     # reset title to default
+            'l': 'clear_terminal reset active',             # clear the pane
+            's': 'launch --location=vsplit --cwd=current',  # split right
+            'd': 'launch --location=hsplit --cwd=current',  # split down
+            'o': 'close_window',                            # close pane
+        }
+
+        def dispatch(choice: str) -> None:
+            w = self.window_id_map.get(wid)
+            if not choice or w is None:
+                return
+            if choice == 'c':                               # copy title (no stock action)
+                set_clipboard_string(w.title or '')
+                return
+            act = actions.get(choice)
+            if act:
+                self.combine(act, window_for_dispatch=w)
+
+        self.choose(
+            'Pane actions', dispatch,
+            'r:Rename title', 'c:Copy title', 'e:Reset title', 'l:Clear',
+            's:Split right', 'd:Split down', 'o:Close',
+            window=window, title='Pane actions',
+        )
+
     def get_line(
         self, msg: str,  # can contain newlines and ANSI formatting
         callback: Callable[..., None],  # called with the answer or empty string when aborted
