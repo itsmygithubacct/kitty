@@ -1389,6 +1389,14 @@ mouse_event(const int button, int modifiers, int action) {
         if (!tw && global_state.window_being_dragged.id) {
             tw = window_for_window_id(global_state.window_being_dragged.id);
         }
+        // kilix fork: if the hover moved straight from one pane's title bar
+        // to another's, the leave-block below won't fire (we're still in a
+        // title bar), so clear the PREVIOUS pane's button highlight here or
+        // it stays reverse-video (leaked).
+        if (tw && kilix_title_bar_hover_wid && kilix_title_bar_hover_wid != tw->id) {
+            call_boss(handle_window_title_bar_mouse, "KKddiii",
+                osw->id, kilix_title_bar_hover_wid, osw->mouse_x, osw->mouse_y, -2, modifiers, action);
+        }
         if (tw) handle_window_title_bar_mouse(tw, button, modifiers, action);
         kilix_title_bar_hover_wid = tw ? tw->id : 0;  // kilix fork: remember hovered title bar
         debug("handled by window title bar\n");

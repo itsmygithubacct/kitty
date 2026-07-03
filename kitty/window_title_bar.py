@@ -198,8 +198,8 @@ class WindowTitleBarScreen:
         # symbol_map line in kitty.conf). Each button is " glyph " = 3 cells (all wcwidth 1),
         # so len(text) == columns advanced, keeping the button_cols hit-test exact.
         segments = (
-            (f' {chr(0xf0d76)} ', 'launch --location=vsplit --cwd=current'),  # split right (side-by-side)
-            (f' {chr(0xf0d75)} ', 'launch --location=hsplit --cwd=current'),  # split down (stacked)
+            (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current'),  # split right: bold → (new pane to the right)
+            (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current'),  # split down: bold ↓ (new pane below)
             (f' {chr(0xf0293)} ', 'toggle_layout stack'),                     # maximize / zoom pane
             (f' {chr(0xf0156)} ', 'close_window'),                            # close pane
         )

@@ -57,9 +57,26 @@ func runBrowse(url string) (rc int, err error) {
 		}
 	}()
 
+	// Register signal handlers BEFORE entering raw mode. Otherwise a
+	// SIGTERM/SIGINT landing during b.start() (which makes several CDP
+	// round-trips with 30s timeouts while Chrome boots) would take Go's
+	// default disposition — terminate WITHOUT running our deferred
+	// cleanup — leaving the tty in raw/alt-screen/mouse mode.
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	term := make(chan os.Signal, 1)
+	signal.Notify(term, syscall.SIGTERM, syscall.SIGINT)
+
 	b.term.Enter()
 	if err = b.start(); err != nil {
 		return 1, err
+	}
+	// If a term signal arrived during startup, honor it now (cleanup runs
+	// via the defer above).
+	select {
+	case <-term:
+		return 0, nil
+	default:
 	}
 
 	stdin := make(chan []byte, 16)
@@ -79,10 +96,6 @@ func runBrowse(url string) (rc int, err error) {
 			}
 		}
 	}()
-	winch := make(chan os.Signal, 1)
-	signal.Notify(winch, syscall.SIGWINCH)
-	term := make(chan os.Signal, 1)
-	signal.Notify(term, syscall.SIGTERM, syscall.SIGINT)
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 

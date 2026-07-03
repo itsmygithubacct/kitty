@@ -506,8 +506,8 @@ func (b *Browse) renderStatus() string {
 		body = " URL: " + *b.urlEdit + "▏"
 	} else {
 		title := b.title
-		if len(title) > 40 {
-			title = title[:40]
+		if tr := []rune(title); len(tr) > 40 {
+			title = string(tr[:40])
 		}
 		body = fmt.Sprintf(" %s — %s  [%s]", title, b.url, b.statusMsg)
 	}

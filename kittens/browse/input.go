@@ -256,8 +256,8 @@ func (b *Browse) refreshTitle() {
 		b.title = b.url
 	}
 	t := b.title
-	if len(t) > 60 {
-		t = t[:60]
+	if tr := []rune(t); len(tr) > 60 {
+		t = string(tr[:60])
 	}
 	b.term.Write("\x1b]2;" + t + "\x07")
 }
@@ -288,12 +288,18 @@ func (b *Browse) onCDPEvent(m CDPMsg) {
 		}
 		b.blit(p.Data, p.Metadata)
 		b.adaptResolution()
-		// cap ~30fps: the ack is the throttle (CDP sends nothing until acked)
+		// cap ~30fps: the ack is the throttle (CDP sends nothing until
+		// acked). Pace WITHOUT sleeping on the main loop — a Sleep here
+		// would stall stdin/mouse processing for up to 33ms per frame.
+		// Schedule the ack via a timer instead; cdp.Send is mutex-safe.
+		sid := p.SessionID
+		ack := func() { b.cdp.Send("Page.screencastFrameAck", map[string]any{"sessionId": sid}, b.sess) }
 		if dt := time.Since(b.lastFrame); dt < 33*time.Millisecond {
-			time.Sleep(33*time.Millisecond - dt)
+			time.AfterFunc(33*time.Millisecond-dt, ack)
+		} else {
+			ack()
 		}
 		b.lastFrame = time.Now()
-		b.cdp.Send("Page.screencastFrameAck", map[string]any{"sessionId": p.SessionID}, b.sess)
 	case "Page.loadEventFired":
 		b.statusMsg = "ready"
 		b.snapDirty = true

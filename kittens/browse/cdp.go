@@ -76,7 +76,7 @@ func startCDP(width, height int, profile string) (*CDP, error) {
 	c := &CDP{
 		proc: cmd, writer: toChromeW,
 		pending: make(map[int]chan CDPMsg),
-		Events:  make(chan CDPMsg, 64),
+		Events:  make(chan CDPMsg, 256),
 		Dead:    make(chan error, 1),
 	}
 	go c.readLoop(fromChromeR)
@@ -106,7 +106,24 @@ func (c *CDP) readLoop(r *os.File) {
 			}
 			continue
 		}
-		c.Events <- m
+		// Never block the reader on Events: a full channel would starve
+		// result delivery to c.pending (a synchronous Call would hang to its
+		// full timeout while the main loop is blocked in that same Call).
+		// Events are screencast frames + advisory page events; under a burst
+		// (e.g. a page spamming Runtime events) drop the oldest rather than
+		// stall the whole loop.
+		select {
+		case c.Events <- m:
+		default:
+			select {
+			case <-c.Events: // drop oldest
+			default:
+			}
+			select {
+			case c.Events <- m:
+			default:
+			}
+		}
 	}
 }
 

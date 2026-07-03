@@ -20,6 +20,7 @@ type Term struct {
 	Xpix    int
 	Ypix    int
 	buf     []byte
+	entered bool
 }
 
 func newTerm() (*Term, error) {
@@ -73,11 +74,19 @@ func (t *Term) Enter() {
 	// drag tracking + SGR + SGR-pixels, bracketed paste
 	t.Write("\x1b[?1049h\x1b[2J\x1b[?25l\x1b[?7l\x1b[>13u" +
 		"\x1b[?1002h\x1b[?1006h\x1b[?1016h\x1b[?2004h")
+	t.entered = true
 }
 
 func (t *Term) Restore() {
-	t.Write("\x1b[<u\x1b[?1002l\x1b[?1006l\x1b[?1016l\x1b[?2004l" +
-		"\x1b[?7h\x1b_Ga=d,d=A\x1b\\\x1b[?25h\x1b[?1049l")
+	// Only undo the escape-code state if Enter() actually set it; otherwise
+	// an early-error teardown would emit an unbalanced keyboard-protocol pop
+	// (and delete-all-images / leave-alt-screen) into a terminal that was
+	// never switched, corrupting the enclosing session.
+	if t.entered {
+		t.Write("\x1b[<u\x1b[?1002l\x1b[?1006l\x1b[?1016l\x1b[?2004l" +
+			"\x1b[?7h\x1b_Ga=d,d=A\x1b\\\x1b[?25h\x1b[?1049l")
+		t.entered = false
+	}
 	unix.IoctlSetTermios(int(t.in.Fd()), unix.TCSETS, &t.saved)
 }
 
