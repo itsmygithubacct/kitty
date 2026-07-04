@@ -1100,6 +1100,12 @@ class Window:
 
         has_activity = self.has_activity_since_last_focus
 
+        # kilix fork: pane state for the title-bar chrome — is this pane
+        # maximized (tab in the stack layout), and is it an overlay window (an
+        # app launched by `kilix browse/run/screensaver`)?
+        tab = self.tabref()
+        is_maximized = bool(tab is not None and tab.current_layout.name == 'stack')
+
         data = WindowTitleData(
             title=self.title or '',
             is_active=is_active or self.is_drag_target,
@@ -1107,6 +1113,8 @@ class Window:
             tab_id=self.tab_id,
             needs_attention=self.needs_attention,
             has_activity_since_last_focus=has_activity,
+            is_maximized=is_maximized,
+            is_overlay=tab is not None and tab.overlay_parent(self) is not None,
         )
         # If template evaluates to empty string, zero title bar geometry to hide it
         if pts.render(data, progress_percent):

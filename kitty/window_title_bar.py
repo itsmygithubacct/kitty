@@ -86,6 +86,8 @@ class WindowTitleData(NamedTuple):
     tab_id: int
     needs_attention: bool = False
     has_activity_since_last_focus: bool = False
+    is_maximized: bool = False   # kilix fork: pane is zoomed (stack layout)
+    is_overlay: bool = False     # kilix fork: an app overlay (browse/run/screensaver)
 
 
 @run_once
@@ -197,12 +199,24 @@ class WindowTitleBarScreen:
         # kilix fork: Nerd Font glyphs (bundled Symbols Nerd Font Mono, pinned via the
         # symbol_map line in kitty.conf). Each button is " glyph " = 3 cells (all wcwidth 1),
         # so len(text) == columns advanced, keeping the button_cols hit-test exact.
-        segments = (
-            (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current'),  # split right: bold → (new pane to the right)
-            (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current'),  # split down: bold ↓ (new pane below)
-            (f' {chr(0xf0293)} ', 'toggle_layout stack'),                     # maximize / zoom pane
-            (f' {chr(0xf0156)} ', 'close_window'),                            # close pane
-        )
+        if data.is_overlay:
+            # kilix fork: an app launched in an overlay (browse / run / screensaver).
+            # Split/maximize don't apply to an app window — just a close ✕ that
+            # dismisses the app and returns to the shell underneath.
+            segments = (
+                (f' {chr(0xf0156)} ', 'close_window'),                        # close the app
+            )
+        else:
+            # kilix fork: a regular pane. The maximize glyph reflects state as a
+            # visual cue — a small square when tiled, the larger fullscreen glyph
+            # when the pane is maximized (stack layout).
+            max_glyph = chr(0xf0293) if data.is_maximized else chr(0xeab9)     # fullscreen ⇄ small square
+            segments = (
+                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current'),  # split right: bold → (new pane to the right)
+                (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current'),  # split down: bold ↓ (new pane below)
+                (f' {max_glyph} ', 'toggle_layout stack'),                        # maximize / zoom pane (glyph = state)
+                (f' {chr(0xf0156)} ', 'close_window'),                            # close pane
+            )
         total = sum(len(text) for text, _ in segments)
         if s.columns > total:
             s.cursor.x = s.columns - total
