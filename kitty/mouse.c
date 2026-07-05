@@ -181,12 +181,30 @@ update_scrollbar_hover_state(Window *w, bool hovering) {
 }
 
 static void
+set_software_mouse_cursor(Window *w, uint8_t shape, index_type x, index_type y) {
+    // kilix: track the cell under the pointer for the in-terminal software cursor.
+    // shape 0 hides it. Redraw only when the cell/shape actually changes.
+    if (!w || !w->render_data.screen) return;
+    Screen *screen = w->render_data.screen;
+    bool changed = screen->mouse_cursor.shape != shape || (shape && (screen->mouse_cursor.x != x || screen->mouse_cursor.y != y));
+    if (!changed) return;
+    screen->mouse_cursor.shape = shape;
+    if (shape) { screen->mouse_cursor.x = x; screen->mouse_cursor.y = y; }
+    if (global_state.callback_os_window) {
+        if (shape) hide_mouse(global_state.callback_os_window);
+        global_state.callback_os_window->needs_render = true;
+        request_tick_callback();
+    }
+}
+
+static void
 set_currently_hovered_window(id_type window_id, int modifiers, bool focus_follows) {
     if (global_state.mouse_hover_in_window != window_id) {
         Window *left_window = window_for_id(global_state.mouse_hover_in_window);
         global_state.mouse_hover_in_window = window_id;
         if (left_window) {
             if (left_window->scrollbar.is_hovering) update_scrollbar_hover_state(left_window, false);
+            if (OPT(software_mouse_cursor)) set_software_mouse_cursor(left_window, 0, 0, 0);
             if (left_window->render_data.screen) screen_mark_url(left_window->render_data.screen, 0, 0, 0, 0);
             if (left_window->drop.hovered) drop_left_child(left_window);
             int sz = encode_mouse_event(left_window, 0, LEAVE, modifiers);
@@ -674,9 +692,11 @@ HANDLER(handle_move_event) {
         if (w->scrollbar.is_hovering) {
             update_scrollbar_hover_state(w, false);
         }
+        if (OPT(software_mouse_cursor)) set_software_mouse_cursor(w, 0, 0, 0);
         return;
     }
     Screen *screen = w->render_data.screen;
+    if (OPT(software_mouse_cursor)) set_software_mouse_cursor(w, (uint8_t)OPT(software_mouse_cursor), w->mouse_pos.cell_x, w->mouse_pos.cell_y);
     if (OPT(detect_urls)) detect_url(screen, w->mouse_pos.cell_x, w->mouse_pos.cell_y);
     if (should_handle_in_kitty(w, screen, button)) {
         handle_mouse_movement_in_kitty(w, button, mouse_cell_changed | cell_half_changed);

@@ -273,7 +273,11 @@ is_window_ready_for_callbacks(void) {
 
 static void
 show_mouse_cursor(GLFWwindow *w) {
-    glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    // kilix: with the software mouse cursor enabled, keep the OS pointer hidden while it is
+    // over a terminal grid cell (where we draw our own cursor), but show it over chrome
+    // (tab bar, window borders, title-bar buttons) where no software cursor is drawn.
+    bool hide_for_software_cursor = OPT(software_mouse_cursor) && global_state.mouse_hover_in_window;
+    glfwSetInputMode(w, GLFW_CURSOR, hide_for_software_cursor ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 }
 
 void

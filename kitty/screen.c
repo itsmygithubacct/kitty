@@ -534,6 +534,7 @@ static bool
 screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     screen_pause_rendering(self, false, 0);
     lines = MAX(1u, lines); columns = MAX(1u, columns);
+    self->mouse_cursor.shape = 0;  // kilix: drop the stale software-cursor cell; re-set on the next pointer move
 
     bool is_main = self->linebuf == self->main_linebuf;
     index_type num_content_lines_before, num_content_lines_after;
@@ -5017,6 +5018,12 @@ start_selection(Screen *self, PyObject *args) {
 }
 
 static PyObject*
+select_all(Screen *self, PyObject *a UNUSED) {
+    screen_select_all(self);
+    Py_RETURN_NONE;
+}
+
+static PyObject*
 is_rectangle_select(Screen *self, PyObject *a UNUSED) {
     if (self->selections.count && self->selections.items[0].rectangle_select) Py_RETURN_TRUE;
     Py_RETURN_FALSE;
@@ -5325,6 +5332,26 @@ screen_start_selection(Screen *self, index_type x, index_type y, bool in_left_ha
     A(input_start.x, x); A(input_start.y, y); A(input_start.in_left_half_of_cell, in_left_half_of_cell);
     A(input_current.x, x); A(input_current.y, y); A(input_current.in_left_half_of_cell, in_left_half_of_cell);
 #undef A
+}
+
+void
+screen_select_all(Screen *self) {
+    // kilix: select the entire buffer (scrollback + visible screen), whole lines.
+    // A finished (in_progress=false) EXTEND_LINE selection from the top of history
+    // (y=0, scrolled_by=history count) to the bottom of the screen (y=lines-1, scrolled_by=0).
+    screen_pause_rendering(self, false, 0);
+    ensure_space_for(&self->selections, items, Selection, 1, capacity, 1, false);
+    Selection *s = self->selections.items;
+    memset(s, 0, sizeof(Selection));
+    self->selections.count = 1;
+    self->selections.in_progress = false;
+    self->selections.extend_mode = EXTEND_LINE;
+    s->last_rendered.y = INT_MAX;
+    const unsigned int hist = (self->linebuf == self->main_linebuf && self->historybuf) ? self->historybuf->count : 0;
+    s->start.x = 0; s->start.y = 0; s->start_scrolled_by = hist; s->start.in_left_half_of_cell = true;
+    s->end.x = self->columns ? self->columns - 1 : 0; s->end.y = self->lines ? self->lines - 1 : 0;
+    s->end_scrolled_by = 0; s->end.in_left_half_of_cell = false;
+    s->input_start = s->start; s->input_current = s->end;
 }
 
 static void
@@ -6268,6 +6295,7 @@ static PyMethodDef methods[] = {
     MND(clear_tab_stop, METH_VARARGS)
     MND(reset_tab_stops, METH_NOARGS)
     MND(start_selection, METH_VARARGS)
+    MND(select_all, METH_NOARGS)
     MND(update_selection, METH_VARARGS)
     {"clear_selection", (PyCFunction)clear_selection_, METH_NOARGS, ""},
     MND(reverse_index, METH_NOARGS)

@@ -19,12 +19,12 @@ from kitty.options.utils import (
     optional_edge_width, parse_font_spec, parse_map, parse_mouse_map, paste_actions,
     pointer_shape_when_dragging, remote_control_password, resize_debounce_time, scrollback_lines,
     scrollback_pager_history_size, scrollbar_color, shell_integration, show_hyperlink_targets,
-    store_multiple, symbol_map, tab_activity_symbol, tab_bar_edge, tab_bar_margin_height,
-    tab_bar_min_tabs, tab_fade, tab_font_style, tab_separator, tab_title_template,
-    text_fg_override_threshold, titlebar_color, to_cursor_shape, to_cursor_unfocused_shape,
-    to_font_size, to_layout_names, to_modifiers, transparent_background_colors, underline_exclusion,
-    url_prefixes, url_style, visual_bell_duration, visual_window_select_characters, window_border_width,
-    window_logo_scale, window_size
+    software_mouse_cursor, store_multiple, symbol_map, tab_activity_symbol, tab_bar_edge,
+    tab_bar_margin_height, tab_bar_min_tabs, tab_fade, tab_font_style, tab_separator,
+    tab_title_template, text_fg_override_threshold, titlebar_color, to_cursor_shape,
+    to_cursor_unfocused_shape, to_font_size, to_layout_names, to_modifiers,
+    transparent_background_colors, underline_exclusion, url_prefixes, url_style, visual_bell_duration,
+    visual_window_select_characters, window_border_width, window_logo_scale, window_size
 )
 
 
@@ -1328,6 +1328,9 @@ class Parser:
 
     def single_window_padding_width(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['single_window_padding_width'] = optional_edge_width(val)
+
+    def software_mouse_cursor(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['software_mouse_cursor'] = software_mouse_cursor(val)
 
     def startup_session(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['startup_session'] = config_or_absolute_path(val)

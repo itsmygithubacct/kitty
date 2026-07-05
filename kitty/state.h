@@ -59,6 +59,7 @@ typedef struct Options {
     bool pixel_scroll;
     bool enable_audio_bell;
     CursorShape cursor_shape, cursor_shape_unfocused;
+    int software_mouse_cursor;  // kilix: 0=none 1=block 2=pointer
     float cursor_beam_thickness;
     float cursor_underline_thickness;
     monotonic_t cursor_trail;

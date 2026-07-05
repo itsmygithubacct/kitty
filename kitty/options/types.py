@@ -454,6 +454,7 @@ option_names = (
     'show_hyperlink_targets',
     'single_window_margin_width',
     'single_window_padding_width',
+    'software_mouse_cursor',
     'startup_session',
     'strip_trailing_spaces',
     'symbol_map',
@@ -662,6 +663,7 @@ class Options:
     show_hyperlink_targets: typing.Literal['never', 'always', 'Ctrl', 'Shift', 'Super', 'Alt'] = 'never'
     single_window_margin_width: FloatEdges = FloatEdges(left=-1.0, top=-1.0, right=-1.0, bottom=-1.0)
     single_window_padding_width: FloatEdges = FloatEdges(left=-1.0, top=-1.0, right=-1.0, bottom=-1.0)
+    software_mouse_cursor: int = 1
     startup_session: str | None = None
     strip_trailing_spaces: choices_for_strip_trailing_spaces = 'never'
     sync_to_monitor: bool = True
@@ -681,7 +683,7 @@ class Options:
     tab_separator: str = ' ┇'
     tab_switch_strategy: choices_for_tab_switch_strategy = 'previous'
     tab_title_max_length: int = 0
-    tab_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.tab}{tab.last_focused_progress_percent}{title}'
+    tab_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{secure_input_symbol}{fmt.fg.tab}{tab.last_focused_progress_percent}{title}'
     term: str = 'xterm-kitty'
     terminfo_type: choices_for_terminfo_type = 'path'
     text_composition_strategy: str = 'platform'
