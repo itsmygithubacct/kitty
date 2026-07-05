@@ -37,7 +37,7 @@ type CDP struct {
 
 var chromeCandidates = []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser"}
 
-func startCDP(width, height int, profile string) (*CDP, error) {
+func startCDP(width, height int, profile string, extraArgs ...string) (*CDP, error) {
 	var chrome string
 	for _, c := range chromeCandidates {
 		if p, err := exec.LookPath(c); err == nil {
@@ -57,14 +57,17 @@ func startCDP(width, height int, profile string) (*CDP, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(chrome,
+	argv := []string{
 		"--headless=new", "--remote-debugging-pipe",
 		"--no-first-run", "--no-default-browser-check",
 		"--hide-scrollbars", "--mute-audio",
 		"--autoplay-policy=no-user-gesture-required",
-		"--user-data-dir="+profile,
+		"--user-data-dir=" + profile,
 		fmt.Sprintf("--window-size=%d,%d", width, height),
-		"about:blank")
+	}
+	argv = append(argv, extraArgs...)
+	argv = append(argv, "about:blank")
+	cmd := exec.Command(chrome, argv...)
 	cmd.ExtraFiles = []*os.File{toChromeR, fromChromeW} // fds 3, 4
 	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Start(); err != nil {

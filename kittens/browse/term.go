@@ -71,9 +71,10 @@ func (t *Term) Enter() {
 	raw.Cc[unix.VMIN], raw.Cc[unix.VTIME] = 1, 0
 	unix.IoctlSetTermios(int(t.in.Fd()), unix.TCSETS, &raw)
 	// alt screen, hide cursor, no autowrap, kbd protocol (1|4|8), mouse:
-	// drag tracking + SGR + SGR-pixels, bracketed paste
+	// ANY-motion tracking (the software pointer follows hover, and pages
+	// get real hover effects) + SGR + SGR-pixels, bracketed paste
 	t.Write("\x1b[?1049h\x1b[2J\x1b[?25l\x1b[?7l\x1b[>13u" +
-		"\x1b[?1002h\x1b[?1006h\x1b[?1016h\x1b[?2004h")
+		"\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?2004h")
 	t.entered = true
 }
 
@@ -83,7 +84,7 @@ func (t *Term) Restore() {
 	// (and delete-all-images / leave-alt-screen) into a terminal that was
 	// never switched, corrupting the enclosing session.
 	if t.entered {
-		t.Write("\x1b[<u\x1b[?1002l\x1b[?1006l\x1b[?1016l\x1b[?2004l" +
+		t.Write("\x1b[<u\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1016l\x1b[?2004l" +
 			"\x1b[?7h\x1b_Ga=d,d=A\x1b\\\x1b[?25h\x1b[?1049l")
 		t.entered = false
 	}

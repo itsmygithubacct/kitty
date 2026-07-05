@@ -72,6 +72,13 @@ type Browse struct {
 	scrollX, scrollY float64
 	halfRes          bool      // sustained animation: screencast at half size
 	frameTimes       []time.Time
+	cursor           bool      // draw a software pointer (headless Chrome has none)
+	curX, curY       int       // pointer position, page pixels
+	lastRGBA         *image.RGBA
+	imgW, imgH       int
+	lastCurPaint     time.Time
+	savedPatch       []uint8   // pixels under the stamped cursor
+	savedRect        image.Rectangle
 	snapDirty        bool
 	glyphDirty       bool
 	lastInput        time.Time
@@ -101,7 +108,7 @@ func logf(format string, a ...any) {
 	}
 }
 
-func newBrowse(url string) (*Browse, error) {
+func newBrowse(url string, incognito, cursor bool) (*Browse, error) {
 	t, err := newTerm()
 	if err != nil {
 		return nil, err
@@ -111,21 +118,36 @@ func newBrowse(url string) (*Browse, error) {
 	}
 	b := &Browse{
 		term: t, url: url, title: url, statusMsg: "loading…",
-		snapDirty: true, glyphDirty: true,
+		snapDirty: true, glyphDirty: true, cursor: cursor,
 	}
 	b.wid = os.Getenv("KITTY_WINDOW_ID")
 	if b.wid == "" {
 		b.wid = strconv.Itoa(os.Getpid())
 	}
 	b.computeSize()
-	profile := filepath.Join(stateDir(), "kilix", "browse-profile")
-	os.MkdirAll(profile, 0o755)
-	// Chrome refuses to share a profile: fall back to a disposable one
-	if lockHolderAlive(filepath.Join(profile, "SingletonLock")) {
-		profile = fmt.Sprintf("%s-%d", profile, os.Getpid())
+	b.curX, b.curY = b.pageW/2, b.pageH/2
+	var extra []string
+	var profile string
+	if incognito {
+		// a throwaway profile, deleted on exit: no history, cookies or cache
+		// survive the session (Chrome's own --incognito on top for good measure)
+		profile, err = os.MkdirTemp("", "kilix-browse-incognito-")
+		if err != nil {
+			t.Restore()
+			return nil, err
+		}
 		b.tempProfile = profile
+		extra = append(extra, "--incognito")
+	} else {
+		profile = filepath.Join(stateDir(), "kilix", "browse-profile")
+		os.MkdirAll(profile, 0o755)
+		// Chrome refuses to share a profile: fall back to a disposable one
+		if lockHolderAlive(filepath.Join(profile, "SingletonLock")) {
+			profile = fmt.Sprintf("%s-%d", profile, os.Getpid())
+			b.tempProfile = profile
+		}
 	}
-	b.cdp, err = startCDP(b.pageW, b.pageH, profile)
+	b.cdp, err = startCDP(b.pageW, b.pageH, profile, extra...)
 	if err != nil {
 		t.Restore()
 		return nil, err
@@ -245,22 +267,17 @@ func (b *Browse) blit(b64jpeg string, meta map[string]float64) {
 		return
 	}
 	bounds := img.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
 	rgba, ok := img.(*image.RGBA)
 	if !ok {
 		rgba = image.NewRGBA(bounds)
 		draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 	}
-	b.seq = (b.seq + 1) % 8
-	path := fmt.Sprintf("/dev/shm/tty-graphics-protocol-kilix-%s-%d.rgba", b.wid, b.seq)
-	if os.WriteFile(path, rgba.Pix, 0o600) != nil {
-		return
+	b.lastRGBA, b.imgW, b.imgH = rgba, bounds.Dx(), bounds.Dy()
+	b.savedPatch = nil // fresh frame: nothing stamped on it yet
+	if b.cursor {
+		b.stampCursor()
 	}
-	payload := base64.StdEncoding.EncodeToString([]byte(path))
-	// c/r pin the placement to the full pane rect so kitty GPU-scales
-	// half-res frames back up; at full resolution it is a 1:1 no-op.
-	b.term.Write(fmt.Sprintf("\x1b[H\x1b_Ga=T,i=1,p=1,z=-1,t=t,f=32,s=%d,v=%d,c=%d,r=%d,q=2,C=1;%s\x1b\\",
-		w, h, b.term.Cols, b.viewRows, payload))
+	b.present()
 	sx, sy := meta["scrollOffsetX"], meta["scrollOffsetY"]
 	if sx != b.scrollX || sy != b.scrollY {
 		b.scrollX, b.scrollY = sx, sy
@@ -268,8 +285,112 @@ func (b *Browse) blit(b64jpeg string, meta map[string]float64) {
 	}
 	b.frames++
 	if b.frames == 1 || b.frames%60 == 0 {
-		logf("frames=%d size=%dx%d scroll=%.0f", b.frames, w, h, b.scrollY)
+		logf("frames=%d size=%dx%d scroll=%.0f", b.frames, b.imgW, b.imgH, b.scrollY)
 	}
+}
+
+func (b *Browse) present() {
+	b.seq = (b.seq + 1) % 8
+	path := fmt.Sprintf("/dev/shm/tty-graphics-protocol-kilix-%s-%d.rgba", b.wid, b.seq)
+	if os.WriteFile(path, b.lastRGBA.Pix, 0o600) != nil {
+		return
+	}
+	payload := base64.StdEncoding.EncodeToString([]byte(path))
+	// c/r pin the placement to the full pane rect so kitty GPU-scales
+	// half-res frames back up; at full resolution it is a 1:1 no-op.
+	b.term.Write(fmt.Sprintf("\x1b[H\x1b_Ga=T,i=1,p=1,z=-1,t=t,f=32,s=%d,v=%d,c=%d,r=%d,q=2,C=1;%s\x1b\\",
+		b.imgW, b.imgH, b.term.Cols, b.viewRows, payload))
+}
+
+// ── software mouse pointer ──────────────────────────────────────────────
+// Headless Chrome renders no pointer, so browse stamps a classic arrow onto
+// the frame itself; the pixels underneath are saved and restored, so pointer
+// motion never needs a fresh screencast frame.
+
+var cursorArt = []string{
+	"k          ",
+	"kk         ",
+	"kwk        ",
+	"kwwk       ",
+	"kwwwk      ",
+	"kwwwwk     ",
+	"kwwwwwk    ",
+	"kwwwwwwk   ",
+	"kwwwwwwwk  ",
+	"kwwwwwwwwk ",
+	"kwwwwwkkkkk",
+	"kwwkwwk    ",
+	"kwk kwwk   ",
+	"kk  kwwk   ",
+	"k    kwwk  ",
+	"     kwwk  ",
+	"      kk   ",
+}
+
+func (b *Browse) stampCursor() {
+	if b.lastRGBA == nil || b.pageW == 0 || b.pageH == 0 {
+		return
+	}
+	// page coords → image coords (differ while the screencast is half-res)
+	sx := b.curX * b.imgW / b.pageW
+	sy := b.curY * b.imgH / b.pageH
+	r := image.Rect(sx, sy, sx+len(cursorArt[0]), sy+len(cursorArt)).
+		Intersect(b.lastRGBA.Bounds())
+	if r.Empty() {
+		b.savedPatch = nil
+		return
+	}
+	b.savedRect = r
+	b.savedPatch = make([]uint8, 0, r.Dx()*r.Dy()*4)
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		o := b.lastRGBA.PixOffset(r.Min.X, y)
+		b.savedPatch = append(b.savedPatch, b.lastRGBA.Pix[o:o+r.Dx()*4]...)
+	}
+	for dy, rowArt := range cursorArt {
+		for dx, c := range rowArt {
+			if c == ' ' {
+				continue
+			}
+			x, y := sx+dx, sy+dy
+			if !image.Pt(x, y).In(r) {
+				continue
+			}
+			o := b.lastRGBA.PixOffset(x, y)
+			v := uint8(0)
+			if c == 'w' {
+				v = 255
+			}
+			b.lastRGBA.Pix[o], b.lastRGBA.Pix[o+1], b.lastRGBA.Pix[o+2], b.lastRGBA.Pix[o+3] = v, v, v, 255
+		}
+	}
+}
+
+func (b *Browse) unstampCursor() {
+	if b.savedPatch == nil || b.lastRGBA == nil {
+		return
+	}
+	r := b.savedRect
+	for y, i := r.Min.Y, 0; y < r.Max.Y; y++ {
+		o := b.lastRGBA.PixOffset(r.Min.X, y)
+		copy(b.lastRGBA.Pix[o:o+r.Dx()*4], b.savedPatch[i:i+r.Dx()*4])
+		i += r.Dx() * 4
+	}
+	b.savedPatch = nil
+}
+
+// repaintCursor re-presents the last frame with the pointer at its new
+// position — throttled, because SGR-pixel motion arrives per pixel.
+func (b *Browse) repaintCursor() {
+	if !b.cursor || b.lastRGBA == nil {
+		return
+	}
+	if time.Since(b.lastCurPaint) < 25*time.Millisecond {
+		return
+	}
+	b.lastCurPaint = time.Now()
+	b.unstampCursor()
+	b.stampCursor()
+	b.present()
 }
 
 // ── glyph layer ─────────────────────────────────────────────────────────

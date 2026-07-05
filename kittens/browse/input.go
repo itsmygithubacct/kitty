@@ -132,6 +132,8 @@ func (b *Browse) onMouse(ev *MouseEvent) {
 	if ev.B&256 != 0 { // kitty SGR-pixel leave indicator
 		return
 	}
+	b.curX, b.curY = x, y
+	defer b.repaintCursor() // pointer follows on every path, incl. status row
 	if y >= b.pageH { // status row
 		return
 	}

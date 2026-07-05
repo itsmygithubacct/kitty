@@ -13,17 +13,26 @@ import (
 	"github.com/kovidgoyal/kitty/tools/cli"
 )
 
+type browseOptions struct {
+	Incognito bool
+	NoCursor  bool
+}
+
 func EntryPoint(root *cli.Command) {
-	root.AddSubCommand(&cli.Command{
+	cmd := root.AddSubCommand(&cli.Command{
 		Name:             "browse",
 		ShortDescription: "Browse the web inside the terminal",
-		Usage:            "[url]",
+		Usage:            "[options] [url]",
 		HelpText: "Render Chrome inside the kitty/kilix pane: page pixels stream at full " +
 			"resolution via the graphics protocol while page text is drawn as real, " +
 			"selectable terminal glyphs. Requires google-chrome or chromium on PATH. " +
 			"Keys: Ctrl+L url bar, Alt+Left/Right history, Ctrl+R reload, Ctrl+C copy " +
 			"selection, Ctrl+Q quit. Shift+drag selects glyph text natively.",
 		Run: func(cmd *cli.Command, args []string) (int, error) {
+			opts := browseOptions{}
+			if err := cmd.GetOptionValues(&opts); err != nil {
+				return 1, err
+			}
 			url := "https://example.com"
 			if len(args) > 0 {
 				url = args[0]
@@ -31,13 +40,22 @@ func EntryPoint(root *cli.Command) {
 			if !strings.Contains(url, "://") {
 				url = "https://" + url
 			}
-			return runBrowse(url)
+			return runBrowse(url, opts.Incognito, !opts.NoCursor)
 		},
+	})
+	cmd.Add(cli.OptionSpec{
+		Name: `--incognito`, Type: "bool-set", Dest: "Incognito",
+		Help: "Browse in a throwaway profile: no history, cookies or cache " +
+			"survive the session (the profile directory is deleted on exit).",
+	})
+	cmd.Add(cli.OptionSpec{
+		Name: `--no-cursor`, Type: "bool-set", Dest: "NoCursor",
+		Help: "Don't draw the software mouse pointer over the page.",
 	})
 }
 
-func runBrowse(url string) (rc int, err error) {
-	b, err := newBrowse(url)
+func runBrowse(url string, incognito, cursor bool) (rc int, err error) {
+	b, err := newBrowse(url, incognito, cursor)
 	if err != nil {
 		return 1, err
 	}
@@ -65,7 +83,9 @@ func runBrowse(url string) (rc int, err error) {
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 	term := make(chan os.Signal, 1)
-	signal.Notify(term, syscall.SIGTERM, syscall.SIGINT)
+	// SIGHUP included: closing the hosting kitty window must still run
+	// cleanup (tty restore, shm files, incognito profile removal)
+	signal.Notify(term, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
 	b.term.Enter()
 	if err = b.start(); err != nil {
