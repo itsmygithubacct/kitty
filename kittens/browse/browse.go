@@ -27,8 +27,14 @@ import (
 	"github.com/kovidgoyal/kitty/tools/wcswidth"
 )
 
+// NB: -webkit-text-fill-color INHERITS, so excluding form fields from the
+// selector is not enough — the transparent value flows down from the parent
+// and typed text becomes invisible. Fields (and their placeholders) must be
+// explicitly reset to their own ink.
 const transparentCSS = `*:not(input):not(textarea):not(select)` +
 	`{-webkit-text-fill-color:transparent !important;text-shadow:none !important}` +
+	`input,textarea,select{-webkit-text-fill-color:currentColor !important}` +
+	`input::placeholder,textarea::placeholder{-webkit-text-fill-color:currentColor !important}` +
 	`::selection{background:rgba(52,101,164,0.55)}`
 
 var injectJS = `(function(){var s=document.createElement('style');` +
