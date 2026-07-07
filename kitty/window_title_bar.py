@@ -211,9 +211,14 @@ class WindowTitleBarScreen:
             # visual cue — a small square when tiled, the larger fullscreen glyph
             # when the pane is maximized (stack layout).
             max_glyph = chr(0xf0293) if data.is_maximized else chr(0xeab9)     # fullscreen ⇄ small square
+            # kilix fork: arrows read left → up → down → right. kitty has no native
+            # left/up split, so those vsplit/hsplit and then move_window to swap the
+            # new pane onto the near side; down/right split in place.
             segments = (
-                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current'),  # split right: bold → (new pane to the right)
+                (f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left'),  # split left: bold ← (new pane to the left)
+                (f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top'),   # split up: bold ↑ (new pane above)
                 (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current'),  # split down: bold ↓ (new pane below)
+                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current'),  # split right: bold → (new pane to the right)
                 (f' {max_glyph} ', 'toggle_layout stack'),                        # maximize / zoom pane (glyph = state)
                 (f' {chr(0xf0156)} ', 'close_window'),                            # close pane
             )
