@@ -16,7 +16,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -157,46 +159,218 @@ func fix_dependencies_in_lib(path string) {
 	}
 }
 
+// parseContentRange extracts the start offset and total size from a Content-Range
+// header of the form "bytes <start>-<end>/<total>". ok is true only when the
+// <start> offset parses; total is returned as (value, true) only when <total> is a
+// concrete integer, so a "*" or malformed total yields (0, false) for hasTotal
+// while ok can still be true.
+func parseContentRange(resp *http.Response) (start, total int64, ok, hasTotal bool) {
+	cr := resp.Header.Get("Content-Range")
+	if cr == "" {
+		return 0, 0, false, false
+	}
+	// Drop the leading unit token, e.g. the "bytes " in "bytes 0-1/2".
+	if _, rest, found := strings.Cut(cr, " "); found {
+		cr = rest
+	}
+	rangePart, totalPart, found := strings.Cut(cr, "/")
+	if !found {
+		return 0, 0, false, false
+	}
+	startPart, _, found := strings.Cut(rangePart, "-")
+	if !found {
+		return 0, 0, false, false
+	}
+	start, err := strconv.ParseInt(strings.TrimSpace(startPart), 10, 64)
+	if err != nil {
+		return 0, 0, false, false
+	}
+	if t, err := strconv.ParseInt(strings.TrimSpace(totalPart), 10, 64); err == nil {
+		total, hasTotal = t, true
+	}
+	return start, total, true, hasTotal
+}
+
+// fileSize returns the size of the file at path, or 0 if it does not exist.
+func fileSize(path string) int64 {
+	if fi, err := os.Stat(path); err == nil {
+		return fi.Size()
+	}
+	return 0
+}
+
 func cached_download(url string) string {
 	fname := filepath.Base(url)
 	fmt.Println("Downloading", fname)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
+	if err := os.MkdirAll(folder, 0o755); err != nil {
 		exit(err)
 	}
-	etag_file := filepath.Join(folder, fname+".etag")
-	if etag, err := os.ReadFile(etag_file); err == nil {
-		if _, err := os.Stat(filepath.Join(folder, fname)); err == nil {
-			req.Header.Add("If-None-Match", string(etag))
-		}
+	dest := filepath.Join(folder, fname)
+	partial := dest + ".partial"
+	etagFile := filepath.Join(folder, fname+".etag")
+
+	etag := ""
+	if data, err := os.ReadFile(etagFile); err == nil {
+		etag = strings.TrimSpace(string(data))
 	}
 
+	const maxAttempts = 6
 	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		exit(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusNotModified {
-			return filepath.Join(folder, fname)
+	var lastErr error
+
+	saveEtag := func() {
+		if etag != "" {
+			if err := os.WriteFile(etagFile, []byte(etag), 0o644); err != nil {
+				exit(err)
+			}
 		}
-		exit(fmt.Errorf("The server responded with the HTTP error: %s", resp.Status))
 	}
-	f, err := os.Create(filepath.Join(folder, fname))
-	if err != nil {
-		exit(err)
-	}
-	defer f.Close()
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		exit(fmt.Errorf("Failed to download file with error: %w", err))
-	}
-	if etag := resp.Header.Get("ETag"); etag != "" {
-		if err := os.WriteFile(etag_file, []byte(etag), 0o644); err != nil {
+	finalize := func() string {
+		if err := os.Rename(partial, dest); err != nil {
 			exit(err)
 		}
+		saveEtag()
+		return dest
 	}
-	return f.Name()
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * time.Second
+			if backoff > 5*time.Second {
+				backoff = 5 * time.Second
+			}
+			time.Sleep(backoff)
+		}
+
+		have := fileSize(partial)
+		if have > 0 && etag == "" {
+			// Without a validator we cannot prove the on-disk partial still
+			// belongs to the current remote file (it may be a leftover from a
+			// prior run whose remote has since changed), so a Range/206 resume
+			// could silently append a suffix onto stale bytes. Only resume when
+			// an etag is available to guard it with If-Range; otherwise discard
+			// the partial and start over from a clean 200.
+			os.Remove(partial)
+			have = 0
+		}
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			exit(err)
+		}
+		if have == 0 {
+			// A completed prior download plus a stored etag can yield a cheap 304.
+			if etag != "" {
+				if _, err := os.Stat(dest); err == nil {
+					req.Header.Set("If-None-Match", etag)
+				}
+			}
+		} else {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+			if etag != "" {
+				// Only resume when the partial is still valid; otherwise the
+				// server sends the whole file fresh (a 200), handled below.
+				req.Header.Set("If-Range", etag)
+			}
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue // transport error: retry with backoff
+		}
+
+		switch resp.StatusCode {
+		case http.StatusNotModified:
+			resp.Body.Close()
+			return dest
+		case http.StatusRequestedRangeNotSatisfiable:
+			// Our partial is already >= the full size: finalize it.
+			resp.Body.Close()
+			if err := os.Rename(partial, dest); err != nil {
+				lastErr = err
+				os.Remove(partial)
+				continue
+			}
+			saveEtag()
+			return dest
+		case http.StatusOK, http.StatusPartialContent:
+			// handled below
+		default:
+			resp.Body.Close()
+			exit(fmt.Errorf("The server responded with the HTTP error: %s", resp.Status))
+		}
+
+		if e := resp.Header.Get("ETag"); e != "" {
+			etag = e
+		}
+
+		var expected int64
+		haveExpected := false
+		var f *os.File
+		if resp.StatusCode == http.StatusPartialContent {
+			// A 206 body carries only the [start, end] slice, so it may be
+			// appended to our partial only when the server actually resumed at
+			// the offset we asked for. A proxy/server that ignores Range and
+			// answers 206 from a different offset would otherwise concatenate
+			// overlapping or duplicate bytes into the file.
+			start, total, ok, hasTotal := parseContentRange(resp)
+			switch {
+			case ok && start == have:
+				// Genuine resume: append the suffix.
+				expected, haveExpected = total, hasTotal
+				f, err = os.OpenFile(partial, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+			case ok && start == 0:
+				// The server ignored our Range and returned the whole file as a
+				// 206 (some proxies do this). It is a complete body, so truncate
+				// the partial and treat it exactly like a fresh 200.
+				expected, haveExpected = total, hasTotal
+				f, err = os.OpenFile(partial, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+			default:
+				// Misaligned or unparseable range: a suffix from some other
+				// offset cannot be reconciled with our partial. Discard it and
+				// retry from scratch (have resets to 0, so the next request
+				// carries no Range and the server answers with a full 200).
+				resp.Body.Close()
+				os.Remove(partial)
+				lastErr = fmt.Errorf("server returned a 206 that does not resume at offset %d (Content-Range: %q)", have, resp.Header.Get("Content-Range"))
+				continue
+			}
+		} else {
+			// 200: the body is the whole file, so truncate any partial first.
+			if resp.ContentLength >= 0 {
+				expected, haveExpected = resp.ContentLength, true
+			}
+			f, err = os.OpenFile(partial, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		}
+		if err != nil {
+			resp.Body.Close()
+			exit(err)
+		}
+
+		_, copyErr := io.Copy(f, resp.Body)
+		closeErr := f.Close()
+		resp.Body.Close()
+		if copyErr != nil {
+			lastErr = copyErr
+			continue // short/broken read: retry and resume
+		}
+		if closeErr != nil {
+			exit(closeErr)
+		}
+
+		// Many truncations return copyErr == nil, so the size check is what
+		// actually catches the bug.
+		size := fileSize(partial)
+		if haveExpected && size < expected {
+			lastErr = fmt.Errorf("short read: got %d of %d bytes", size, expected)
+			continue // resume from the new, larger offset
+		}
+		return finalize()
+	}
+
+	exit(fmt.Errorf("Failed to download %s after %d attempts: %v", fname, maxAttempts, lastErr))
+	return dest
 }
 
 func relocate_pkgconfig(path, old_prefix, new_prefix string) error {
