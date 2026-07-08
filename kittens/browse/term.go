@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -113,9 +115,16 @@ type InputEvent struct {
 	Paste string
 }
 
-var csiRe = regexp.MustCompile(`^\x1b\[([\x30-\x3f]*)([\x20-\x2f]*)([\x40-\x7e])`)
+// '-' is outside the normal CSI parameter byte range, but kitty's SGR-pixel
+// mouse reports can carry negative coordinates while the pointer is in pane
+// padding. Keep those sequences as mouse input instead of letting fragments
+// surface as paste into the browser.
+var csiRe = regexp.MustCompile(`^\x1b\[([\x2d\x30-\x3f]*)([\x20-\x2f]*)([\x40-\x7e])`)
 
-type spec struct{ key, code string; vk int }
+type spec struct {
+	key, code string
+	vk        int
+}
 
 var specialCSI = map[byte]spec{
 	'A': {"ArrowUp", "ArrowUp", 38}, 'B': {"ArrowDown", "ArrowDown", 40},
@@ -140,7 +149,11 @@ func (t *Term) Feed(data []byte) []InputEvent {
 			m := csiRe.FindSubmatch(t.buf)
 			if m == nil {
 				if len(t.buf) > 64 { // garbage: resync
-					t.buf = t.buf[1:]
+					if nxt := strings.IndexByte(string(t.buf[1:]), 0x1b); nxt >= 0 {
+						t.buf = t.buf[nxt+1:]
+					} else {
+						t.buf = nil
+					}
 					continue
 				}
 				break // incomplete, wait for more bytes
@@ -164,19 +177,73 @@ func (t *Term) Feed(data []byte) []InputEvent {
 			if len(t.buf) == 1 {
 				break
 			}
-			t.buf = t.buf[1:] // stray ESC
+			c := t.buf[1]
+			if c == 'P' || c == ']' || c == '_' || c == '^' || c == 'X' {
+				st := strings.Index(string(t.buf[2:]), "\x1b\\")
+				bel := -1
+				if c == ']' {
+					bel = strings.IndexByte(string(t.buf[2:]), 0x07)
+				}
+				if st < 0 && bel < 0 {
+					break
+				}
+				if bel >= 0 && (st < 0 || bel < st) {
+					t.buf = t.buf[2+bel+1:]
+				} else {
+					t.buf = t.buf[2+st+2:]
+				}
+			} else if c == 'O' {
+				if len(t.buf) < 3 {
+					break
+				}
+				t.buf = t.buf[3:]
+			} else {
+				t.buf = t.buf[1:] // stray ESC
+			}
 		} else {
 			nxt := strings.IndexByte(string(t.buf), 0x1b)
 			var chunk []byte
 			if nxt < 0 {
-				chunk, t.buf = t.buf, nil
+				hold := utf8Tail(t.buf)
+				if hold == len(t.buf) {
+					break
+				}
+				cut := len(t.buf) - hold
+				chunk, t.buf = t.buf[:cut], t.buf[cut:]
 			} else {
 				chunk, t.buf = t.buf[:nxt], t.buf[nxt:]
 			}
-			events = append(events, InputEvent{Paste: string(chunk)})
+			if len(chunk) > 0 {
+				events = append(events, InputEvent{Paste: string(chunk)})
+			}
 		}
 	}
 	return events
+}
+
+func utf8Tail(b []byte) int {
+	for i := 1; i <= 4 && i <= len(b); i++ {
+		c := b[len(b)-i]
+		if c < utf8.RuneSelf {
+			return 0
+		}
+		if c&0xc0 == 0xc0 {
+			if c >= 0xf8 {
+				return 0
+			}
+			need := 2
+			if c >= 0xf0 {
+				need = 4
+			} else if c >= 0xe0 {
+				need = 3
+			}
+			if i < need {
+				return i
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 func atoiDef(s string, def int) int {
@@ -189,15 +256,39 @@ func atoiDef(s string, def int) int {
 	return def
 }
 
+func atoiOK(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
+}
+
+func swapLetterCase(s string) string {
+	r, sz := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError || sz != len(s) || !unicode.IsLetter(r) {
+		return s
+	}
+	if unicode.IsUpper(r) {
+		return string(unicode.ToLower(r))
+	}
+	return string(unicode.ToUpper(r))
+}
+
 func parseCSI(params string, final byte) *InputEvent {
 	if (final == 'M' || final == 'm') && strings.HasPrefix(params, "<") {
 		p := strings.Split(params[1:], ";")
 		if len(p) != 3 {
 			return nil
 		}
+		b, okB := atoiOK(p[0])
+		x, okX := atoiOK(p[1])
+		y, okY := atoiOK(p[2])
+		if !okB || !okX || !okY {
+			return nil
+		}
 		return &InputEvent{Mouse: &MouseEvent{
-			B: atoiDef(p[0], 0), X: atoiDef(p[1], 1) - 1, Y: atoiDef(p[2], 1) - 1,
-			Press: final == 'M',
+			B: b, X: x, Y: y, Press: final == 'M',
 		}}
 	}
 	parts := strings.Split(params, ";")
@@ -235,13 +326,18 @@ func parseCSI(params string, final byte) *InputEvent {
 		if mm < 0 {
 			mm = 0
 		}
+		caps := mm & 64
+		mm &^= 192 // lock LEDs are state, not shortcut modifiers
 		ch := rune(key)
 		if mm&1 != 0 && shifted > 0 {
 			ch = rune(shifted)
 		}
 		text := ""
-		if mm&^1 == 0 && key >= 32 {
+		if mm&^1 == 0 && key >= 32 && key < 57344 {
 			text = string(ch)
+			if caps != 0 {
+				text = swapLetterCase(text)
+			}
 		}
 		vk := 0
 		up := strings.ToUpper(string(ch))

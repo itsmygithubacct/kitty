@@ -14,6 +14,9 @@ class BatteryInfo(NamedTuple):
 
 
 BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
+_CLOCK_TIMER_STARTED = False
+_CLOCK_LAST_TEXT = ''
+_CLOCK_REFRESH_SECONDS = 15.0
 _BATTERY_SHOW_PERCENT = False
 _BATTERY_CACHE: BatteryInfo | None = None
 _BATTERY_CACHE_UNTIL = 0.0
@@ -28,6 +31,17 @@ _BATTERY_HIGH = (color_as_int(to_color('#8ae234')) << 8) | 2
 
 def _truthy_env(name: str, default: str = '1') -> bool:
     return os.environ.get(name, default).lower() not in ('0', 'no', 'false', 'off', 'disabled')
+
+
+def clock_segment() -> str | None:
+    if not _truthy_env('KILIX_CHROME_CLOCK'):
+        return None
+    fmt = os.environ.get('KILIX_CHROME_CLOCK_FORMAT') or '%Y-%m-%d %H:%M'
+    try:
+        text = time.strftime(fmt)
+    except Exception:
+        text = time.strftime('%Y-%m-%d %H:%M')
+    return f' {text} '
 
 
 def _read_text(path: str) -> str:
@@ -156,6 +170,14 @@ def _invalidate_all_tab_bars() -> None:
         mark_os_window_dirty(tm.os_window_id)
 
 
+def _clock_timer(timer_id: int | None = None) -> None:
+    global _CLOCK_LAST_TEXT
+    text = clock_segment() or ''
+    if text != _CLOCK_LAST_TEXT:
+        _CLOCK_LAST_TEXT = text
+        _invalidate_all_tab_bars()
+
+
 def toggle_battery_percent() -> None:
     global _BATTERY_SHOW_PERCENT
     _BATTERY_SHOW_PERCENT = not _BATTERY_SHOW_PERCENT
@@ -181,3 +203,21 @@ def ensure_battery_timer() -> None:
         add_timer(_battery_timer, _BATTERY_REFRESH_SECONDS, True)
     except Exception as e:
         log_error(f'Failed to start kilix battery chrome timer: {e}')
+
+
+def ensure_clock_timer() -> None:
+    global _CLOCK_LAST_TEXT, _CLOCK_TIMER_STARTED
+    if _CLOCK_TIMER_STARTED or not _truthy_env('KILIX_CHROME_CLOCK'):
+        return
+    _CLOCK_TIMER_STARTED = True
+    _CLOCK_LAST_TEXT = clock_segment() or ''
+    try:
+        from .fast_data_types import add_timer
+        add_timer(_clock_timer, _CLOCK_REFRESH_SECONDS, True)
+    except Exception as e:
+        log_error(f'Failed to start kilix clock chrome timer: {e}')
+
+
+def ensure_chrome_timers() -> None:
+    ensure_clock_timer()
+    ensure_battery_timer()

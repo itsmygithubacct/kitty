@@ -1,20 +1,24 @@
 package browse
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestParseWheelAndClick(t *testing.T) {
 	tr := &Term{Cols: 100, Rows: 50}
 	cases := []struct {
-		in            string
+		in                  string
 		wantB, wantX, wantY int
-		wantPress     bool
+		wantPress           bool
 	}{
-		{"\x1b[<65;900;500M", 65, 899, 499, true},   // wheel down
-		{"\x1b[<64;10;20M", 64, 9, 19, true},        // wheel up
-		{"\x1b[<0;5;7M", 0, 4, 6, true},             // left press
-		{"\x1b[<0;5;7m", 0, 4, 6, false},            // left release
-		{"\x1b[<35;300;400M", 35, 299, 399, true},   // motion, no button
-		{"\x1b[<288;1;1M", 288, 0, 0, true},         // leave sentinel
+		{"\x1b[<65;900;500M", 65, 900, 500, true}, // wheel down
+		{"\x1b[<64;10;20M", 64, 10, 20, true},     // wheel up
+		{"\x1b[<0;5;7M", 0, 5, 7, true},           // left press
+		{"\x1b[<0;5;7m", 0, 5, 7, false},          // left release
+		{"\x1b[<35;300;400M", 35, 300, 400, true}, // motion, no button
+		{"\x1b[<288;1;1M", 288, 1, 1, true},       // leave sentinel
+		{"\x1b[<64;-2;300M", 64, -2, 300, true},   // pane padding
 	}
 	for _, c := range cases {
 		evs := tr.Feed([]byte(c.in))
@@ -25,6 +29,60 @@ func TestParseWheelAndClick(t *testing.T) {
 		if m.B != c.wantB || m.X != c.wantX || m.Y != c.wantY || m.Press != c.wantPress {
 			t.Errorf("%q: got b=%d x=%d y=%d press=%v; want b=%d x=%d y=%d press=%v",
 				c.in, m.B, m.X, m.Y, m.Press, c.wantB, c.wantX, c.wantY, c.wantPress)
+		}
+	}
+}
+
+func TestMouseSequencesNeverLeakAsPaste(t *testing.T) {
+	burst := []byte("\x1b[<64;-2;300M\x1b[<65;500;-3M\x1b[<35;-1;200M")
+	for i := 0; i <= len(burst); i++ {
+		tr := &Term{}
+		var evs []InputEvent
+		evs = append(evs, tr.Feed(burst[:i])...)
+		evs = append(evs, tr.Feed(burst[i:])...)
+		if len(evs) != 3 {
+			t.Fatalf("split %d: got %d events: %+v", i, len(evs), evs)
+		}
+		for _, ev := range evs {
+			if ev.Paste != "" || ev.Mouse == nil {
+				t.Fatalf("split %d leaked or missed mouse: %+v", i, ev)
+			}
+		}
+	}
+	tr := &Term{}
+	var evs []InputEvent
+	for _, b := range burst {
+		evs = append(evs, tr.Feed([]byte{b})...)
+	}
+	if len(evs) != 3 {
+		t.Fatalf("byte split: got %d events: %+v", len(evs), evs)
+	}
+	for _, ev := range evs {
+		if ev.Paste != "" || ev.Mouse == nil {
+			t.Fatalf("byte split leaked or missed mouse: %+v", ev)
+		}
+	}
+}
+
+func TestEscapeControlsNeverLeakAsPaste(t *testing.T) {
+	seqs := []string{
+		"\x1bP@kitty-cmd{\"ok\":true}\x1b\\",
+		"\x1b]52;c;Zm9v\x07",
+		"\x1b]0;title\x1b\\",
+		"\x1b_Gf=100,a=T;AAAA\x1b\\",
+		"\x1b^private\x1b\\",
+		"\x1bXstatus\x1b\\",
+		"\x1bOP",
+	}
+	for _, seq := range seqs {
+		for i := 0; i <= len(seq); i++ {
+			tr := &Term{}
+			evs := append(tr.Feed([]byte(seq[:i])), tr.Feed([]byte(seq[i:]))...)
+			for _, ev := range evs {
+				if ev.Paste != "" {
+					t.Fatalf("%q split %d leaked paste: %+v", seq, i, ev)
+				}
+			}
 		}
 	}
 }
@@ -45,3 +103,28 @@ func TestParseKeyBasics(t *testing.T) {
 		t.Errorf("ctrl+l mods: got %d want 5", m)
 	}
 }
+
+func TestKeyTextGuards(t *testing.T) {
+	for _, key := range []int{57399, 57405, 57408, 57409, 57414, 57417, 57424, 57426} {
+		for _, mods := range []int{1, 65, 129} {
+			tr := &Term{}
+			evs := tr.Feed([]byte("\x1b[" + itoa(key) + ";" + itoa(mods) + "u"))
+			if len(evs) != 1 || evs[0].Key == nil {
+				t.Fatalf("key %d mods %d: %+v", key, mods, evs)
+			}
+			if evs[0].Key.Text != "" {
+				t.Fatalf("key %d mods %d leaked text %q", key, mods, evs[0].Key.Text)
+			}
+		}
+	}
+	tr := &Term{}
+	if text := tr.Feed([]byte("\x1b[97;65u"))[0].Key.Text; text != "A" {
+		t.Fatalf("caps a text = %q, want A", text)
+	}
+	tr = &Term{}
+	if text := tr.Feed([]byte("\x1b[233;129u"))[0].Key.Text; text != "é" {
+		t.Fatalf("numlock e-acute text = %q, want é", text)
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

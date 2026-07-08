@@ -29,7 +29,7 @@ from .fast_data_types import (
     viewport_for_window,
     wcswidth,
 )
-from .kilix_battery import battery_segment, ensure_battery_timer
+from .kilix_battery import battery_segment, clock_segment, ensure_chrome_timers
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
@@ -589,6 +589,7 @@ class TabBar:
         self.blank_rects: tuple[Border, ...] = ()
         self.tab_extents: Sequence[TabExtent] = ()
         self.action_extents: Sequence[ActionExtent] = ()
+        self.right_status_start = 0
         self.laid_out_once = False
         self.apply_options()
 
@@ -742,8 +743,11 @@ class TabBar:
     def update(self, data: Sequence[TabBarData]) -> None:
         if not self.laid_out_once:
             return
-        ensure_battery_timer()
+        ensure_chrome_timers()
         s = self.screen
+        right_segments = self.right_status_segments()
+        right_status_width = self.right_status_width(right_segments)
+        self.right_status_start = max(1, s.columns - right_status_width)
         last_tab = data[-1] if data else None
         ed = ExtraData()
         self.last_laid_out_tabs = data
@@ -758,17 +762,17 @@ class TabBar:
             end = self.draw_func(self.draw_data, s, t, before, max_tab_length, i + 1, t is last_tab, ed)
             s.cursor.bg = s.cursor.fg = 0
             cell_ranges.append(TabExtent(tab_id=tab.tab_id, cell_range=CellRange(before, end)))
-            if not ed.for_layout and t is not last_tab and s.cursor.x > s.columns - max_tab_lengths[i+1]:
+            if not ed.for_layout and t is not last_tab and s.cursor.x > self.right_status_start - max_tab_lengths[i+1]:
                 # Stop if there is no space for next tab
-                s.cursor.x = s.columns - 2
+                s.cursor.x = max(0, self.right_status_start - 2)
                 s.cursor.bg = as_rgb(color_as_int(self.draw_data.default_bg))
                 s.cursor.fg = as_rgb(0xff0000)
                 s.draw(' …')
                 raise StopIteration()
 
-        unconstrained_tab_length = max(1, s.columns - 2)
+        unconstrained_tab_length = max(1, self.right_status_start - 2)
         ideal_tab_lengths = [i for i in range(len(data))]
-        default_max_tab_length = max(1, (s.columns // max(1, len(data))) - 1)
+        default_max_tab_length = max(1, (self.right_status_start // max(1, len(data))) - 1)
         max_tab_lengths = [default_max_tab_length for _ in range(len(data))]
         active_idx = 0
         extra = 0
@@ -807,37 +811,53 @@ class TabBar:
         self.tab_extents = cr
         s.erase_in_line(0, False)  # Ensure no long titles bleed after the last tab
         self.align()
-        self.draw_right_status_segments()
+        self.draw_right_status_segments(right_segments)
         update_tab_bar_edge_colors(self.os_window_id)
 
-    def draw_right_status_segments(self) -> None:
-        self.action_extents = ()
+    def right_status_segments(self) -> tuple[tuple[str, str | None, int], ...]:
+        ans: list[tuple[str, str | None, int]] = []
+        clock = clock_segment()
+        if clock:
+            ans.append((clock, None, as_rgb(color_as_int(self.draw_data.inactive_fg))))
         batt = battery_segment()
-        if batt is None:
-            return
-        text, action, fg = batt
-        width = len(text)
+        if batt is not None:
+            text, action, fg = batt
+            ans.append((text, action, fg))
+        return tuple(ans)
+
+    def right_status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
+        return sum(max(0, wcswidth(text)) for text, _, _ in segments)
+
+    def draw_right_status_segments(self, segments: Sequence[tuple[str, str | None, int]]) -> None:
+        self.action_extents = ()
+        width = self.right_status_width(segments)
         if width <= 0 or self.screen.columns <= width:
             return
         s = self.screen
         bg = as_rgb(color_as_int(self.draw_data.default_bg))
         start = s.columns - width
         s.cursor.x = start
-        s.cursor.bold = True
-        s.cursor.italic = False
-        s.cursor.fg, s.cursor.bg = fg, bg
-        draw_attributed_string(text, s)
-        end = s.cursor.x
+        extents: list[ActionExtent] = []
+        for text, action, fg in segments:
+            before = s.cursor.x
+            s.cursor.bold = bool(action)
+            s.cursor.italic = False
+            s.cursor.fg, s.cursor.bg = fg, bg
+            draw_attributed_string(text, s)
+            end = s.cursor.x
+            if action:
+                extents.append(ActionExtent(action, CellRange(before, end)))
         s.cursor.bold = s.cursor.italic = False
         s.cursor.fg = s.cursor.bg = 0
-        self.action_extents = (ActionExtent(action, CellRange(start, end)),)
+        self.action_extents = tuple(extents)
 
     def align_with_factor(self, factor: int = 1) -> None:
         if not self.tab_extents:
             return
         end = self.tab_extents[-1].cell_range[1]
-        if end < self.screen.columns - 1:
-            shift = (self.screen.columns - end) // factor
+        limit = self.right_status_start or self.screen.columns
+        if end < limit - 1:
+            shift = (limit - end) // factor
             self.screen.cursor.x = 0
             self.screen.insert_characters(shift)
             self.tab_extents = tuple(te.shifted(shift) for te in self.tab_extents)
