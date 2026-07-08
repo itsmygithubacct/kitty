@@ -1803,6 +1803,20 @@ class TabManager:  # {{{
                     self.recent_tab_bar_mouse_events.clear()
             return
 
+        tab_action = self.tab_bar.action_at(int(x))
+        if tab_action is not None:
+            self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, -2)
+            drag_started = get_tab_being_dragged()[1]
+            is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
+            if is_left_release and not drag_started:
+                set_tab_being_dragged()
+            if is_left_release and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
+                from .kilix_battery import BATTERY_TOGGLE_ACTION, toggle_battery_percent
+                if tab_action == BATTERY_TOGGLE_ACTION:
+                    toggle_battery_percent()
+                self.recent_tab_bar_mouse_events.clear()
+            return
+
         tab_id_at_x = self.tab_bar.tab_id_at(int(x))
         self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, tab_id_at_x)
         drag_started = get_tab_being_dragged()[1]
@@ -1910,11 +1924,7 @@ class TabManager:  # {{{
             # unconditionally (without clearing the event buffer) means the second
             # click of a double-click reports click_count()==2 and cannot re-fire.
             if self.recent_title_bar_mouse_events.click_count() == 1:
-                if act == 'kilix_toggle_battery_percent':
-                    from .window_title_bar import toggle_battery_percent
-                    toggle_battery_percent()
-                else:
-                    boss.combine(act, window_for_dispatch=w)
+                boss.combine(act, window_for_dispatch=w)
             return
         # kilix fork: single left-click on the (non-button) title opens the pane action menu,
         # targeting the clicked pane (already focused on PRESS above). Maximize now lives on

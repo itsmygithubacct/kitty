@@ -29,6 +29,7 @@ from .fast_data_types import (
     viewport_for_window,
     wcswidth,
 )
+from .kilix_battery import battery_segment, ensure_battery_timer
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
@@ -573,6 +574,11 @@ class TabExtent(NamedTuple):
         return TabExtent(self.tab_id, CellRange(self.cell_range.start + shift, self.cell_range.end + shift))
 
 
+class ActionExtent(NamedTuple):
+    action: str
+    cell_range: CellRange
+
+
 class TabBar:
 
     def __init__(self, os_window_id: int):
@@ -582,6 +588,7 @@ class TabBar:
         self.data_buffer_size = 0
         self.blank_rects: tuple[Border, ...] = ()
         self.tab_extents: Sequence[TabExtent] = ()
+        self.action_extents: Sequence[ActionExtent] = ()
         self.laid_out_once = False
         self.apply_options()
 
@@ -735,6 +742,7 @@ class TabBar:
     def update(self, data: Sequence[TabBarData]) -> None:
         if not self.laid_out_once:
             return
+        ensure_battery_timer()
         s = self.screen
         last_tab = data[-1] if data else None
         ed = ExtraData()
@@ -799,7 +807,30 @@ class TabBar:
         self.tab_extents = cr
         s.erase_in_line(0, False)  # Ensure no long titles bleed after the last tab
         self.align()
+        self.draw_right_status_segments()
         update_tab_bar_edge_colors(self.os_window_id)
+
+    def draw_right_status_segments(self) -> None:
+        self.action_extents = ()
+        batt = battery_segment()
+        if batt is None:
+            return
+        text, action, fg = batt
+        width = len(text)
+        if width <= 0 or self.screen.columns <= width:
+            return
+        s = self.screen
+        bg = as_rgb(color_as_int(self.draw_data.default_bg))
+        start = s.columns - width
+        s.cursor.x = start
+        s.cursor.bold = True
+        s.cursor.italic = False
+        s.cursor.fg, s.cursor.bg = fg, bg
+        draw_attributed_string(text, s)
+        end = s.cursor.x
+        s.cursor.bold = s.cursor.italic = False
+        s.cursor.fg = s.cursor.bg = 0
+        self.action_extents = (ActionExtent(action, CellRange(start, end)),)
 
     def align_with_factor(self, factor: int = 1) -> None:
         if not self.tab_extents:
@@ -822,3 +853,11 @@ class TabBar:
                 if te.cell_range.start <= x <= te.cell_range.end:
                     return te.tab_id
         return 0
+
+    def action_at(self, x: int) -> str | None:
+        if self.laid_out_once:
+            x = (x - self.window_geometry.left) // self.cell_width
+            for ae in self.action_extents:
+                if ae.cell_range.start <= x < ae.cell_range.end:
+                    return ae.action
+        return None
