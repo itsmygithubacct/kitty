@@ -2,6 +2,7 @@
 # License: GPL v3 Copyright: 2024, kitty contributors
 
 import os
+import time
 from functools import lru_cache
 from typing import Any, NamedTuple
 
@@ -90,6 +91,182 @@ class WindowTitleData(NamedTuple):
     is_overlay: bool = False     # kilix fork: an app overlay (browse/run/screensaver)
 
 
+class BatteryInfo(NamedTuple):
+    percent: int
+    status: str
+
+
+_BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
+_BATTERY_SHOW_PERCENT = False
+_BATTERY_CACHE: BatteryInfo | None = None
+_BATTERY_CACHE_UNTIL = 0.0
+_BATTERY_LAST_SIGNATURE: tuple[int, str] | None = None
+_BATTERY_TIMER_STARTED = False
+_BATTERY_CACHE_SECONDS = 10.0
+_BATTERY_REFRESH_SECONDS = 30.0
+_BATTERY_LOW = (color_as_int(to_color('#ef2929')) << 8) | 2
+_BATTERY_MID = (color_as_int(to_color('#fce94f')) << 8) | 2
+_BATTERY_HIGH = (color_as_int(to_color('#8ae234')) << 8) | 2
+
+
+def _truthy_env(name: str, default: str = '1') -> bool:
+    return os.environ.get(name, default).lower() not in ('0', 'no', 'false', 'off', 'disabled')
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def _read_number(path: str) -> float | None:
+    try:
+        return float(_read_text(path))
+    except ValueError:
+        return None
+
+
+def _battery_supply_root() -> str:
+    return os.environ.get('KILIX_BATTERY_SUPPLY_DIR') or '/sys/class/power_supply'
+
+
+def _iter_battery_dirs() -> list[str]:
+    root = _battery_supply_root()
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    ans = []
+    for name in names:
+        path = os.path.join(root, name)
+        if not os.path.isdir(path):
+            continue
+        typ = _read_text(os.path.join(path, 'type')).lower()
+        if typ == 'battery' or (not typ and name.startswith(('BAT', 'CMB'))):
+            ans.append(path)
+    return ans
+
+
+def _read_charge_pair(path: str) -> tuple[float, float] | None:
+    for cur_name, full_name in (
+        ('energy_now', 'energy_full'),
+        ('charge_now', 'charge_full'),
+        ('energy_now', 'energy_full_design'),
+        ('charge_now', 'charge_full_design'),
+    ):
+        cur = _read_number(os.path.join(path, cur_name))
+        full = _read_number(os.path.join(path, full_name))
+        if cur is not None and full and full > 0:
+            return cur, full
+    return None
+
+
+def _read_battery_info_uncached() -> BatteryInfo | None:
+    if not _truthy_env('KILIX_CHROME_BATTERY'):
+        return None
+    total_now = total_full = 0.0
+    capacities: list[float] = []
+    statuses: list[str] = []
+    for path in _iter_battery_dirs():
+        status = _read_text(os.path.join(path, 'status'))
+        statuses.append(status)
+        pair = _read_charge_pair(path)
+        if pair is not None:
+            cur, full = pair
+            total_now += cur
+            total_full += full
+        elif (cap := _read_number(os.path.join(path, 'capacity'))) is not None:
+            capacities.append(cap)
+    if not any(s.lower() == 'discharging' for s in statuses):
+        return None
+    if total_full > 0:
+        pct = round(total_now * 100 / total_full)
+    elif capacities:
+        pct = round(sum(capacities) / len(capacities))
+    else:
+        return None
+    return BatteryInfo(max(0, min(100, int(pct))), 'discharging')
+
+
+def battery_info() -> BatteryInfo | None:
+    global _BATTERY_CACHE, _BATTERY_CACHE_UNTIL
+    now = time.monotonic()
+    if now >= _BATTERY_CACHE_UNTIL:
+        _BATTERY_CACHE = _read_battery_info_uncached()
+        _BATTERY_CACHE_UNTIL = now + _BATTERY_CACHE_SECONDS
+    return _BATTERY_CACHE
+
+
+def _battery_signature(info: BatteryInfo | None) -> tuple[int, str] | None:
+    return None if info is None else (info.percent, info.status)
+
+
+def _battery_color(percent: int) -> int:
+    if percent <= 20:
+        return _BATTERY_LOW
+    if percent <= 50:
+        return _BATTERY_MID
+    return _BATTERY_HIGH
+
+
+def _battery_glyph(percent: int) -> str:
+    if percent < 10:
+        return chr(0xf0083)  # battery alert
+    if percent >= 95:
+        return chr(0xf0079)  # battery full
+    return chr(0xf007a + max(0, min(8, percent // 10 - 1)))
+
+
+def _battery_segment() -> tuple[str, str, int] | None:
+    global _BATTERY_LAST_SIGNATURE
+    info = battery_info()
+    _BATTERY_LAST_SIGNATURE = _battery_signature(info)
+    if info is None:
+        return None
+    if _BATTERY_SHOW_PERCENT:
+        text = f' {info.percent:3d}% '
+    else:
+        text = f' {_battery_glyph(info.percent)} '
+    return text, _BATTERY_TOGGLE_ACTION, _battery_color(info.percent)
+
+
+def _invalidate_all_title_bars() -> None:
+    from .fast_data_types import get_boss, mark_os_window_dirty
+    for tm in get_boss().all_tab_managers:
+        for tab in tm:
+            tab.update_window_title_bars()
+        mark_os_window_dirty(tm.os_window_id)
+
+
+def toggle_battery_percent() -> None:
+    global _BATTERY_SHOW_PERCENT
+    _BATTERY_SHOW_PERCENT = not _BATTERY_SHOW_PERCENT
+    _invalidate_all_title_bars()
+
+
+def _battery_timer(timer_id: int | None = None) -> None:
+    global _BATTERY_CACHE_UNTIL, _BATTERY_LAST_SIGNATURE
+    _BATTERY_CACHE_UNTIL = 0.0
+    sig = _battery_signature(battery_info())
+    if sig != _BATTERY_LAST_SIGNATURE:
+        _BATTERY_LAST_SIGNATURE = sig
+        _invalidate_all_title_bars()
+
+
+def _ensure_battery_timer() -> None:
+    global _BATTERY_TIMER_STARTED
+    if _BATTERY_TIMER_STARTED or not _truthy_env('KILIX_CHROME_BATTERY'):
+        return
+    _BATTERY_TIMER_STARTED = True
+    try:
+        from .fast_data_types import add_timer
+        add_timer(_battery_timer, _BATTERY_REFRESH_SECONDS, True)
+    except Exception as e:
+        log_error(f'Failed to start kilix battery chrome timer: {e}')
+
+
 @run_once
 def load_custom_window_title_bar_module() -> dict[str, Any]:
     import runpy
@@ -136,6 +313,7 @@ class WindowTitleBarScreen:
         self.geometry = geometry
 
     def render(self, data: WindowTitleData, progress_percent: str) -> str:
+        _ensure_battery_timer()
         opts = get_options()
         s = self.screen
         s.cursor.x = 0
@@ -204,7 +382,7 @@ class WindowTitleBarScreen:
             # Split/maximize don't apply to an app window — just a close ✕ that
             # dismisses the app and returns to the shell underneath.
             segments = (
-                (f' {chr(0xf0156)} ', 'close_window'),                        # close the app
+                (f' {chr(0xf0156)} ', 'close_window', None),                   # close the app
             )
         else:
             # kilix fork: a regular pane. The maximize glyph reflects state as a
@@ -215,26 +393,30 @@ class WindowTitleBarScreen:
             # left/up split, so those vsplit/hsplit and then move_window to swap the
             # new pane onto the near side; down/right split in place.
             segments = (
-                (f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left'),  # split left: bold ← (new pane to the left)
-                (f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top'),   # split up: bold ↑ (new pane above)
-                (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current'),  # split down: bold ↓ (new pane below)
-                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current'),  # split right: bold → (new pane to the right)
-                (f' {max_glyph} ', 'toggle_layout stack'),                        # maximize / zoom pane (glyph = state)
-                (f' {chr(0xf0156)} ', 'close_window'),                            # close pane
+                (f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left', None),  # split left: bold ← (new pane to the left)
+                (f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top', None),   # split up: bold ↑ (new pane above)
+                (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
+                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current', None),  # split right: bold → (new pane to the right)
+                (f' {max_glyph} ', 'toggle_layout stack', None),                        # maximize / zoom pane (glyph = state)
+                (f' {chr(0xf0156)} ', 'close_window', None),                            # close pane
             )
-        total = sum(len(text) for text, _ in segments)
+        batt = _battery_segment()
+        if batt is not None:
+            segments = (*segments, batt)
+        total = sum(len(text) for text, _, _ in segments)
         if s.columns > total:
             s.cursor.x = s.columns - total
             s.cursor.bold = True                                 # make the buttons stand out
-            for text, action in segments:
+            for text, action, segment_fg in segments:
                 start = s.cursor.x
+                seg_fg = segment_fg or fg
                 # kilix fork: reverse-video the button currently under the cursor (hover)
                 if action and start <= self.hovered_col < start + len(text):
-                    s.cursor.fg, s.cursor.bg = bg, fg
+                    s.cursor.fg, s.cursor.bg = bg, seg_fg
                     draw_attributed_string(text, s)
-                    s.cursor.fg, s.cursor.bg = fg, bg
+                    s.cursor.fg, s.cursor.bg = seg_fg, bg
                 else:
-                    s.cursor.fg, s.cursor.bg = fg, bg
+                    s.cursor.fg, s.cursor.bg = seg_fg, bg
                     draw_attributed_string(text, s)
                 if action:
                     for col in range(start, s.cursor.x):

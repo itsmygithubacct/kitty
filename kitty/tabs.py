@@ -1910,7 +1910,11 @@ class TabManager:  # {{{
             # unconditionally (without clearing the event buffer) means the second
             # click of a double-click reports click_count()==2 and cannot re-fire.
             if self.recent_title_bar_mouse_events.click_count() == 1:
-                boss.combine(act, window_for_dispatch=w)
+                if act == 'kilix_toggle_battery_percent':
+                    from .window_title_bar import toggle_battery_percent
+                    toggle_battery_percent()
+                else:
+                    boss.combine(act, window_for_dispatch=w)
             return
         # kilix fork: single left-click on the (non-button) title opens the pane action menu,
         # targeting the clicked pane (already focused on PRESS above). Maximize now lives on
