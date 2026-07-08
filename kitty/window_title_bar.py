@@ -389,10 +389,14 @@ class WindowTitleBarScreen:
             # visual cue — a small square when tiled, the larger fullscreen glyph
             # when the pane is maximized (stack layout).
             max_glyph = chr(0xf0293) if data.is_maximized else chr(0xeab9)     # fullscreen ⇄ small square
-            # kilix fork: arrows read left → up → down → right. kitty has no native
+            # kilix fork: plus/minus change only this OS window's font size
+            # (kitty's supported local scope), then arrows read left → up →
+            # down → right. kitty has no native
             # left/up split, so those vsplit/hsplit and then move_window to swap the
             # new pane onto the near side; down/right split in place.
             segments = (
+                (' + ', 'change_font_size current +2.0', None),                      # increase font size for this kilix window
+                (' - ', 'change_font_size current -2.0', None),                      # decrease font size for this kilix window
                 (f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left', None),  # split left: bold ← (new pane to the left)
                 (f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top', None),   # split up: bold ↑ (new pane above)
                 (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
