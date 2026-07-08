@@ -124,6 +124,7 @@ class WindowTitleBarScreen:
     def __init__(self, os_window_id: int, cell_width: int, cell_height: int):
         self.os_window_id = os_window_id
         self.cell_width = cell_width
+        self.cell_height = cell_height
         self.screen = Screen(None, 1, 10, 0, cell_width, cell_height)
         self.screen.reset_mode(DECAWM)
         # kilix fork: maps title-bar cell columns -> kitty action string, for clickable chrome buttons
