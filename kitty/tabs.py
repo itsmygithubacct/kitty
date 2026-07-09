@@ -20,7 +20,6 @@ from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .constants import appname
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
-    GLFW_MOUSE_BUTTON_MIDDLE,
     GLFW_PRESS,
     GLFW_RELEASE,
     add_tab,
@@ -1856,12 +1855,6 @@ class TabManager:  # {{{
                         self.recent_tab_bar_mouse_events.clear()
             set_tab_being_dragged()
             return
-        if button == GLFW_MOUSE_BUTTON_MIDDLE:
-            if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_MIDDLE) == 1:
-                get_boss().close_tab(tab)
-                self.recent_tab_bar_mouse_events.clear()
-            return
-
     def _update_title_bar_hover(self, window_id: int, x: 'float | None') -> None:
         # kilix fork: track which title-bar button (if any) the cursor is over and
         # re-render that pane's title bar so the hovered button highlights.
