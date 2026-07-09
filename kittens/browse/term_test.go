@@ -2,6 +2,7 @@ package browse
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -124,6 +125,42 @@ func TestKeyTextGuards(t *testing.T) {
 	tr = &Term{}
 	if text := tr.Feed([]byte("\x1b[233;129u"))[0].Key.Text; text != "é" {
 		t.Fatalf("numlock e-acute text = %q, want é", text)
+	}
+}
+
+func TestToolbarChrome(t *testing.T) {
+	cases := []struct {
+		col  int
+		want string
+	}{
+		{0, ""},
+		{1, "back"},
+		{3, "back"},
+		{5, "forward"},
+		{7, "forward"},
+		{9, "reload"},
+		{11, "reload"},
+		{13, "url"},
+	}
+	for _, c := range cases {
+		if got := toolbarAction(c.col); got != c.want {
+			t.Fatalf("toolbarAction(%d) = %q, want %q", c.col, got, c.want)
+		}
+	}
+
+	b := &Browse{
+		term:      &Term{Rows: 24, Cols: 80},
+		title:     "Example",
+		url:       "https://example.com",
+		statusMsg: "ready",
+	}
+	if got := b.renderStatus(); !strings.Contains(got, "[<] [>] [R] Example") {
+		t.Fatalf("status missing toolbar: %q", got)
+	}
+	edit := ""
+	b.urlEdit = &edit
+	if got := b.renderStatus(); !strings.Contains(got, "[<] [>] [R] URL: ") {
+		t.Fatalf("url edit status missing toolbar: %q", got)
 	}
 }
 

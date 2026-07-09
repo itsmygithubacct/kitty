@@ -41,19 +41,35 @@ var injectJS = `(function(){var s=document.createElement('style');` +
 	`s.textContent=` + mustJSON(transparentCSS) + `;` +
 	`(document.head||document.documentElement).appendChild(s);})()`
 
+const editableFocusJS = `(() => {
+  const e = document.activeElement;
+  if (!e) return false;
+  if (e.isContentEditable) return true;
+  const tag = (e.tagName || "").toLowerCase();
+  if (tag === "textarea") return !e.readOnly && !e.disabled;
+  if (tag !== "input") return e.getAttribute && e.getAttribute("role") === "textbox";
+  const type = (e.getAttribute("type") || "text").toLowerCase();
+  return !["button", "checkbox", "color", "file", "hidden", "image",
+           "radio", "range", "reset", "submit"].includes(type)
+         && !e.readOnly && !e.disabled;
+})()`
+
+const toolbarPrefix = " [<] [>] [R] "
+const toolbarURLStart = len(toolbarPrefix)
+
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
 
 type attr struct {
-	fg               [3]uint8
-	bold, ital, und  bool
+	fg              [3]uint8
+	bold, ital, und bool
 }
 
 type cell struct {
-	r    rune // 0 = empty, -1 = wide continuation
-	a    attr
+	r rune // 0 = empty, -1 = wide continuation
+	a attr
 }
 
 type run struct {
@@ -76,14 +92,14 @@ type Browse struct {
 
 	runs             []run
 	scrollX, scrollY float64
-	halfRes          bool      // sustained animation: screencast at half size
+	halfRes          bool // sustained animation: screencast at half size
 	frameTimes       []time.Time
-	cursor           bool      // draw a software pointer (headless Chrome has none)
-	curX, curY       int       // pointer position, page pixels
+	cursor           bool // draw a software pointer (headless Chrome has none)
+	curX, curY       int  // pointer position, page pixels
 	lastRGBA         *image.RGBA
 	imgW, imgH       int
 	lastCurPaint     time.Time
-	savedPatch       []uint8   // pixels under the stamped cursor
+	savedPatch       []uint8 // pixels under the stamped cursor
 	savedRect        image.Rectangle
 	snapDirty        bool
 	glyphDirty       bool
@@ -630,13 +646,13 @@ func gridsEqual(a, b [][]cell) bool {
 func (b *Browse) renderStatus() string {
 	var body string
 	if b.urlEdit != nil {
-		body = " URL: " + *b.urlEdit + "▏"
+		body = toolbarPrefix + "URL: " + *b.urlEdit + "▏"
 	} else {
 		title := b.title
 		if tr := []rune(title); len(tr) > 40 {
 			title = string(tr[:40])
 		}
-		body = fmt.Sprintf(" %s — %s  [%s]", title, b.url, b.statusMsg)
+		body = fmt.Sprintf("%s%s — %s  [%s]", toolbarPrefix, title, b.url, b.statusMsg)
 	}
 	r := []rune(body)
 	if len(r) > b.term.Cols {

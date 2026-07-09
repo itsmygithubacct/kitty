@@ -26,7 +26,7 @@ func EntryPoint(root *cli.Command) {
 		HelpText: "Render Chrome inside the kitty/kilix pane: page pixels stream at full " +
 			"resolution via the graphics protocol while page text is drawn as real, " +
 			"selectable terminal glyphs. Requires google-chrome or chromium on PATH. " +
-			"Keys: Ctrl+L url bar, Alt+Left/Right history, Ctrl+R reload, Ctrl+C copy " +
+			"Keys: Ctrl+L url bar, Alt+Left/Right or Backspace history, Ctrl+R reload, Ctrl+C copy " +
 			"selection, Ctrl+Q quit. Shift+drag selects glyph text natively.",
 		Run: func(cmd *cli.Command, args []string) (int, error) {
 			opts := browseOptions{}

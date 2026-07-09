@@ -24,6 +24,7 @@ func (b *Browse) onKey(ev *KeyEvent) {
 		mods = 0
 	}
 	ctrl, alt := mods&4 != 0, mods&2 != 0
+	plain := !ctrl && !alt && mods&1 == 0
 	if b.urlEdit != nil {
 		b.urlEditKey(ev)
 		return
@@ -37,8 +38,7 @@ func (b *Browse) onKey(ev *KeyEvent) {
 	case ctrl && ev.Key == "q":
 		panic(quitSignal{})
 	case ctrl && ev.Key == "r":
-		b.cdp.Send("Page.reload", nil, b.sess)
-		b.statusMsg = "reloading…"
+		b.reload()
 		return
 	case alt && (ev.Key == "ArrowLeft" || ev.Key == "ArrowRight"):
 		step := 1
@@ -46,6 +46,9 @@ func (b *Browse) onKey(ev *KeyEvent) {
 			step = -1
 		}
 		b.history(step)
+		return
+	case plain && ev.Key == "Backspace" && !b.activeElementAcceptsText():
+		b.history(-1)
 		return
 	case ctrl && ev.Key == "c":
 		b.copySelection() // and fall through: forward to the page
@@ -134,7 +137,10 @@ func (b *Browse) onMouse(ev *MouseEvent) {
 	}
 	b.curX, b.curY = x, y
 	defer b.repaintCursor() // pointer follows on every path, incl. status row
-	if y >= b.pageH { // status row
+	if y >= b.pageH {       // toolbar/status row
+		if ev.Press && ev.B&3 == 0 {
+			b.toolbarClick(x)
+		}
 		return
 	}
 	mods := 0
@@ -208,6 +214,12 @@ func abs(v int) int {
 
 // ── commands ────────────────────────────────────────────────────────────
 
+func (b *Browse) reload() {
+	b.cdp.Send("Page.reload", nil, b.sess)
+	b.statusMsg = "reloading…"
+	b.glyphDirty = true
+}
+
 func (b *Browse) history(step int) {
 	var h struct {
 		CurrentIndex int `json:"currentIndex"`
@@ -222,6 +234,41 @@ func (b *Browse) history(step int) {
 	if idx >= 0 && idx < len(h.Entries) {
 		b.cdp.Send("Page.navigateToHistoryEntry", map[string]any{"entryId": h.Entries[idx].ID}, b.sess)
 		b.statusMsg = "navigating…"
+		b.glyphDirty = true
+	}
+}
+
+func toolbarAction(col int) string {
+	switch {
+	case col >= 1 && col < 4:
+		return "back"
+	case col >= 5 && col < 8:
+		return "forward"
+	case col >= 9 && col < 12:
+		return "reload"
+	case col >= toolbarURLStart:
+		return "url"
+	default:
+		return ""
+	}
+}
+
+func (b *Browse) toolbarClick(x int) {
+	cw := b.term.CellW()
+	if cw < 1 {
+		cw = 1
+	}
+	switch toolbarAction(int(float64(x) / cw)) {
+	case "back":
+		b.history(-1)
+	case "forward":
+		b.history(1)
+	case "reload":
+		b.reload()
+	case "url":
+		s := ""
+		b.urlEdit = &s
+		b.glyphDirty = true
 	}
 }
 
@@ -238,6 +285,28 @@ func (b *Browse) evalString(expr string) string {
 		return ""
 	}
 	return res.Result.Value
+}
+
+func (b *Browse) evalBool(expr string) (bool, bool) {
+	var res struct {
+		Result struct {
+			Value bool `json:"value"`
+		} `json:"result"`
+	}
+	err := b.cdp.Call("Runtime.evaluate", map[string]any{
+		"expression": expr, "returnByValue": true,
+	}, b.sess, time.Second, &res)
+	if err != nil {
+		return false, false
+	}
+	return res.Result.Value, true
+}
+
+func (b *Browse) activeElementAcceptsText() bool {
+	if editable, ok := b.evalBool(editableFocusJS); ok {
+		return editable
+	}
+	return true
 }
 
 func (b *Browse) copySelection() {
