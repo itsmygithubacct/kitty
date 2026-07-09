@@ -13,6 +13,8 @@
 
 GlobalState global_state = {{0}};
 
+#define KILIX_TAB_BAR_TABS_PER_ROW 30
+
 #define REMOVER(array, qid, count, destroy, capacity) { \
     for (size_t i = 0; i < count; i++) { \
         if (array[i].id == qid) { \
@@ -68,6 +70,11 @@ dpi_for_os_window(const OSWindow *os_window) {
     double dpi = (os_window->fonts_data->logical_dpi_x + os_window->fonts_data->logical_dpi_y) / 2.;
     if (dpi == 0) dpi = (global_state.default_dpi.x + global_state.default_dpi.y) / 2.;
     return dpi;
+}
+
+static unsigned
+tab_bar_rows_for_count(unsigned tab_count) {
+    return MAX(1u, (tab_count + KILIX_TAB_BAR_TABS_PER_ROW - 1u) / KILIX_TAB_BAR_TABS_PER_ROW);
 }
 
 static double
@@ -696,8 +703,10 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
     if (!OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
+        unsigned tab_bar_item_count = os_window->num_tabs + (OPT(tab_bar_show_new_tab_button) ? 1u : 0u);
         central->left = 0; central->right = os_window->viewport_width;
-        unsigned tab_bar_height = os_window->fonts_data->fcm.cell_height + margin_inner + margin_outer;
+        unsigned tab_bar_content_height = os_window->fonts_data->fcm.cell_height * tab_bar_rows_for_count(tab_bar_item_count);
+        unsigned tab_bar_height = tab_bar_content_height + margin_inner + margin_outer;
         switch(OPT(tab_bar_edge)) {
             case TOP_EDGE:
                 central->top = tab_bar_height;
@@ -713,7 +722,7 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
                 break;
         }
         tab_bar->left = central->left; tab_bar->right = central->right;
-        tab_bar->bottom = tab_bar->top + os_window->fonts_data->fcm.cell_height;
+        tab_bar->bottom = tab_bar->top + tab_bar_content_height;
     } else {
         zero_at_ptr(tab_bar);
         central->left = 0; central->top = 0; central->right = os_window->viewport_width;

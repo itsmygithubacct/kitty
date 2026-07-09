@@ -17,7 +17,7 @@ BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
 _CLOCK_TIMER_STARTED = False
 _CLOCK_LAST_TEXT = ''
 _CLOCK_REFRESH_SECONDS = 15.0
-_BATTERY_SHOW_PERCENT = False
+_BATTERY_SHOW_PERCENT = True
 _BATTERY_CACHE: BatteryInfo | None = None
 _BATTERY_CACHE_UNTIL = 0.0
 _BATTERY_LAST_SIGNATURE: tuple[int, str] | None = None
@@ -156,10 +156,11 @@ def battery_segment() -> tuple[str, str, int] | None:
     _BATTERY_LAST_SIGNATURE = _battery_signature(info)
     if info is None:
         return None
+    glyph = _battery_glyph(info.percent)
     if _BATTERY_SHOW_PERCENT:
-        text = f' {info.percent:3d}% '
+        text = f' {info.percent:3d}% {glyph} '
     else:
-        text = f' {_battery_glyph(info.percent)} '
+        text = f' {glyph} '
     return text, BATTERY_TOGGLE_ACTION, _battery_color(info.percent)
 
 

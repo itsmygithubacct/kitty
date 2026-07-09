@@ -1172,6 +1172,7 @@ class TabBeingDropped(NamedTuple):
     data: TabBarData
     tab_ids: Sequence[int] = ()
     last_drop_move_x: int = -1
+    last_drop_move_y: int = -1
 
 
 class WindowBeingDropped(NamedTuple):
@@ -1703,16 +1704,17 @@ class TabManager:  # {{{
             tab_data = tab.data_for_tab_bar(tab is get_boss().active_tab)
             if tab_id not in all_tabs:
                 all_tabs.append(tab_id)
-            _, _, start_x, _ = get_tab_being_dragged()
-            self.tab_being_dropped = TabBeingDropped(data=tab_data, tab_ids=all_tabs, last_drop_move_x=int(start_x))
+            _, _, start_x, start_y = get_tab_being_dragged()
+            self.tab_being_dropped = TabBeingDropped(
+                data=tab_data, tab_ids=all_tabs, last_drop_move_x=int(start_x), last_drop_move_y=int(start_y))
             mouse_moved_left = False
             force_update = True
-        if x == self.tab_being_dropped.last_drop_move_x and not force_update:
+        if x == self.tab_being_dropped.last_drop_move_x and y == self.tab_being_dropped.last_drop_move_y and not force_update:
             return
-        mouse_moved_left = x < self.tab_being_dropped.last_drop_move_x
+        mouse_moved_left = (y, x) < (self.tab_being_dropped.last_drop_move_y, self.tab_being_dropped.last_drop_move_x)
         old_tab_ids = self.tab_being_dropped.tab_ids
         idx_under_mouse = -1
-        if (tab_id_under_mouse := self.tab_bar.tab_id_at(x)):
+        if (tab_id_under_mouse := self.tab_bar.tab_id_at(x, y)):
             with suppress(Exception):
                 idx_under_mouse = old_tab_ids.index(tab_id_under_mouse)
         if idx_under_mouse < 0:
@@ -1723,7 +1725,7 @@ class TabManager:  # {{{
         if mouse_moved_left == idx_moved_left:
             new_tab_ids = list(old_tab_ids)
             new_tab_ids[idx_under_mouse], new_tab_ids[old_idx_under_mouse] = new_tab_ids[old_idx_under_mouse], new_tab_ids[idx_under_mouse]
-        self.tab_being_dropped = self.tab_being_dropped._replace(last_drop_move_x=x, tab_ids=new_tab_ids)
+        self.tab_being_dropped = self.tab_being_dropped._replace(last_drop_move_x=x, last_drop_move_y=y, tab_ids=new_tab_ids)
         if force_update or self.tab_being_dropped.tab_ids != old_tab_ids:
             self.layout_tab_bar()
 
@@ -1803,7 +1805,7 @@ class TabManager:  # {{{
                     self.recent_tab_bar_mouse_events.clear()
             return
 
-        tab_action = self.tab_bar.action_at(int(x))
+        tab_action = self.tab_bar.action_at(int(x), int(y))
         if tab_action is not None:
             self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, -2)
             drag_started = get_tab_being_dragged()[1]
@@ -1817,7 +1819,7 @@ class TabManager:  # {{{
                 self.recent_tab_bar_mouse_events.clear()
             return
 
-        tab_id_at_x = self.tab_bar.tab_id_at(int(x))
+        tab_id_at_x = self.tab_bar.tab_id_at(int(x), int(y))
         self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, tab_id_at_x)
         drag_started = get_tab_being_dragged()[1]
         is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
@@ -2034,7 +2036,7 @@ class TabManager:  # {{{
         tab_bar = viewport_for_window(self.os_window_id)[1]
         if tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom:
             self._set_drag_target_window(0)
-            self._set_drag_target_tab(self.tab_bar.tab_id_at(x))
+            self._set_drag_target_tab(self.tab_bar.tab_id_at(x, y))
             return
         self._set_drag_target_tab(0)
         dest_window = self._find_window_at(x, y)
@@ -2098,7 +2100,7 @@ class TabManager:  # {{{
         # Case 1: Drop on tab bar → move to that tab
         in_tab_bar = tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom
         if in_tab_bar:
-            if (tab_id := self.tab_bar.tab_id_at(x)) and (dest_tab := self.tab_for_id(tab_id)):
+            if (tab_id := self.tab_bar.tab_id_at(x, y)) and (dest_tab := self.tab_for_id(tab_id)):
                 boss._move_window_to(w, target_tab_id=dest_tab.id)
             else:
                 boss._move_window_to(w, target_tab_id='new')

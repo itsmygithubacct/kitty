@@ -131,6 +131,7 @@ typedef struct Options {
     char_type *url_excluded_characters;
     bool detect_urls;
     bool tab_bar_hidden;
+    bool tab_bar_show_new_tab_button;
     double font_size;
     struct {
         double outer, inner;
