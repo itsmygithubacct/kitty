@@ -182,6 +182,10 @@ Detailed list of changes
 0.48.0 [future]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+- Kilix integration: Make temporary graphics frame paths one-shot and allow
+  safe cleanup inside Kilix 95 private session directories, preventing mmap
+  truncation races and stale framebuffer files during animated desktops
+
 - Implement vertical tabs by setting :opt:`tab_bar_edge` to ``left`` or ``right`` (:pull:`9855`)
 
 - Graphics protocol: Add a new :ref:`transient usage hint <image_usage_hints>` that clients can send to terminals to indicate an image is meant for only short duration use (:pull:`10092`)

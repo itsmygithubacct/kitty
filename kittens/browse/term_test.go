@@ -1,10 +1,89 @@
 package browse
 
 import (
+	"image"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestPresentUsesUniqueTransientFrameFiles(t *testing.T) {
+	frameDir := t.TempDir()
+	out, err := os.CreateTemp(t.TempDir(), "browse-output-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	b := &Browse{
+		term: &Term{out: out, Cols: 4}, wid: "42", frameDir: frameDir,
+		lastRGBA: image.NewRGBA(image.Rect(0, 0, 2, 2)),
+		imgW:     2, imgH: 2, viewRows: 3,
+	}
+	for range 10 {
+		b.present()
+	}
+	if _, err := out.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(wire), "N=1"); got != 10 {
+		t.Fatalf("transient commands = %d, want 10", got)
+	}
+	entries, err := os.ReadDir(frameDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 10 {
+		t.Fatalf("frame files = %d, want 10", len(entries))
+	}
+	for i := 1; i <= 10; i++ {
+		path := filepath.Join(frameDir,
+			"tty-graphics-protocol-kilix-42-full-"+strconv.Itoa(i)+".rgba")
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 16 || info.Mode().Perm() != 0o600 {
+			t.Fatalf("bad frame %s: size=%d mode=%#o", path,
+				info.Size(), info.Mode().Perm())
+		}
+	}
+}
+
+func TestPresentNeverTruncatesPublishedFrame(t *testing.T) {
+	frameDir := t.TempDir()
+	path := filepath.Join(frameDir,
+		"tty-graphics-protocol-kilix-42-full-1.rgba")
+	if err := os.WriteFile(path, []byte("mapped-frame"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.CreateTemp(t.TempDir(), "browse-output-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	b := &Browse{
+		term: &Term{out: out, Cols: 4}, wid: "42", frameDir: frameDir,
+		lastRGBA: image.NewRGBA(image.Rect(0, 0, 2, 2)),
+		imgW:     2, imgH: 2, viewRows: 3,
+	}
+	b.present()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "mapped-frame" {
+		t.Fatalf("published frame was changed: %q", data)
+	}
+	if info, err := out.Stat(); err != nil || info.Size() != 0 {
+		t.Fatalf("failed frame was announced: info=%v err=%v", info, err)
+	}
+}
 
 func TestParseWheelAndClick(t *testing.T) {
 	tr := &Term{Cols: 100, Rows: 50}

@@ -609,6 +609,18 @@ class TestDataTypes(BaseTest):
         for path in ('/opt/xy/d.png', '/tmp/../opt/x.jpg',
                      '/tmp-not-a-temp-dir/x.jpg', tempfile.gettempdir() + '-other/x.jpg'):
             self.assertFalse(is_path_in_temp_dir(os.path.join(path)))
+        old_kilix95_session = os.environ.get('KILIX95_SESSION_HOME')
+        os.environ['KILIX95_SESSION_HOME'] = '/opt/kilix95-private-session'
+        try:
+            self.assertTrue(is_path_in_temp_dir(
+                '/opt/kilix95-private-session/frames/frame.rgb'))
+            self.assertFalse(is_path_in_temp_dir(
+                '/opt/kilix95-private-session-sibling/frame.rgb'))
+        finally:
+            if old_kilix95_session is None:
+                os.environ.pop('KILIX95_SESSION_HOME', None)
+            else:
+                os.environ['KILIX95_SESSION_HOME'] = old_kilix95_session
         for path in ('/proc/self/cmdline', os.devnull):
             if os.path.exists(path):
                 with open(path) as pf:

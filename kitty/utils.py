@@ -618,7 +618,8 @@ def is_path_in_temp_dir(path: str) -> bool:
     path = abspath(path)
     candidates = frozenset(map(abspath, (
         '/tmp', '/dev/shm', os.environ.get('TMPDIR', None),
-        os.environ.get('KILIX_SESSION_HOME', None), tempfile.gettempdir())))
+        os.environ.get('KILIX_SESSION_HOME', None),
+        os.environ.get('KILIX95_SESSION_HOME', None), tempfile.gettempdir())))
     for q in candidates:
         if q:
             try:

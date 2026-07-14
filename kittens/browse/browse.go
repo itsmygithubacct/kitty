@@ -394,16 +394,24 @@ func (b *Browse) blit(b64jpeg string, meta map[string]float64) {
 }
 
 func (b *Browse) present() {
-	b.seq = (b.seq + 1) % 8
+	b.seq++
 	path := filepath.Join(b.frameDir,
-		fmt.Sprintf("tty-graphics-protocol-kilix-%s-%d.rgba", b.wid, b.seq))
-	if os.WriteFile(path, b.lastRGBA.Pix, 0o600) != nil {
+		fmt.Sprintf("tty-graphics-protocol-kilix-%s-full-%d.rgba", b.wid, b.seq))
+	f, err := os.OpenFile(path,
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return
+	}
+	_, writeErr := f.Write(b.lastRGBA.Pix)
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(path)
 		return
 	}
 	payload := base64.StdEncoding.EncodeToString([]byte(path))
 	// c/r pin the placement to the full pane rect so kitty GPU-scales
 	// half-res frames back up; at full resolution it is a 1:1 no-op.
-	b.term.Write(fmt.Sprintf("\x1b[H\x1b_Ga=T,i=1,p=1,z=-1,t=t,f=32,s=%d,v=%d,c=%d,r=%d,q=2,C=1;%s\x1b\\",
+	b.term.Write(fmt.Sprintf("\x1b[H\x1b_Ga=T,i=1,p=1,z=-1,t=t,f=32,N=1,s=%d,v=%d,c=%d,r=%d,q=2,C=1;%s\x1b\\",
 		b.imgW, b.imgH, b.term.Cols, b.viewRows, payload))
 }
 
