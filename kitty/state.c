@@ -713,7 +713,7 @@ vertical_tab_bar_cols(const OSWindow *os_window, long margin_outer, long margin_
 
 void
 os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
-    if (!OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
+    if (!is_os_window_fullscreen(os_window) && !OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
         unsigned tab_bar_item_count = os_window->num_tabs + (OPT(tab_bar_show_new_tab_button) ? 1u : 0u);
@@ -1148,9 +1148,19 @@ PYWRAP1(is_tab_bar_visible) {
     PA("K", &os_window_id);
     if (!OPT(tab_bar_hidden)) {
         WITH_OS_WINDOW(os_window_id)
-            return (os_window->num_tabs == 0 || os_window->has_too_few_tabs) ? Py_NewRef(Py_False) : Py_NewRef(Py_True);
+            return (is_os_window_fullscreen(os_window) || os_window->num_tabs == 0 || os_window->has_too_few_tabs) ?
+                Py_NewRef(Py_False) : Py_NewRef(Py_True);
         END_WITH_OS_WINDOW
     }
+    Py_RETURN_FALSE;
+}
+
+PYWRAP1(is_os_window_fullscreen) {
+    id_type os_window_id;
+    PA("K", &os_window_id);
+    WITH_OS_WINDOW(os_window_id)
+        return PyBool_FromLong(is_os_window_fullscreen(os_window));
+    END_WITH_OS_WINDOW
     Py_RETURN_FALSE;
 }
 
@@ -1836,6 +1846,7 @@ static PyMethodDef module_methods[] = {
     MW(focus_os_window, METH_VARARGS),
     MW(mark_tab_bar_dirty, METH_VARARGS),
     MW(is_tab_bar_visible, METH_VARARGS),
+    MW(is_os_window_fullscreen, METH_VARARGS),
     MW(run_with_activation_token, METH_O),
     MW(change_background_opacity, METH_VARARGS),
     MW(background_opacity_of, METH_O),

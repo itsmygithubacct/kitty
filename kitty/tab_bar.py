@@ -813,10 +813,20 @@ class TabBar:
 
     def layout(self) -> None:
         central, tab_bar, vw, vh, cell_width, cell_height = viewport_for_window(self.os_window_id)
-        if self.is_vertical:
-            if tab_bar.width < cell_width or tab_bar.height < cell_height:
-                return
-        elif tab_bar.width < 2:
+        too_small = (
+            tab_bar.width < cell_width or tab_bar.height < cell_height
+            if self.is_vertical else tab_bar.width < 2
+        )
+        if too_small:
+            # Fullscreen and explicitly hidden tab bars must not retain their
+            # previous render/hit-test geometry while the content uses the
+            # complete viewport. A later normal layout restores everything.
+            self.laid_out_once = False
+            self._last_viewport = None
+            self.blank_rects = ()
+            self.tab_extents = ()
+            self.action_extents = ()
+            set_tab_bar_render_data(self.os_window_id, self.screen, 0, 0, 0, 0)
             return
         self.cell_width = cell_width
         self.cell_height = cell_height

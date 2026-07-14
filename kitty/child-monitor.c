@@ -751,6 +751,7 @@ change_menubar_title(PyObject *title UNUSED) {
 static bool
 prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *active_window_id, color_type *active_window_bg, unsigned int *num_visible_windows, bool *all_windows_have_same_bg, bool scan_for_animated_images) {
 #define TD os_window->tab_bar_render_data
+    const bool content_only_fullscreen = is_os_window_fullscreen(os_window);
     bool needs_render = os_window->needs_render;
     os_window->needs_render = false;
     bool was_previously_rendered_with_layers = os_window->needs_layers;
@@ -758,7 +759,7 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
         !global_state.supports_framebuffer_srgb || effective_os_window_alpha(os_window) < 1.f ||
         os_window->live_resize.in_progress || (background_image_for_os_window(os_window) != NULL)
     );
-    if (TD.screen && os_window->num_tabs && !os_window->has_too_few_tabs) {
+    if (!content_only_fullscreen && TD.screen && os_window->num_tabs && !os_window->has_too_few_tabs) {
         if (!os_window->tab_bar_data_updated) {
             call_boss(update_tab_bar_data, "K", os_window->id);
             os_window->tab_bar_data_updated = true;
@@ -850,7 +851,7 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
             if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) needs_render = true;
             // Prepare window title bar screen data for GPU
             WindowRenderData *trd = &w->window_title_render_data;
-            if (trd->screen && trd->geometry.bottom > trd->geometry.top && trd->geometry.right > trd->geometry.left) {
+            if (!content_only_fullscreen && trd->screen && trd->geometry.bottom > trd->geometry.top && trd->geometry.right > trd->geometry.left) {
                 trd->screen->cursor_render_info.is_visible = false;
                 if (send_cell_data_to_gpu(trd->vao_idx, trd->screen, os_window)) needs_render = true;
             }
@@ -898,12 +899,13 @@ thumbnail_callback(OSWindow *os_window) {
 
 static void
 render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, color_type active_window_bg, unsigned int num_visible_windows, bool all_windows_have_same_bg) {
+    const bool content_only_fullscreen = is_os_window_fullscreen(os_window);
     Tab *tab = os_window->tabs + os_window->active_tab;
     setup_os_window_for_rendering(os_window, tab, NULL, true);
     BorderRects *br = &tab->border_rects;
     draw_borders(br->vao_idx, br->num_border_rects, br->rect_buf, br->is_dirty, active_window_bg, num_visible_windows, all_windows_have_same_bg, os_window);
     br->is_dirty = false;
-    if (TD.screen && os_window->num_tabs && !os_window->has_too_few_tabs) draw_cells(&TD, os_window, true, true, false, NULL);
+    if (!content_only_fullscreen && TD.screen && os_window->num_tabs && !os_window->has_too_few_tabs) draw_cells(&TD, os_window, true, true, false, NULL);
     unsigned int num_of_visible_windows = 0;
     Window *active_window = NULL;
     for (unsigned int i = 0; i < tab->num_windows; i++) { if (tab->windows[i].visible) num_of_visible_windows++; }
@@ -915,7 +917,7 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
             draw_cells(&WD, os_window, is_active_window, false, num_of_visible_windows == 1, w);
             if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) set_maximum_wait(ANIMATION_SAMPLE_WAIT);
             WindowRenderData *trd = &w->window_title_render_data;
-            if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top)
+            if (!content_only_fullscreen && trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top)
                 draw_cells(trd, os_window, i == tab->active_window, true, false, NULL);
         }
     }

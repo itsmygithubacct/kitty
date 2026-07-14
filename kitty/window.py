@@ -75,6 +75,7 @@ from .fast_data_types import (
     get_window_logo_settings_if_not_default,
     glfw_get_keyboard_repeat_interval,
     is_css_pointer_name_valid,
+    is_os_window_fullscreen,
     is_modifier_key,
     last_focused_os_window_id,
     mark_os_window_dirty,
@@ -1020,7 +1021,10 @@ class Window:
         # Determine if we need a title bar and compute adjusted dimensions
         opts = get_options()
         position = opts.window_title_bar
-        show_tb = self.show_title_bar and new_geometry.ynum > 1
+        # Kilix fullscreen is content-only: the page strip is removed in the
+        # OS-window viewport and the per-pane clickable chrome is removed here.
+        # Keep self.show_title_bar unchanged so normal chrome returns on exit.
+        show_tb = self.show_title_bar and new_geometry.ynum > 1 and not is_os_window_fullscreen(self.os_window_id)
 
         if show_tb:
             render_ynum = new_geometry.ynum - 1

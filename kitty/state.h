@@ -627,7 +627,7 @@ void send_pending_click_to_window(Window*, int);
 void get_platform_dependent_config_values(void *glfw_window);
 bool draw_window_title(double, double, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height, size_t *actual_width);
 uint8_t* draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_height);
-bool is_os_window_fullscreen(OSWindow *);
+bool is_os_window_fullscreen(const OSWindow *);
 void update_ime_focus(OSWindow* osw, bool focused);
 void update_ime_position(Window* w, Screen *screen);
 bool update_ime_position_for_window(id_type window_id, bool force, int update_focus);
