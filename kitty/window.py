@@ -27,12 +27,13 @@ from typing import (
 
 from .child import ProcessDesc
 from .cli_stub import CLIOptions, SaveAsSessionOptions
-from .clipboard import ClipboardRequestManager, set_clipboard_string
+from .clipboard import ClipboardRequestManager, set_clipboard_string, set_primary_selection
 from .constants import (
     appname,
     clear_handled_signals,
     config_dir,
     kitten_exe,
+    supports_primary_selection,
     unserialize_launch_flag,
     wakeup_io_loop,
 )
@@ -1103,6 +1104,12 @@ class Window:
 
         has_activity = self.has_activity_since_last_focus
 
+        # kilix fork: pane state for the title-bar chrome — is this pane
+        # maximized (tab in the stack layout), and is it an overlay window (an
+        # app launched by `kilix browse/run/screensaver`)?
+        tab = self.tabref()
+        is_maximized = bool(tab is not None and tab.current_layout.name == 'stack')
+
         data = WindowTitleData(
             title=self.title or '',
             is_active=is_active or self.is_drag_target,
@@ -1110,6 +1117,8 @@ class Window:
             tab_id=self.tab_id,
             needs_attention=self.needs_attention,
             has_activity_since_last_focus=has_activity,
+            is_maximized=is_maximized,
+            is_overlay=tab is not None and tab.overlay_parent(self) is not None,
         )
         # If template evaluates to empty string, zero title bar geometry to hide it
         if pts.render(data, progress_percent):
@@ -2442,6 +2451,27 @@ class Window:
     @ac('cp', 'Clear the current selection')
     def clear_selection(self) -> None:
         self.screen.clear_selection()
+
+    @ac('cp', 'Select all text (including scrollback) in the active window')
+    def select_all(self) -> None:
+        self.screen.select_all()
+        if self.destroyed:
+            return
+        text = self.text_for_selection()
+        if not text:
+            return
+        # Mirror the mouse selection-end path (boss.set_primary_selection) but targeting
+        # this window, since under the context-menu dispatch self may not be active_window.
+        boss = get_boss()
+        if supports_primary_selection:
+            set_primary_selection(text)
+            boss.handle_clipboard_loss('primary', self.id)
+        cos = get_options().copy_on_select
+        if cos == 'clipboard':
+            set_clipboard_string(text)
+            boss.handle_clipboard_loss('clipboard', self.id)
+        elif cos and cos != 'primary':
+            boss.set_clipboard_buffer(cos, text)
 
     def scroll_fractional_lines(self, amt: float) -> bool | None:
         ' Scroll fractionally, negative values are up and positive values are down '

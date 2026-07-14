@@ -146,6 +146,7 @@ typedef struct {
     pthread_mutex_t write_buf_lock;
 
     CursorRenderInfo cursor_render_info;
+    struct { index_type x, y; uint8_t shape; } mouse_cursor;  // kilix: software mouse cursor (shape 0 = not drawn)
 
     DisableLigature disable_ligatures;
     PyObject *marker;
@@ -297,6 +298,7 @@ unsigned screen_multi_cursor_count(const Screen *self);
 bool screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end);
 bool screen_selection_range_for_word(Screen *self, const index_type x, const index_type y, index_type *, index_type *, index_type *start, index_type *end, bool);
 void screen_start_selection(Screen *self, index_type x, index_type y, bool, bool, SelectionExtendMode);
+void screen_select_all(Screen *self);
 typedef struct SelectionUpdate {
     bool ended, start_extended_selection, set_as_nearest_extend;
 } SelectionUpdate;

@@ -570,6 +570,20 @@ def to_cursor_shape(x: str) -> int:
         )
 
 
+software_mouse_cursor_map = {'none': 0, 'block': 1, 'pointer': 2}
+
+
+def software_mouse_cursor(x: str) -> int:
+    try:
+        return software_mouse_cursor_map[x.lower()]
+    except KeyError:
+        raise ValueError(
+            'Invalid software_mouse_cursor: {} allowed values are {}'.format(
+                x, ', '.join(software_mouse_cursor_map)
+            )
+        )
+
+
 def to_cursor_unfocused_shape(x: str) -> int:
     try:
         return cshapes_unfocused[x.lower()]

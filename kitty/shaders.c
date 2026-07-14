@@ -474,6 +474,8 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, i
 
         GLuint bg_colors0, bg_colors1, bg_colors2, bg_colors3, bg_colors4, bg_colors5, bg_colors6, bg_colors7;
         GLfloat bg_opacities0, bg_opacities1, bg_opacities2, bg_opacities3, bg_opacities4, bg_opacities5, bg_opacities6, bg_opacities7;
+        // kilix: software mouse cursor. Appended at the end so std140 offsets above are unchanged (mirror cell_vertex.glsl).
+        GLuint mouse_cursor_shape, mouse_cursor_x, mouse_cursor_y;
     };
     // Send the uniform data
     ColorProfile *cp = screen->paused_rendering.expires_at ? &screen->paused_rendering.color_profile : screen->color_profile;
@@ -570,6 +572,13 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, i
     }
 
     rd->columns = screen->columns; rd->lines = screen->lines;
+
+    // kilix: software mouse cursor — the vertex shader inverts (or beams) this cell.
+    // Gate on the live option so disabling it at runtime (config reload) clears a stuck block.
+    rd->mouse_cursor_shape = OPT(software_mouse_cursor) ? screen->mouse_cursor.shape : 0;
+    rd->mouse_cursor_x = screen->mouse_cursor.x;
+    rd->mouse_cursor_y = screen->mouse_cursor.y;
+    if (pixel_scroll_enabled(screen)) rd->mouse_cursor_y += 1;
 
     unsigned int x, y, z;
     sprite_tracker_current_layout(os_window->fonts_data, &x, &y, &z);
@@ -903,7 +912,7 @@ static bool
 has_hyperlink_target(OSWindow *os_window, Window *w, Screen *screen) {
     return show_hyperlink_targets_with_modifiers(global_state.mods_at_last_key_or_button_event) &&
         screen->current_hyperlink_under_mouse.id &&
-        w && !is_mouse_hidden(os_window) &&
+        w && (!is_mouse_hidden(os_window) || OPT(software_mouse_cursor)) &&
         global_state.mouse_hover_in_window == w->id;
 }
 

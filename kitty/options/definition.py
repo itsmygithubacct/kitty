@@ -345,6 +345,18 @@ cursor shape can be one of :code:`block`, :code:`beam`, :code:`underline`,
 :code:`hollow` and :code:`unchanged` (leave the cursor shape as it is).
 ''')
 
+opt('software_mouse_cursor', 'block',
+    option_type='software_mouse_cursor', ctype='int',
+    long_text='''
+Draw the mouse cursor inside the terminal (kilix fork) instead of relying on the
+operating system / compositor pointer. Useful when kilix runs on a bare Wayland
+compositor such as :program:`cage` (the plebian console) where a themed OS pointer
+may be unavailable, and it gives a classic text-console feel. Allowed values are
+:code:`none` (use the OS pointer), :code:`block` (invert the colors of the cell
+under the pointer, gpm-style) and :code:`pointer` (an I-beam glyph). When not
+:code:`none`, the OS mouse pointer is hidden over the terminal grid.
+''')
+
 opt('cursor_beam_thickness', '1.5',
     option_type='positive_float', ctype='float',
     long_text='The thickness of the beam cursor (in pts).'

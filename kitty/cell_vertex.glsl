@@ -16,6 +16,8 @@ layout(std140) uniform CellRenderData {
     // must have unique entries with 0 being default_bg and unset being UINT32_MAX
     uint bg_colors0, bg_colors1, bg_colors2, bg_colors3, bg_colors4, bg_colors5, bg_colors6, bg_colors7;
     float bg_opacities0, bg_opacities1, bg_opacities2, bg_opacities3, bg_opacities4, bg_opacities5, bg_opacities6, bg_opacities7;
+    // kilix: software mouse cursor (shape 0 = disabled). Appended at the end so std140 offsets of the fields above are unchanged.
+    uint mouse_cursor_shape, mouse_cursor_x, mouse_cursor_y;
 };
 
 layout(std140) uniform ColorTable {
@@ -229,15 +231,28 @@ CellData set_vertex_position(vec3 cell_fg, vec3 cell_bg) {
 #endif
     // Cursor shape and colors
     float has_main_cursor = float(is_cursor(column, row));
-    float multicursor_shape = float((is_selected >> 2) & 3u);
+    float raw_multicursor_shape = float((is_selected >> 2) & 3u);
     float multicursor_uses_main_cursor_shape = float((is_selected >> 4) & BIT_MASK);
-    multicursor_shape = if_one_then(multicursor_uses_main_cursor_shape, cursor_shape, multicursor_shape);
+    float multicursor_shape = if_one_then(multicursor_uses_main_cursor_shape, cursor_shape, raw_multicursor_shape);
+    float has_real_multicursor = zero_or_one(raw_multicursor_shape + multicursor_uses_main_cursor_shape);
+    // kilix: fold the software mouse cursor into the cell under the pointer as a cursor
+    // of the configured shape (1=block, 2=beam). max() lets a real multicursor win, and
+    // the main text cursor (has_main_cursor) still overrides below. mouse_only marks the
+    // cells lit up purely by the mouse, so we can give them true inverse-video colors.
+    float mouse_here = float(column == mouse_cursor_x && row == mouse_cursor_y) * float(mouse_cursor_shape);
+    // zero_or_one() clamps the color selector to {0,1} so if_one_then_pair's mix() never
+    // extrapolates for shape 2 (pointer); the (1 - has_real_multicursor) factor lets a real
+    // multicursor keep its own (possibly lower-numbered) shape instead of losing to max().
+    float mouse_only = zero_or_one(mouse_here) * (1.0 - has_real_multicursor) * (1.0 - has_main_cursor);
+    multicursor_shape = max(multicursor_shape, mouse_here * (1.0 - has_real_multicursor));
     float final_cursor_shape = if_one_then(has_main_cursor, cursor_shape, multicursor_shape);
     float has_cursor = zero_or_one(final_cursor_shape);
     float is_block_cursor = has_cursor * one_if_equal_zero_otherwise(final_cursor_shape, 1.0);
     ColorPair main_cursor = ColorPair(color_to_vec(main_cursor_bg), color_to_vec(main_cursor_fg));
     ColorPair extra_cursor = resolve_extra_cursor_colors(cell_bg, cell_fg, main_cursor);
-    ColorPair cursor = if_one_then_pair(has_main_cursor, main_cursor, extra_cursor);
+    ColorPair mouse_inverse = ColorPair(cell_fg, cell_bg);  // kilix: true inverse video of the cell under the pointer
+    ColorPair non_main_cursor = if_one_then_pair(mouse_only, mouse_inverse, extra_cursor);
+    ColorPair cursor = if_one_then_pair(has_main_cursor, main_cursor, non_main_cursor);
     return CellData(has_cursor, is_block_cursor, pos, cursor_shape_map[int(final_cursor_shape)], cursor);
 }
 

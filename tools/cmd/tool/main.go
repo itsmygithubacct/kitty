@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/kovidgoyal/kitty/kittens/ask"
+	"github.com/kovidgoyal/kitty/kittens/browse"
 	"github.com/kovidgoyal/kitty/kittens/choose_files"
 	"github.com/kovidgoyal/kitty/kittens/choose_fonts"
 	"github.com/kovidgoyal/kitty/kittens/clipboard"
@@ -58,6 +59,8 @@ func KittyToolEntryPoints(root *cli.Command) {
 	dnd.EntryPoint(root)
 	// icat
 	icat.EntryPoint(root)
+	// browse (kilix fork)
+	browse.EntryPoint(root)
 	// ssh
 	ssh.EntryPoint(root)
 	// transfer

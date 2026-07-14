@@ -1281,6 +1281,40 @@ class Boss:
             window=window, title='Pane actions',
         )
 
+    @ac('cp', '''
+        Show a clickable right-click context menu (copy, paste, select all, clear selection)
+
+        kilix fork: bound by default to :code:`mouse_map right press ungrabbed show_context_menu`.
+        Remove or re-map that line in kitty.conf to disable it.
+        ''')
+    def show_context_menu(self) -> None:
+        # kilix fork: right-click context menu, reusing the mouse-clickable ask-choices overlay.
+        w = self.window_for_dispatch or self.active_window
+        if w is None:
+            return
+        wid = w.id
+        # ask --type=choices requires each accelerator letter to appear in its label.
+        actions = {
+            'c': 'copy_to_clipboard',
+            'p': 'paste_from_clipboard',
+            's': 'select_all',
+            'l': 'clear_selection',
+        }
+
+        def dispatch(choice: str) -> None:
+            w2 = self.window_id_map.get(wid)
+            if not choice or w2 is None:
+                return
+            act = actions.get(choice)
+            if act:
+                self.combine(act, window_for_dispatch=w2)
+
+        self.choose(
+            'Actions', dispatch,
+            'c:Copy', 'p:Paste', 's:Select all', 'l:Clear selection',
+            window=w, title='Actions',
+        )
+
     def get_line(
         self, msg: str,  # can contain newlines and ANSI formatting
         callback: Callable[..., None],  # called with the answer or empty string when aborted
