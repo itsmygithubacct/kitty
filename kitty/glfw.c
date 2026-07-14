@@ -1410,7 +1410,7 @@ toggle_fullscreen_for_os_window(OSWindow *w) {
 }
 
 bool
-is_os_window_fullscreen(OSWindow *w) {
+is_os_window_fullscreen(const OSWindow *w) {
     unsigned int flags = 0;
     if (!w || !w->handle) return false;
     if (w->is_layer_shell) {
