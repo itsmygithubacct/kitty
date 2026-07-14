@@ -606,7 +606,8 @@ class TestDataTypes(BaseTest):
         for prefix in ('/tmp', tempfile.gettempdir()):
             for path in ('a.png', 'x/b.jpg', 'y/../c.jpg'):
                 self.assertTrue(is_path_in_temp_dir(os.path.join(prefix, path)))
-        for path in ('/home/xy/d.png', '/tmp/../home/x.jpg'):
+        for path in ('/opt/xy/d.png', '/tmp/../opt/x.jpg',
+                     '/tmp-not-a-temp-dir/x.jpg', tempfile.gettempdir() + '-other/x.jpg'):
             self.assertFalse(is_path_in_temp_dir(os.path.join(path)))
         for path in ('/proc/self/cmdline', os.devnull):
             if os.path.exists(path):
@@ -986,4 +987,3 @@ class TestDataTypes(BaseTest):
         s.draw('axbxc')
         s.set_marker(marker_from_function(mark_func))
         self.ae(s.marked_cells(), [(1, 0, 1), (3, 0, 1)])
-

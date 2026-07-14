@@ -2,6 +2,7 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import re
 from collections.abc import Callable, Sequence
 from functools import lru_cache, partial, wraps
 from string import Formatter as StringFormatter

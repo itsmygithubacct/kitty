@@ -15,6 +15,14 @@
 #include <hb-ft.h>
 #include <cairo-ft.h>
 
+// Cairo 1.18 added color-palette selection. Keep it optional so binaries
+// compiled with newer development headers still run against an older host
+// Cairo with the otherwise-compatible ABI.
+#if defined(__GNUC__) && CAIRO_VERSION >= CAIRO_VERSION_ENCODE(1, 18, 0)
+#pragma weak cairo_font_options_set_color_palette
+#define HAS_OPTIONAL_CAIRO_COLOR_PALETTE 1
+#endif
+
 #if FREETYPE_MAJOR == 2 && FREETYPE_MINOR < 7
 #define FT_Bitmap_Init FT_Bitmap_New
 #endif
@@ -857,7 +865,11 @@ ensure_cairo_resources(Face *self, size_t width, size_t height) {
             }
         }
         cairo_font_options_set_hint_style(opts, h); check("Failed to set cairo hintstyle");
-        cairo_font_options_set_color_palette(opts, get_preferred_palette_index(self)); check("Failed to set cairo palette index");
+#ifdef HAS_OPTIONAL_CAIRO_COLOR_PALETTE
+        if (cairo_font_options_set_color_palette) {
+            cairo_font_options_set_color_palette(opts, get_preferred_palette_index(self)); check("Failed to set cairo palette index");
+        }
+#endif
         set_variation_for_cairo(self, opts); check("Failed to set cairo font variations");
         cairo_set_font_options(self->cairo.cr, opts);
         cairo_font_options_destroy(opts);

@@ -2,7 +2,7 @@ package browse
 
 // kilix browse: current Chrome rendered inside a kitty pane.
 //   pixel layer: CDP screencast frames blitted via the kitty graphics
-//     protocol at z=-1 (below text) through /dev/shm temp files
+//     protocol at z=-1 (below text) through private Kilix session files
 //   glyph layer: page text drawn as real terminal cells (selectable),
 //     harvested from DOMSnapshot; the page's own text ink is transparent
 // Reference implementation:
@@ -41,19 +41,35 @@ var injectJS = `(function(){var s=document.createElement('style');` +
 	`s.textContent=` + mustJSON(transparentCSS) + `;` +
 	`(document.head||document.documentElement).appendChild(s);})()`
 
+const editableFocusJS = `(() => {
+  const e = document.activeElement;
+  if (!e) return false;
+  if (e.isContentEditable) return true;
+  const tag = (e.tagName || "").toLowerCase();
+  if (tag === "textarea") return !e.readOnly && !e.disabled;
+  if (tag !== "input") return e.getAttribute && e.getAttribute("role") === "textbox";
+  const type = (e.getAttribute("type") || "text").toLowerCase();
+  return !["button", "checkbox", "color", "file", "hidden", "image",
+           "radio", "range", "reset", "submit"].includes(type)
+         && !e.readOnly && !e.disabled;
+})()`
+
+const toolbarPrefix = " [<] [>] [R] "
+const toolbarURLStart = len(toolbarPrefix)
+
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
 
 type attr struct {
-	fg               [3]uint8
-	bold, ital, und  bool
+	fg              [3]uint8
+	bold, ital, und bool
 }
 
 type cell struct {
-	r    rune // 0 = empty, -1 = wide continuation
-	a    attr
+	r rune // 0 = empty, -1 = wide continuation
+	a attr
 }
 
 type run struct {
@@ -73,17 +89,18 @@ type Browse struct {
 	pageW       int
 	pageH       int
 	tempProfile string
+	frameDir    string
 
 	runs             []run
 	scrollX, scrollY float64
-	halfRes          bool      // sustained animation: screencast at half size
+	halfRes          bool // sustained animation: screencast at half size
 	frameTimes       []time.Time
-	cursor           bool      // draw a software pointer (headless Chrome has none)
-	curX, curY       int       // pointer position, page pixels
+	cursor           bool // draw a software pointer (headless Chrome has none)
+	curX, curY       int  // pointer position, page pixels
 	lastRGBA         *image.RGBA
 	imgW, imgH       int
 	lastCurPaint     time.Time
-	savedPatch       []uint8   // pixels under the stamped cursor
+	savedPatch       []uint8 // pixels under the stamped cursor
 	savedRect        image.Rectangle
 	snapDirty        bool
 	glyphDirty       bool
@@ -106,12 +123,21 @@ var rgbRe = regexp.MustCompile(`rgba?\((\d+),\s*(\d+),\s*(\d+)`)
 
 func logf(format string, a ...any) {
 	if p := os.Getenv("KILIX_BROWSE_LOG"); p != "" {
-		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(
+			p, os.O_APPEND|os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 		if err == nil {
+			_ = f.Chmod(0o600)
 			fmt.Fprintf(f, "[%.3f] "+format+"\n", append([]any{float64(time.Now().UnixMilli()) / 1000}, a...)...)
 			f.Close()
 		}
 	}
+}
+
+func ensurePrivateDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o700)
 }
 
 func newBrowse(url string, incognito, cursor bool) (*Browse, error) {
@@ -130,6 +156,18 @@ func newBrowse(url string, incognito, cursor bool) (*Browse, error) {
 	if b.wid == "" {
 		b.wid = strconv.Itoa(os.Getpid())
 	}
+	b.frameDir = filepath.Join(sessionDir(), "graphics",
+		fmt.Sprintf("browse-%s-%d", b.wid, os.Getpid()))
+	if err = ensurePrivateDir(b.frameDir); err != nil {
+		t.Restore()
+		return nil, err
+	}
+	cleanupStorage := func() {
+		_ = os.RemoveAll(b.frameDir)
+		if b.tempProfile != "" {
+			_ = os.RemoveAll(b.tempProfile)
+		}
+	}
 	b.computeSize()
 	b.curX, b.curY = b.pageW/2, b.pageH/2
 	var extra []string
@@ -137,24 +175,48 @@ func newBrowse(url string, incognito, cursor bool) (*Browse, error) {
 	if incognito {
 		// a throwaway profile, deleted on exit: no history, cookies or cache
 		// survive the session (Chrome's own --incognito on top for good measure)
-		profile, err = os.MkdirTemp("", "kilix-browse-incognito-")
+		profileRoot := filepath.Join(sessionDir(), "browse-profiles")
+		if err = ensurePrivateDir(profileRoot); err == nil {
+			profile, err = os.MkdirTemp(profileRoot, "kilix-browse-incognito-")
+		}
 		if err != nil {
+			cleanupStorage()
 			t.Restore()
 			return nil, err
 		}
 		b.tempProfile = profile
 		extra = append(extra, "--incognito")
 	} else {
-		profile = filepath.Join(stateDir(), "kilix", "browse-profile")
-		os.MkdirAll(profile, 0o755)
+		profile = filepath.Join(stateDir(), "browse-profile")
+		if err = ensurePrivateDir(profile); err != nil {
+			cleanupStorage()
+			t.Restore()
+			return nil, err
+		}
 		// Chrome refuses to share a profile: fall back to a disposable one
-		if lockHolderAlive(filepath.Join(profile, "SingletonLock")) {
-			profile = fmt.Sprintf("%s-%d", profile, os.Getpid())
+		lock := filepath.Join(profile, "SingletonLock")
+		switch profileLockState(lock) {
+		case "stale":
+			removeStaleProfileSingletons(profile)
+		case "live", "unknown":
+			profileRoot := filepath.Join(sessionDir(), "browse-profiles")
+			if err = ensurePrivateDir(profileRoot); err != nil {
+				cleanupStorage()
+				t.Restore()
+				return nil, err
+			}
+			profile, err = os.MkdirTemp(profileRoot, "kilix-browse-shared-profile-")
+			if err != nil {
+				cleanupStorage()
+				t.Restore()
+				return nil, err
+			}
 			b.tempProfile = profile
 		}
 	}
 	b.cdp, err = startCDP(b.pageW, b.pageH, profile, extra...)
 	if err != nil {
+		cleanupStorage()
 		t.Restore()
 		return nil, err
 	}
@@ -162,27 +224,63 @@ func newBrowse(url string, incognito, cursor bool) (*Browse, error) {
 }
 
 func stateDir() string {
-	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+	if d := os.Getenv("KILIX_STATE_DIRECTORY"); d != "" {
 		return d
 	}
+	if d := os.Getenv("KILIX_STORAGE_HOME"); d != "" {
+		return filepath.Join(d, "state")
+	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state")
+	return filepath.Join(home, ".local", "gpu_terminal", "kilix", "state")
 }
 
-func lockHolderAlive(lock string) bool {
+func sessionDir() string {
+	if d := os.Getenv("KILIX_SESSION_HOME"); d != "" {
+		return d
+	}
+	if d := os.Getenv("KILIX_STORAGE_HOME"); d != "" {
+		return filepath.Join(d, "session")
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "gpu_terminal", "kilix", "session")
+}
+
+func profileLockState(lock string) string {
 	target, err := os.Readlink(lock)
+	if os.IsNotExist(err) {
+		return "absent"
+	}
 	if err != nil {
-		return false
+		return "unknown"
 	}
 	i := strings.LastIndex(target, "-")
 	if i < 0 {
-		return false
+		return "unknown"
 	}
 	pid, err := strconv.Atoi(target[i+1:])
 	if err != nil {
-		return false
+		return "unknown"
 	}
-	return syscall.Kill(pid, 0) == nil
+	err = syscall.Kill(pid, 0)
+	if err == nil || err == syscall.EPERM {
+		return "live"
+	}
+	if err == syscall.ESRCH {
+		return "stale"
+	}
+	return "unknown"
+}
+
+func removeStaleProfileSingletons(profile string) {
+	if profileLockState(filepath.Join(profile, "SingletonLock")) != "stale" {
+		return
+	}
+	for _, name := range []string{"SingletonLock", "SingletonCookie", "SingletonSocket"} {
+		path := filepath.Join(profile, name)
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 func (b *Browse) computeSize() {
@@ -297,7 +395,8 @@ func (b *Browse) blit(b64jpeg string, meta map[string]float64) {
 
 func (b *Browse) present() {
 	b.seq = (b.seq + 1) % 8
-	path := fmt.Sprintf("/dev/shm/tty-graphics-protocol-kilix-%s-%d.rgba", b.wid, b.seq)
+	path := filepath.Join(b.frameDir,
+		fmt.Sprintf("tty-graphics-protocol-kilix-%s-%d.rgba", b.wid, b.seq))
 	if os.WriteFile(path, b.lastRGBA.Pix, 0o600) != nil {
 		return
 	}
@@ -630,13 +729,13 @@ func gridsEqual(a, b [][]cell) bool {
 func (b *Browse) renderStatus() string {
 	var body string
 	if b.urlEdit != nil {
-		body = " URL: " + *b.urlEdit + "▏"
+		body = toolbarPrefix + "URL: " + *b.urlEdit + "▏"
 	} else {
 		title := b.title
 		if tr := []rune(title); len(tr) > 40 {
 			title = string(tr[:40])
 		}
-		body = fmt.Sprintf(" %s — %s  [%s]", title, b.url, b.statusMsg)
+		body = fmt.Sprintf("%s%s — %s  [%s]", toolbarPrefix, title, b.url, b.statusMsg)
 	}
 	r := []rune(body)
 	if len(r) > b.term.Cols {
