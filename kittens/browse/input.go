@@ -396,9 +396,7 @@ func (b *Browse) onCDPEvent(m CDPMsg) {
 func (b *Browse) cleanup() {
 	b.term.Restore()
 	b.cdp.Close()
-	for i := 0; i < 8; i++ {
-		os.Remove(fmt.Sprintf("/dev/shm/tty-graphics-protocol-kilix-%s-%d.rgba", b.wid, i))
-	}
+	os.RemoveAll(b.frameDir)
 	if b.tempProfile != "" {
 		os.RemoveAll(b.tempProfile)
 	}

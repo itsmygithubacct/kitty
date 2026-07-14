@@ -614,10 +614,16 @@ def is_path_in_temp_dir(path: str) -> bool:
 
     import tempfile
     path = abspath(path)
-    candidates = frozenset(map(abspath, ('/tmp', '/dev/shm', os.environ.get('TMPDIR', None), tempfile.gettempdir())))
+    candidates = frozenset(map(abspath, (
+        '/tmp', '/dev/shm', os.environ.get('TMPDIR', None),
+        os.environ.get('KILIX_SESSION_HOME', None), tempfile.gettempdir())))
     for q in candidates:
-        if q and path.startswith(q):
-            return True
+        if q:
+            try:
+                if os.path.commonpath((path, q)) == q:
+                    return True
+            except ValueError:
+                pass
     return False
 
 
