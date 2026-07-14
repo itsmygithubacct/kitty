@@ -1103,7 +1103,10 @@ class TabBar:
                     return ae.action
         return None
 
-    def drag_axis_coordinate(self, x: int, y: int) -> tuple[int, int]:
+    def drag_axis_coordinate(self, x: int, y: int) -> int:
+        return y if self.is_vertical else x
+
+    def drag_order_coordinate(self, x: int, y: int) -> tuple[int, int]:
         # Horizontal bars can span multiple rows; row-major ordering preserves
         # drag direction across row boundaries. Vertical bars use their y axis.
         return (y, 0) if self.is_vertical else (y, x)

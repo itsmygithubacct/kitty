@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
 from unittest.mock import patch
 
-from kitty.fast_data_types import LEFT_EDGE, Region
+from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Region
 from kitty.tab_bar import TabBar, TabBarData
 
 from . import BaseTest
@@ -22,6 +23,44 @@ class DummyBoss:
 
 
 class TestTabBar(BaseTest):
+
+    def test_horizontal_multi_row_hit_testing_and_hidden_reset(self) -> None:
+        self.set_options({
+            'tab_bar_edge': BOTTOM_EDGE,
+            'tab_bar_style': 'separator',
+            'tab_title_template': '{title}',
+        })
+        central = region(0, 0, 3600, 160)
+        tab_bar = region(0, 160, 3600, 200)
+        hidden = region(0, 200, 0, 200)
+        geometries: list[tuple[int, int, int, int]] = []
+        boss = DummyBoss()
+
+        with (
+            patch.dict(os.environ, {'KILIX_CHROME_BATTERY': '0', 'KILIX_CHROME_CLOCK': '0'}),
+            patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
+            patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 3600, 200, 10, 20)) as viewport,
+            patch('kitty.tab_bar.set_tab_bar_render_data', side_effect=lambda *args: geometries.append(args[2:6])),
+            patch('kitty.tab_bar.get_boss', return_value=boss),
+        ):
+            tb = TabBar(1)
+            tb.layout()
+            tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 32)))
+
+            self.ae(len(tb.tab_extents), 31)
+            self.ae(tb.tab_extents[29].y, (0, 0))
+            self.ae(tb.tab_extents[30].y, (1, 1))
+            last = tb.tab_extents[-1]
+            self.ae(tb.tab_id_at(last.x.start * 10 + 5, 185), 31)
+            self.ae(tb.drag_order_coordinate(20, 181), (181, 20))
+
+            viewport.return_value = (region(0, 0, 3600, 200), hidden, 3600, 200, 10, 20)
+            tb.layout()
+
+        self.assertFalse(tb.laid_out_once)
+        self.ae(tb.tab_extents, ())
+        self.ae(tb.action_extents, ())
+        self.ae(geometries[-1], (0, 0, 0, 0))
 
     def test_vertical_tab_bar_hit_testing(self) -> None:
         self.set_options({
@@ -51,6 +90,7 @@ class TestTabBar(BaseTest):
         self.assertTrue(tb.is_vertical)
         self.ae(geometries[-1], (0, 0, 120, 160))
         self.ae(tb.drag_axis_coordinate(5, 35), 35)
+        self.ae(tb.drag_order_coordinate(5, 35), (35, 0))
         self.ae(tb.tab_id_at(5, 10), 1)
         self.ae(tb.tab_id_at(110, 35), 1)
         self.ae(tb.tab_id_at(60, 55), 2)

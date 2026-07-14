@@ -1705,10 +1705,10 @@ class TabManager:  # {{{
             if tab_id not in all_tabs:
                 all_tabs.append(tab_id)
             _, _, start_x, start_y = get_tab_being_dragged()
-            start_coordinate = self.tab_bar.drag_axis_coordinate(int(start_x), int(start_y))
+            start_coordinate = self.tab_bar.drag_order_coordinate(int(start_x), int(start_y))
             self.tab_being_dropped = TabBeingDropped(data=tab_data, tab_ids=all_tabs, last_drop_move_coordinate=start_coordinate)
             force_update = True
-        coordinate = self.tab_bar.drag_axis_coordinate(x, y)
+        coordinate = self.tab_bar.drag_order_coordinate(x, y)
         if coordinate == self.tab_being_dropped.last_drop_move_coordinate and not force_update:
             return
         mouse_moved_towards_start = coordinate < self.tab_being_dropped.last_drop_move_coordinate
@@ -1718,7 +1718,7 @@ class TabManager:  # {{{
             with suppress(Exception):
                 idx_under_mouse = old_tab_ids.index(tab_id_under_mouse)
         if idx_under_mouse < 0:
-            start = self.tab_bar.drag_axis_coordinate(self.tab_bar.window_geometry.left, self.tab_bar.window_geometry.top)
+            start = self.tab_bar.drag_order_coordinate(self.tab_bar.window_geometry.left, self.tab_bar.window_geometry.top)
             idx_under_mouse = 0 if coordinate < start else len(old_tab_ids) - 1
         old_idx_under_mouse = old_tab_ids.index(tab_id)
         idx_moved_towards_start = old_idx_under_mouse > idx_under_mouse
