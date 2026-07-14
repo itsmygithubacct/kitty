@@ -926,14 +926,19 @@ HANDLER(handle_event) {
     }
 }
 
+// kilix fork: window that currently owns a title-bar button hover (0 = none)
+static id_type kilix_title_bar_hover_wid = 0;
+
 static void
 handle_window_title_bar_mouse(Window *w, int button, int modifiers, int action) {
     OSWindow *osw = global_state.callback_os_window;
     if (!osw) return;
-    if (button > -1 || global_state.window_being_dragged.id) {
-        call_boss(handle_window_title_bar_mouse, "KKddiii",
-            osw->id, w->id, osw->mouse_x, osw->mouse_y, button, modifiers, action);
-    }
+    // kilix fork: forward unconditionally, including motion (button==-1), so Python can
+    // hover-highlight the buttons. This function is only reached when the cursor is in a
+    // title bar or a window is being dragged (see mouse_event), so it does not fire for
+    // arbitrary motion elsewhere.
+    call_boss(handle_window_title_bar_mouse, "KKddiii",
+        osw->id, w->id, osw->mouse_x, osw->mouse_y, button, modifiers, action);
 }
 
 static void
@@ -1366,6 +1371,7 @@ mouse_event(const int button, int modifiers, int action) {
             tw = window_for_window_id(global_state.window_being_dragged.id);
         }
         if (tw) handle_window_title_bar_mouse(tw, button, modifiers, action);
+        kilix_title_bar_hover_wid = tw ? tw->id : 0;  // kilix fork: remember hovered title bar
         debug("handled by window title bar\n");
     } else if (r.window_border) {
         debug("window border: %s window id: %llu\n", border_name(r.window_border), w ? w->id : 0);
@@ -1401,6 +1407,13 @@ mouse_event(const int button, int modifiers, int action) {
     } else {
         mouse_cursor_shape = DEFAULT_POINTER;
         debug("\n");
+    }
+    // kilix fork: emit one hover-leave (button=-2) when the cursor leaves all title bars,
+    // so Python clears the button highlight.
+    if (!((r.in_title_bar && r.window) || global_state.window_being_dragged.id) && kilix_title_bar_hover_wid) {
+        call_boss(handle_window_title_bar_mouse, "KKddiii",
+            osw->id, kilix_title_bar_hover_wid, osw->mouse_x, osw->mouse_y, -2, modifiers, action);
+        kilix_title_bar_hover_wid = 0;
     }
     if (mouse_cursor_shape != old_cursor) set_mouse_cursor(mouse_cursor_shape);
 }

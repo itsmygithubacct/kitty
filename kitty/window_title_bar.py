@@ -126,6 +126,7 @@ class WindowTitleBarScreen:
         self.screen.reset_mode(DECAWM)
         # kilix fork: maps title-bar cell columns -> kitty action string, for clickable chrome buttons
         self.button_cols: dict[int, str] = {}
+        self.hovered_col: int = -1  # kilix fork: title-bar column under the cursor (-1 = none)
 
     def layout(self, geometry: WindowGeometry) -> None:
         ncells = max(4, (geometry.right - geometry.left) // self.cell_width)
@@ -193,24 +194,29 @@ class WindowTitleBarScreen:
         # cells -> action. Drawn last so title text/alignment can never overwrite them.
         # Dispatched by TabManager.handle_window_title_bar_mouse on a single left-click.
         self.button_cols = {}
+        # kilix fork: Nerd Font glyphs (bundled Symbols Nerd Font Mono, pinned via the
+        # symbol_map line in kitty.conf). Each button is " glyph " = 3 cells (all wcwidth 1),
+        # so len(text) == columns advanced, keeping the button_cols hit-test exact.
         segments = (
-            ('[|]', 'launch --location=vsplit --cwd=current'),   # split right (side-by-side)
-            (' ', ''),
-            ('[-]', 'launch --location=hsplit --cwd=current'),   # split down (stacked)
-            (' ', ''),
-            ('[□]', 'toggle_layout stack'),                      # maximize / zoom pane
-            (' ', ''),
-            ('[x]', 'close_window'),                             # close pane
+            (f' {chr(0xf0d76)} ', 'launch --location=vsplit --cwd=current'),  # split right (side-by-side)
+            (f' {chr(0xf0d75)} ', 'launch --location=hsplit --cwd=current'),  # split down (stacked)
+            (f' {chr(0xf0293)} ', 'toggle_layout stack'),                     # maximize / zoom pane
+            (f' {chr(0xf0156)} ', 'close_window'),                            # close pane
         )
         total = sum(len(text) for text, _ in segments)
         if s.columns > total:
             s.cursor.x = s.columns - total
-            s.cursor.fg = fg
-            s.cursor.bg = bg
             s.cursor.bold = True                                 # make the buttons stand out
             for text, action in segments:
                 start = s.cursor.x
-                draw_attributed_string(text, s)
+                # kilix fork: reverse-video the button currently under the cursor (hover)
+                if action and start <= self.hovered_col < start + len(text):
+                    s.cursor.fg, s.cursor.bg = bg, fg
+                    draw_attributed_string(text, s)
+                    s.cursor.fg, s.cursor.bg = fg, bg
+                else:
+                    s.cursor.fg, s.cursor.bg = fg, bg
+                    draw_attributed_string(text, s)
                 if action:
                     for col in range(start, s.cursor.x):
                         self.button_cols[col] = action

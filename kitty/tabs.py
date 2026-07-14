@@ -1850,8 +1850,31 @@ class TabManager:  # {{{
                 self.recent_tab_bar_mouse_events.clear()
             return
 
+    def _update_title_bar_hover(self, window_id: int, x: 'float | None') -> None:
+        # kilix fork: track which title-bar button (if any) the cursor is over and
+        # re-render that pane's title bar so the hovered button highlights.
+        boss = get_boss()
+        w = boss.window_id_map.get(window_id)
+        pts = getattr(w, '_title_bar_screen', None)
+        if w is None or pts is None or not getattr(pts, 'cell_width', 0) or getattr(pts, 'geometry', None) is None:
+            return
+        if x is None:
+            col = -1
+        else:
+            c = int((x - pts.geometry.left) // pts.cell_width)
+            col = c if c in getattr(pts, 'button_cols', {}) else -1
+        if col != pts.hovered_col:
+            pts.hovered_col = col
+            tab = w.tabref()
+            w.update_title_bar(is_active=tab is not None and tab.active_window is w)
+            from .fast_data_types import mark_os_window_dirty
+            mark_os_window_dirty(self.os_window_id)
+
     def handle_window_title_bar_mouse(self, window_id: int, x: float, y: float, button: int, modifiers: int, action: int) -> None:
         boss = get_boss()
+        if button == -2:  # kilix fork: title-bar hover-leave sentinel from mouse.c
+            self._update_title_bar_hover(window_id, None)
+            return
         if button == -1:  # motion event
             dragged_window_id, drag_started, start_x, start_y = get_window_being_dragged()
             if dragged_window_id and not drag_started:
@@ -1861,6 +1884,8 @@ class TabManager:  # {{{
                     set_window_being_dragged(dragged_window_id, True, start_x, start_y)
                     request_callback_with_thumbnail("start_window_drag", self.os_window_id, dragged_window_id)
                     self.recent_title_bar_mouse_events.clear()
+            elif not dragged_window_id:
+                self._update_title_bar_hover(window_id, x)  # kilix fork: hover-highlight buttons
             return
         self.recent_title_bar_mouse_events.add(button, modifiers, action, x, y, window_id)
         if button != GLFW_MOUSE_BUTTON_LEFT:
@@ -1891,10 +1916,11 @@ class TabManager:  # {{{
             if self.recent_title_bar_mouse_events.click_count() == 1:
                 boss.combine(act, window_for_dispatch=w)
             return
-        if self.recent_title_bar_mouse_events.click_count() == 2:
-            # kilix fork: double-click a (non-button) title bar toggles maximize/zoom (Tilix)
-            self.recent_title_bar_mouse_events.clear()
-            boss.combine('toggle_layout stack', window_for_dispatch=w)
+        # kilix fork: single left-click on the (non-button) title opens the pane action menu,
+        # targeting the clicked pane (already focused on PRESS above). Maximize now lives on
+        # the maximize chrome button and Ctrl+Alt+Z.
+        if w is not None and self.recent_title_bar_mouse_events.click_count() == 1:
+            boss.show_window_title_menu(w)
 
     def start_window_drag(self, pixels: bytes, width: int, height: int) -> None:
         window_id = get_window_being_dragged()[0]
