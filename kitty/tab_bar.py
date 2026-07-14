@@ -2,7 +2,6 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
-import re
 from collections.abc import Callable, Sequence
 from functools import lru_cache, partial, wraps
 from string import Formatter as StringFormatter
@@ -32,6 +31,7 @@ from .fast_data_types import (
     viewport_for_window,
     wcswidth,
 )
+from .kilix_battery import battery_segment, clock_segment, ensure_chrome_timers
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
@@ -60,6 +60,21 @@ class TabBarData(NamedTuple):
     last_focused_window_with_progress_id: int = 0
     session_name: str = ''
     active_session_name: str = ''
+
+
+MAX_TABS_PER_ROW = 30
+
+
+def split_tab_bar_rows(data: Sequence[TabBarData]) -> tuple[tuple[TabBarData, ...], ...]:
+    rows: list[list[TabBarData]] = [[]]
+    visible_items_in_row = 0
+    for tab in data:
+        if visible_items_in_row >= MAX_TABS_PER_ROW:
+            rows.append([])
+            visible_items_in_row = 0
+        rows[-1].append(tab)
+        visible_items_in_row += 1
+    return tuple(tuple(row) for row in rows if row) or ((),)
 
 
 class DrawData(NamedTuple):
@@ -608,6 +623,15 @@ class TabExtent(NamedTuple):
         return self.x.start <= x <= self.x.end and self.y.start <= y <= self.y.end
 
 
+class ActionExtent(NamedTuple):
+    action: str
+    x: CellRange
+    y: CellRange = CellRange(0, 0)
+
+    def contains(self, x: int, y: int) -> bool:
+        return self.x.start <= x < self.x.end and self.y.start <= y <= self.y.end
+
+
 class TabBar:
 
     def __init__(self, os_window_id: int):
@@ -617,6 +641,8 @@ class TabBar:
         self.data_buffer_size = 0
         self.blank_rects: tuple[Border, ...] = ()
         self.tab_extents: Sequence[TabExtent] = ()
+        self.action_extents: Sequence[ActionExtent] = ()
+        self.right_status_start = 0
         self.laid_out_once = False
         self.left_edge_is_default = True
         self.right_edge_is_default = True
@@ -629,9 +655,9 @@ class TabBar:
         self.tab_bar_edge = opts.tab_bar_edge
         self.is_vertical = is_vertical_edge(opts.tab_bar_edge)
         self.margin_width = pt_to_px(opts.tab_bar_margin_width, self.os_window_id)
-        self.cell_width, cell_height = cell_size_for_window(self.os_window_id)
+        self.cell_width, self.cell_height = cell_size_for_window(self.os_window_id)
         if not hasattr(self, 'screen'):
-            self.screen = s = Screen(None, 1, 10, 0, self.cell_width, cell_height)
+            self.screen = s = Screen(None, 1, 10, 0, self.cell_width, self.cell_height)
         else:
             s = self.screen
         s.color_profile.default_fg = opts.inactive_tab_foreground
@@ -809,7 +835,8 @@ class TabBar:
         else:
             available_width = tab_bar.width - 2 * self.margin_width
             ncells = max(4, available_width // cell_width)
-            s.resize(1, ncells)
+            nlines = max(1, tab_bar.height // cell_height)
+            s.resize(nlines, ncells)
             s.reset_mode(DECAWM)
             cell_area_width = ncells * cell_width
             available_width_for_left_margin = max(0, tab_bar.width - self.margin_width - cell_area_width)
@@ -841,72 +868,100 @@ class TabBar:
         if not self.laid_out_once:
             return False
         if self.is_vertical:
+            self.action_extents = ()
             return self.update_vertical(data)
-
+        ensure_chrome_timers()
         s = self.screen
-        last_tab = data[-1] if data else None
+        right_segments = self.right_status_segments()
+        right_status_width = self.right_status_width(right_segments)
+        self.right_status_start = max(1, s.columns - right_status_width)
+        rows = split_tab_bar_rows(data)[:s.lines]
         ed = ExtraData()
         self.last_laid_out_tabs = data
 
-        def draw_tab(i: int, tab: TabBarData, cell_ranges: list[TabExtent], max_tab_length: int) -> None:
-            ed.prev_tab = data[i - 1] if i > 0 else None
-            ed.next_tab = data[i + 1] if i + 1 < len(data) else None
+        def row_limit(line: int) -> int:
+            return self.right_status_start if line == 0 else s.columns
+
+        def draw_tab(
+            line: int,
+            row_data: Sequence[TabBarData],
+            i: int,
+            tab: TabBarData,
+            cell_ranges: list[TabExtent],
+            max_tab_length: int,
+            max_tab_lengths: Sequence[int],
+        ) -> None:
+            row_last_tab = row_data[-1]
+            ed.prev_tab = row_data[i - 1] if i > 0 else None
+            ed.next_tab = row_data[i + 1] if i + 1 < len(row_data) else None
             s.cursor.bg = as_rgb(self.draw_data.tab_bg(tab))
             s.cursor.fg = as_rgb(self.draw_data.tab_fg(tab))
             s.cursor.bold, s.cursor.italic = self.active_font_style if tab.is_active else self.inactive_font_style
             before = s.cursor.x
-            end = self.draw_func(self.draw_data, s, tab, before, max_tab_length, i + 1, tab is last_tab, ed)
+            end = self.draw_func(self.draw_data, s, tab, before, max_tab_length, i + 1, tab is row_last_tab, ed)
             s.cursor.bg = s.cursor.fg = 0
-            cell_ranges.append(TabExtent(tab_id=tab.tab_id, x=CellRange(before, end)))
-            if not ed.for_layout and tab is not last_tab and s.cursor.x > s.columns - max_tab_lengths[i+1]:
-                # Stop if there is no space for next tab
-                s.cursor.x = s.columns - 2
+            cell_ranges.append(TabExtent(tab_id=tab.tab_id, x=CellRange(before, end), y=CellRange(line, line)))
+            if not ed.for_layout and tab is not row_last_tab and s.cursor.x > row_limit(line) - max_tab_lengths[i+1]:
+                # Stop if there is no space for next tab on this line.
+                s.cursor.x = max(0, row_limit(line) - 2)
                 s.cursor.bg = as_rgb(color_as_int(self.draw_data.default_bg))
                 s.cursor.fg = as_rgb(0xff0000)
                 s.draw(' …')
                 raise StopIteration()
 
-        unconstrained_tab_length = max(1, s.columns - 2)
-        ideal_tab_lengths = [i for i in range(len(data))]
-        default_max_tab_length = max(1, (s.columns // max(1, len(data))) - 1)
-        max_tab_lengths = [default_max_tab_length for _ in range(len(data))]
-        active_idx = 0
-        extra = 0
+        row_lengths: list[list[int]] = []
         ed.for_layout = True
-        for i, t in enumerate(data):
-            s.cursor.x = 0
-            draw_tab(i, t, [], unconstrained_tab_length)
-            ideal_tab_lengths[i] = tl = max(1, s.cursor.x)
-            if t.is_active:
-                active_idx = i
-            if tl < default_max_tab_length:
-                max_tab_lengths[i] = tl
-                extra += default_max_tab_length - tl
-        if extra > 0:
-            if ideal_tab_lengths[active_idx] > max_tab_lengths[active_idx]:
-                d = min(extra, ideal_tab_lengths[active_idx] - max_tab_lengths[active_idx])
-                max_tab_lengths[active_idx] += d
-                extra -= d
+        for line, row_data in enumerate(rows):
+            limit = row_limit(line)
+            unconstrained_tab_length = max(1, limit - 2)
+            ideal_tab_lengths = [i for i in range(len(row_data))]
+            default_max_tab_length = max(1, (limit // max(1, len(row_data))) - 1)
+            max_tab_lengths = [default_max_tab_length for _ in range(len(row_data))]
+            active_idx = 0
+            extra = 0
+            for i, tab in enumerate(row_data):
+                s.cursor.x = 0
+                s.cursor.y = line
+                draw_tab(line, row_data, i, tab, [], unconstrained_tab_length, max_tab_lengths)
+                ideal_tab_lengths[i] = tl = max(1, s.cursor.x)
+                if tab.is_active:
+                    active_idx = i
+                if tl < default_max_tab_length:
+                    max_tab_lengths[i] = tl
+                    extra += default_max_tab_length - tl
             if extra > 0:
-                over_achievers = tuple(i for i in range(len(data)) if ideal_tab_lengths[i] > max_tab_lengths[i])
-                if over_achievers:
-                    amt_per_over_achiever = extra // len(over_achievers)
-                    if amt_per_over_achiever > 0:
-                        for i in over_achievers:
-                            max_tab_lengths[i] += amt_per_over_achiever
+                if ideal_tab_lengths[active_idx] > max_tab_lengths[active_idx]:
+                    d = min(extra, ideal_tab_lengths[active_idx] - max_tab_lengths[active_idx])
+                    max_tab_lengths[active_idx] += d
+                    extra -= d
+                if extra > 0:
+                    over_achievers = tuple(i for i in range(len(row_data)) if ideal_tab_lengths[i] > max_tab_lengths[i])
+                    if over_achievers:
+                        amt_per_over_achiever = extra // len(over_achievers)
+                        if amt_per_over_achiever > 0:
+                            for i in over_achievers:
+                                max_tab_lengths[i] += amt_per_over_achiever
+            row_lengths.append(max_tab_lengths)
 
-        s.cursor.x = 0
-        s.erase_in_line(2, False)
+        for line in range(s.lines):
+            s.cursor.x = 0
+            s.cursor.y = line
+            s.erase_in_line(2, False)
+
         cr: list[TabExtent] = []
         ed.for_layout = False
-        for i, t in enumerate(data):
-            try:
-                draw_tab(i, t, cr, max_tab_lengths[i])
-            except StopIteration:
-                break
+        for line, row_data in enumerate(rows):
+            s.cursor.x = 0
+            s.cursor.y = line
+            for i, tab in enumerate(row_data):
+                try:
+                    draw_tab(line, row_data, i, tab, cr, row_lengths[line][i], row_lengths[line])
+                except StopIteration:
+                    break
+            s.erase_in_line(0, False)  # Ensure no long titles bleed after the last tab
         self.tab_extents = cr
-        s.erase_in_line(0, False)  # Ensure no long titles bleed after the last tab
         self.align()
+        self.draw_right_status_segments(right_segments)
         return self._update_edge_defaults(False)
 
     def update_vertical(self, data: Sequence[TabBarData]) -> bool:
@@ -951,15 +1006,63 @@ class TabBar:
         self.tab_extents = tuple(cr)
         return self._update_edge_defaults(True)
 
+    def right_status_segments(self) -> tuple[tuple[str, str | None, int], ...]:
+        ans: list[tuple[str, str | None, int]] = []
+        clock = clock_segment()
+        if clock:
+            ans.append((clock, None, as_rgb(color_as_int(self.draw_data.inactive_fg))))
+        batt = battery_segment()
+        if batt is not None:
+            text, action, fg = batt
+            ans.append((text, action, fg))
+        return tuple(ans)
+
+    def right_status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
+        return sum(max(0, wcswidth(text)) for text, _, _ in segments)
+
+    def draw_right_status_segments(self, segments: Sequence[tuple[str, str | None, int]]) -> None:
+        self.action_extents = ()
+        width = self.right_status_width(segments)
+        if width <= 0 or self.screen.columns <= width:
+            return
+        s = self.screen
+        bg = as_rgb(color_as_int(self.draw_data.default_bg))
+        start = s.columns - width
+        s.cursor.x = start
+        s.cursor.y = 0
+        extents: list[ActionExtent] = []
+        for text, action, fg in segments:
+            before = s.cursor.x
+            s.cursor.bold = bool(action)
+            s.cursor.italic = False
+            s.cursor.fg, s.cursor.bg = fg, bg
+            draw_attributed_string(text, s)
+            end = s.cursor.x
+            if action:
+                extents.append(ActionExtent(action, CellRange(before, end), CellRange(0, 0)))
+        s.cursor.bold = s.cursor.italic = False
+        s.cursor.fg = s.cursor.bg = 0
+        self.action_extents = tuple(extents)
+
     def align_with_factor(self, factor: int = 1) -> None:
         if not self.tab_extents:
             return
-        end = self.tab_extents[-1].x.end
-        if end < self.screen.columns - 1:
-            shift = (self.screen.columns - end) // factor
-            self.screen.cursor.x = 0
-            self.screen.insert_characters(shift)
-            self.tab_extents = tuple(te.shifted(x=shift) for te in self.tab_extents)
+        shifted: list[TabExtent] = []
+        for line in range(self.screen.lines):
+            extents = [te for te in self.tab_extents if te.y.start <= line <= te.y.end]
+            if not extents:
+                continue
+            end = extents[-1].x.end
+            limit = self.right_status_start if line == 0 else self.screen.columns
+            if end < limit - 1:
+                shift = (limit - end) // factor
+                self.screen.cursor.x = 0
+                self.screen.cursor.y = line
+                self.screen.insert_characters(shift)
+                shifted.extend(te.shifted(x=shift) for te in extents)
+            else:
+                shifted.extend(extents)
+        self.tab_extents = tuple(shifted)
 
     def destroy(self) -> None:
         self.screen.reset_callbacks()
@@ -977,5 +1080,19 @@ class TabBar:
                     return te.tab_id
         return 0
 
-    def drag_axis_coordinate(self, x: int, y: int) -> int:
-        return y if self.is_vertical else x
+    def action_at(self, x: int, y: int) -> str | None:
+        if self.laid_out_once:
+            g = self.window_geometry
+            if not (g.left <= x < g.right and g.top <= y < g.bottom):
+                return None
+            x = (x - g.left) // self.cell_width
+            y = (y - g.top) // self.cell_height
+            for ae in self.action_extents:
+                if ae.contains(x, y):
+                    return ae.action
+        return None
+
+    def drag_axis_coordinate(self, x: int, y: int) -> tuple[int, int]:
+        # Horizontal bars can span multiple rows; row-major ordering preserves
+        # drag direction across row boundaries. Vertical bars use their y axis.
+        return (y, 0) if self.is_vertical else (y, x)

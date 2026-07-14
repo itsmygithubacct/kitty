@@ -20,7 +20,6 @@ from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .constants import appname
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
-    GLFW_MOUSE_BUTTON_MIDDLE,
     GLFW_PRESS,
     GLFW_RELEASE,
     add_tab,
@@ -1171,7 +1170,7 @@ class Tab:  # {{{
 class TabBeingDropped(NamedTuple):
     data: TabBarData
     tab_ids: Sequence[int] = ()
-    last_drop_move_coordinate: int = -1
+    last_drop_move_coordinate: tuple[int, int] = (-1, -1)
 
 
 class WindowBeingDropped(NamedTuple):
@@ -1719,7 +1718,7 @@ class TabManager:  # {{{
             with suppress(Exception):
                 idx_under_mouse = old_tab_ids.index(tab_id_under_mouse)
         if idx_under_mouse < 0:
-            start = self.tab_bar.window_geometry.top if self.tab_bar.is_vertical else self.tab_bar.window_geometry.left
+            start = self.tab_bar.drag_axis_coordinate(self.tab_bar.window_geometry.left, self.tab_bar.window_geometry.top)
             idx_under_mouse = 0 if coordinate < start else len(old_tab_ids) - 1
         old_idx_under_mouse = old_tab_ids.index(tab_id)
         idx_moved_towards_start = old_idx_under_mouse > idx_under_mouse
@@ -1807,6 +1806,20 @@ class TabManager:  # {{{
                     self.recent_tab_bar_mouse_events.clear()
             return
 
+        tab_action = self.tab_bar.action_at(int(x), int(y))
+        if tab_action is not None:
+            self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, -2)
+            drag_started = get_tab_being_dragged()[1]
+            is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
+            if is_left_release and not drag_started:
+                set_tab_being_dragged()
+            if is_left_release and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
+                from .kilix_battery import BATTERY_TOGGLE_ACTION, toggle_battery_percent
+                if tab_action == BATTERY_TOGGLE_ACTION:
+                    toggle_battery_percent()
+                self.recent_tab_bar_mouse_events.clear()
+            return
+
         tab_id_at_pointer = self.tab_bar.tab_id_at(int(x), int(y))
         self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, tab_id_at_pointer)
         drag_started = get_tab_being_dragged()[1]
@@ -1844,12 +1857,6 @@ class TabManager:  # {{{
                         self.recent_tab_bar_mouse_events.clear()
             set_tab_being_dragged()
             return
-        if button == GLFW_MOUSE_BUTTON_MIDDLE:
-            if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_MIDDLE) == 1:
-                get_boss().close_tab(tab)
-                self.recent_tab_bar_mouse_events.clear()
-            return
-
     def _update_title_bar_hover(self, window_id: int, x: 'float | None') -> None:
         # kilix fork: track which title-bar button (if any) the cursor is over and
         # re-render that pane's title bar so the hovered button highlights.

@@ -1704,7 +1704,7 @@ The alignment of the tab bar, can be one of: :code:`start`, :code:`center`,
 '''
     )
 
-opt('tab_bar_show_new_tab_button', 'no', option_type='to_bool', long_text='''
+opt('tab_bar_show_new_tab_button', 'no', option_type='to_bool', ctype='bool', long_text='''
 When set to :code:`yes`, a :code:`+` button is always shown at the end of the
 tab bar as a clickable shortcut to open a new tab. When set to :code:`no`
 (the default), the button is hidden at rest but still appears temporarily

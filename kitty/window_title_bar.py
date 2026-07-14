@@ -124,6 +124,7 @@ class WindowTitleBarScreen:
     def __init__(self, os_window_id: int, cell_width: int, cell_height: int):
         self.os_window_id = os_window_id
         self.cell_width = cell_width
+        self.cell_height = cell_height
         self.screen = Screen(None, 1, 10, 0, cell_width, cell_height)
         self.screen.reset_mode(DECAWM)
         # kilix fork: maps title-bar cell columns -> kitty action string, for clickable chrome buttons
@@ -204,32 +205,42 @@ class WindowTitleBarScreen:
             # Split/maximize don't apply to an app window — just a close ✕ that
             # dismisses the app and returns to the shell underneath.
             segments = (
-                (f' {chr(0xf0156)} ', 'close_window'),                        # close the app
+                (f' {chr(0xf0156)} ', 'close_window', None),                   # close the app
             )
         else:
             # kilix fork: a regular pane. The maximize glyph reflects state as a
             # visual cue — a small square when tiled, the larger fullscreen glyph
             # when the pane is maximized (stack layout).
             max_glyph = chr(0xf0293) if data.is_maximized else chr(0xeab9)     # fullscreen ⇄ small square
+            # kilix fork: plus/minus change only this OS window's font size
+            # (kitty's supported local scope), then arrows read left → up →
+            # down → right. kitty has no native
+            # left/up split, so those vsplit/hsplit and then move_window to swap the
+            # new pane onto the near side; down/right split in place.
             segments = (
-                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current'),  # split right: bold → (new pane to the right)
-                (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current'),  # split down: bold ↓ (new pane below)
-                (f' {max_glyph} ', 'toggle_layout stack'),                        # maximize / zoom pane (glyph = state)
-                (f' {chr(0xf0156)} ', 'close_window'),                            # close pane
+                (' + ', 'change_font_size current +2.0', None),                      # increase font size for this kilix window
+                (' - ', 'change_font_size current -2.0', None),                      # decrease font size for this kilix window
+                (f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left', None),  # split left: bold ← (new pane to the left)
+                (f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top', None),   # split up: bold ↑ (new pane above)
+                (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
+                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current', None),  # split right: bold → (new pane to the right)
+                (f' {max_glyph} ', 'toggle_layout stack', None),                        # maximize / zoom pane (glyph = state)
+                (f' {chr(0xf0156)} ', 'close_window', None),                            # close pane
             )
-        total = sum(len(text) for text, _ in segments)
+        total = sum(len(text) for text, _, _ in segments)
         if s.columns > total:
             s.cursor.x = s.columns - total
             s.cursor.bold = True                                 # make the buttons stand out
-            for text, action in segments:
+            for text, action, segment_fg in segments:
                 start = s.cursor.x
+                seg_fg = segment_fg or fg
                 # kilix fork: reverse-video the button currently under the cursor (hover)
                 if action and start <= self.hovered_col < start + len(text):
-                    s.cursor.fg, s.cursor.bg = bg, fg
+                    s.cursor.fg, s.cursor.bg = bg, seg_fg
                     draw_attributed_string(text, s)
-                    s.cursor.fg, s.cursor.bg = fg, bg
+                    s.cursor.fg, s.cursor.bg = seg_fg, bg
                 else:
-                    s.cursor.fg, s.cursor.bg = fg, bg
+                    s.cursor.fg, s.cursor.bg = seg_fg, bg
                     draw_attributed_string(text, s)
                 if action:
                     for col in range(start, s.cursor.x):

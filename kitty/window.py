@@ -1066,7 +1066,11 @@ class Window:
 
         # Handle title bar screen
         if show_tb:
-            if self._title_bar_screen is None:
+            if (
+                self._title_bar_screen is None or
+                self._title_bar_screen.cell_width != cell_width or
+                self._title_bar_screen.cell_height != cell_height
+            ):
                 from .window_title_bar import WindowTitleBarScreen
                 self._title_bar_screen = WindowTitleBarScreen(self.os_window_id, cell_width, cell_height)
             tb_geom = WindowGeometry(
