@@ -452,6 +452,7 @@ typedef struct OSWindow {
     PyObject *window_title;
     bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;
+    bool fullscreen_state_initialized, last_known_fullscreen;
     monotonic_t viewport_resized_at;
     LiveResizeInfo live_resize;
     bool has_pending_resizes, shown_once, ignore_resize_events;

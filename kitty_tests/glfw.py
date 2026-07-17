@@ -3,6 +3,8 @@
 
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from . import BaseTest
 
@@ -11,6 +13,31 @@ is_macos = 'darwin' in _plat
 
 
 class TestGLFW(BaseTest):
+
+    def test_fullscreen_state_change_relayouts_without_resize(self):
+        from kitty.boss import Boss
+
+        layouts = []
+        tab_manager = SimpleNamespace(resize=lambda: layouts.append('layout'))
+        boss = SimpleNamespace(os_window_map={17: tab_manager})
+        Boss.on_fullscreen_state_changed(boss, 17)
+        Boss.on_fullscreen_state_changed(boss, 99)
+        self.ae(layouts, ['layout'])
+
+    def test_remote_fullscreen_exit_is_not_an_error(self):
+        from kitty.rc.resize_os_window import ResizeOSWindow
+
+        window = SimpleNamespace(os_window_id=17)
+        boss = SimpleNamespace(active_window=window)
+        payload = {'action': 'toggle-fullscreen', 'self': True, 'match': None}
+        payload_get = payload.get
+        command = ResizeOSWindow()
+        with (
+            patch('kitty.fast_data_types.get_os_window_size', return_value={'is_layer_shell': False}),
+            patch('kitty.fast_data_types.toggle_fullscreen', return_value=False) as toggle,
+        ):
+            self.assertIsNone(command.response_from_kitty(boss, window, payload_get))
+        toggle.assert_called_once_with(17)
 
     def test_os_window_size_calculation(self):
         from kitty.utils import get_new_os_window_size

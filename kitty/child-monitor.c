@@ -1393,6 +1393,25 @@ do_state_check(id_type timer_id UNUSED, void *data) {
 static id_type state_check_timer = 0;
 
 static void
+process_fullscreen_state_changes(void) {
+    for (size_t i = 0; i < global_state.num_os_windows; i++) {
+        OSWindow *w = global_state.os_windows + i;
+        const bool is_fullscreen = is_os_window_fullscreen(w);
+        if (!w->fullscreen_state_initialized) {
+            w->fullscreen_state_initialized = true;
+            w->last_known_fullscreen = is_fullscreen;
+        } else if (w->last_known_fullscreen != is_fullscreen) {
+            w->last_known_fullscreen = is_fullscreen;
+            // A compositor can change only the fullscreen state, without
+            // changing the framebuffer size. Chrome visibility changes the
+            // usable viewport even in that case, so always force a layout.
+            call_boss(on_fullscreen_state_changed, "K", w->id);
+            w->redraw_count = global_state.is_wayland ? 2 : 1;
+        }
+    }
+}
+
+static void
 process_global_state(void *data) {
     EVDBG("Processing global state");
     ChildMonitor *self = data;
@@ -1405,6 +1424,7 @@ process_global_state(void *data) {
         process_pending_resizes(now);
         input_read = true;
     }
+    process_fullscreen_state_changes();
     if (parse_input(self)) input_read = true;
     render(now, input_read);
 #ifdef __APPLE__

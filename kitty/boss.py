@@ -1508,6 +1508,14 @@ class Boss:
             if tm is not None:
                 tm.resize()
 
+    def on_fullscreen_state_changed(self, os_window_id: int) -> None:
+        # Fullscreen can change without a framebuffer resize (for example a
+        # maximized window on a screen without reserved panel space). Chrome
+        # still changes the usable viewport, so it needs an independent layout.
+        tm = self.os_window_map.get(os_window_id)
+        if tm is not None:
+            tm.resize()
+
     @ac('misc', '''
         Clear the terminal
 

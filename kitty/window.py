@@ -1024,7 +1024,7 @@ class Window:
         # Kilix fullscreen is content-only: the page strip is removed in the
         # OS-window viewport and the per-pane clickable chrome is removed here.
         # Keep self.show_title_bar unchanged so normal chrome returns on exit.
-        show_tb = self.show_title_bar and new_geometry.ynum > 1 and not is_os_window_fullscreen(self.os_window_id)
+        show_tb = self.should_show_title_bar(new_geometry)
 
         if show_tb:
             render_ynum = new_geometry.ynum - 1
@@ -1096,6 +1096,9 @@ class Window:
 
         if update_ime_position:
             update_ime_position_for_window(self.id, True)
+
+    def should_show_title_bar(self, geometry: WindowGeometry) -> bool:
+        return self.show_title_bar and geometry.ynum > 1 and not is_os_window_fullscreen(self.os_window_id)
 
     def update_title_bar(self, is_active: bool = False) -> None:
         if (pts := self._title_bar_screen) is None:

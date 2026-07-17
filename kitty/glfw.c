@@ -2426,7 +2426,14 @@ toggle_fullscreen(PyObject UNUSED *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "|K", &os_window_id)) return NULL;
     OSWindow *w = os_window_id ? os_window_for_id(os_window_id) : current_os_window();
     if (!w) Py_RETURN_NONE;
-    if (toggle_fullscreen_for_os_window(w)) { Py_RETURN_TRUE; }
+    if (toggle_fullscreen_for_os_window(w)) {
+        // Some platforms apply fullscreen asynchronously, while traditional
+        // macOS and layer-shell can change state without resizing. Ensure the
+        // main loop checks for either kind of transition.
+        request_tick_callback();
+        Py_RETURN_TRUE;
+    }
+    request_tick_callback();
     Py_RETURN_FALSE;
 }
 

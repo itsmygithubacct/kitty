@@ -2439,6 +2439,10 @@ static void processEvent(XEvent *event)
                     updateNormalHints(window, width, height);
                     _glfwInputWindowMaximize(window, maximized);
                 }
+                // Fullscreen state can change without a ConfigureNotify when
+                // the old and new window sizes match. Let clients invalidate
+                // state-dependent layout even when no resize callback fires.
+                _glfwInputWindowDamage(window);
             }
 
             return;

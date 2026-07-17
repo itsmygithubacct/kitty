@@ -1014,6 +1014,7 @@ mouse_region(bool detect_borders, bool detect_title_bar) {
     MouseRegion ans = {0};
     Region central, tab_bar;
     const OSWindow* w = global_state.callback_os_window;
+    const bool detect_visible_title_bar = detect_title_bar && !is_os_window_fullscreen(w);
     os_window_regions(w, &central, &tab_bar);
     const bool in_central = mouse_in_region(&central);
     if (!in_central) {
@@ -1093,7 +1094,7 @@ mouse_region(bool detect_borders, bool detect_title_bar) {
             Window *win = t->windows + i;
             if (contains_mouse(win) && win->render_data.screen) {
                 ans.window_idx = i; ans.window = win; break;
-            } else if (detect_title_bar && win->visible) {
+            } else if (detect_visible_title_bar && win->visible) {
                 const WindowRenderData *trd = &win->window_title_render_data;
                 if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top) {
                     if (w->mouse_x >= trd->geometry.left && w->mouse_x < trd->geometry.right &&
@@ -1290,6 +1291,12 @@ mouse_event(const int button, int modifiers, int action) {
     MouseShape old_cursor = mouse_cursor_shape;
     unsigned int window_idx = 0;
     Window *w = NULL; OSWindow *osw = global_state.callback_os_window;
+
+    // A fullscreen transition can happen between a title-bar press and the
+    // following motion/release. Do not keep dispatching a drag to chrome that
+    // is no longer visible.
+    if (is_os_window_fullscreen(osw) && global_state.window_being_dragged.id)
+        zero_at_ptr(&global_state.window_being_dragged);
 
     if (OPT(debug_keyboard)) {
         if (button < 0) { debug("%s x: %.1f y: %.1f ", "\x1b[36mMove\x1b[m", osw->mouse_x, osw->mouse_y); }

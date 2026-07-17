@@ -144,9 +144,12 @@ using this option means that you will not be notified of failures.
                 elif ac == 'show':
                     toggle_os_window_visibility(os_window_id, True)
                 elif ac == 'toggle-fullscreen':
-                    if not toggle_fullscreen(os_window_id):
+                    if is_panel:
                         raise RemoteControlErrorWithoutTraceback(
                             f'The OS Window {os_window_id} is a desktop panel that cannot be made fullscreen')
+                    # The return value is the resulting fullscreen state, not
+                    # an operation-success flag. A successful exit is False.
+                    toggle_fullscreen(os_window_id)
                 elif is_panel:
                     raise RemoteControlErrorWithoutTraceback(
                         f'The OS Window {os_window_id} is a desktop panel, no actions other than resizing are supported for it')

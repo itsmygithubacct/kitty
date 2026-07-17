@@ -57,10 +57,18 @@ class TestTabBar(BaseTest):
             viewport.return_value = (region(0, 0, 3600, 200), hidden, 3600, 200, 10, 20)
             tb.layout()
 
-        self.assertFalse(tb.laid_out_once)
-        self.ae(tb.tab_extents, ())
-        self.ae(tb.action_extents, ())
-        self.ae(geometries[-1], (0, 0, 0, 0))
+            self.assertFalse(tb.laid_out_once)
+            self.ae(tb.tab_extents, ())
+            self.ae(tb.action_extents, ())
+            self.ae(geometries[-1], (0, 0, 0, 0))
+
+            viewport.return_value = (central, tab_bar, 3600, 200, 10, 20)
+            tb.layout()
+            tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 4)))
+
+        self.assertTrue(tb.laid_out_once)
+        self.ae(len(tb.tab_extents), 3)
+        self.assertNotEqual(geometries[-1], (0, 0, 0, 0))
 
     def test_vertical_tab_bar_hit_testing(self) -> None:
         self.set_options({
