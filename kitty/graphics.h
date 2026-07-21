@@ -10,6 +10,9 @@
 
 // Bitmask values for GraphicsCommand.usage_hints
 #define GRAPHICS_USAGE_HINT_TRANSIENT 1u
+// Kilix fork extension: permit an overlapping, same-frame a=c replacement.
+// Stock protocol behavior remains unchanged unless the client opts in.
+#define GRAPHICS_USAGE_HINT_OVERLAPPING_COMPOSE 2u
 
 typedef struct {
     unsigned char action, transmission_type, compressed, delete_action;

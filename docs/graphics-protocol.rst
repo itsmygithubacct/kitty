@@ -854,6 +854,14 @@ frame, and any of the involved frames have the hint, the resulting
 composited frame also has the hint. This hint must be specified when the
 image or frame data is transmitted. It has no effect on placement commands.
 
+The Kilix kitty fork additionally defines bit ``2`` for an overlapping,
+same-frame replacement composition. A client may send ``N=2`` with ``a=c``
+and ``C=1`` to move a rectangle within the current frame, including when the
+source and destination overlap. This is intended for scroll-aware presenters.
+The fork exports ``KITTY_KILIX_RENDERING=1`` to child processes that may use
+the extension. Without bit ``2``, overlapping same-frame rectangles retain the
+standard ``EINVAL`` behavior.
+
 
 .. _animation_protocol:
 
@@ -1015,6 +1023,8 @@ If the frames or the image are not found the terminal emulator must
 respond with `ENOENT`. If the rectangles go out of bounds of the image
 the terminal must respond with `EINVAL`. If the source and destination frames are
 the same and the rectangles overlap, the terminal must respond with `EINVAL`.
+The Kilix extension described under :ref:`image_usage_hints` permits an
+explicitly opted-in replacement compose.
 
 
 .. note::

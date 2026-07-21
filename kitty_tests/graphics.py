@@ -1292,6 +1292,18 @@ class TestGraphics(BaseTest):
             {'gap': 40, 'id': 2, 'data': b'abcdefghijkl'*3},
             {'gap': 40, 'id': 3, 'data': b'3' * 12 + (b'333abc' + b'3' * 6) * 2},
         ))
+        # Same-frame overlap remains an error by default, but the Kilix N=2
+        # replacement extension provides snapshot/memmove semantics for
+        # scroll-aware presenters.
+        overlap = dict(a='c', i=1, r=1, c=1, w=4, h=2,
+                       x=0, y=1, X=0, Y=0, C=1)
+        t(payload=expand(1111, 2222, 3333), r=1, frame_number=1)
+        self.assertEqual(li(**overlap).code, 'EINVAL')
+        self.assertEqual(g.image_for_client_id(1)['data'],
+                         expand(1111, 2222, 3333))
+        self.assertEqual(li(**overlap, N=2).code, 'OK')
+        self.assertEqual(g.image_for_client_id(1)['data'],
+                         expand(1111, 1111, 2222))
         # Test that compose commands with offset values that would overflow a 32-bit
         # unsigned integer are correctly rejected with EINVAL instead of crashing.
         # In the old code, UINT32_MAX + img->width wrapped around as uint32_t to a

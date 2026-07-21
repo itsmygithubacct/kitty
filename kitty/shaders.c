@@ -293,6 +293,26 @@ send_image_to_gpu(GLuint *tex_id, const void* data, GLsizei width, GLsizei heigh
     glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, width, height, 0, is_opaque ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, data);
 }
 
+void
+send_image_region_to_gpu(GLuint tex_id, const void *data, GLsizei image_width,
+                         GLint x, GLint y, GLsizei width, GLsizei height,
+                         bool is_opaque) {
+    if (!tex_id || !data || image_width <= 0 || width <= 0 || height <= 0) return;
+    const unsigned bytes_per_pixel = is_opaque ? 3u : 4u;
+    const uint8_t *region = (const uint8_t*)data +
+        ((size_t)y * (size_t)image_width + (size_t)x) * bytes_per_pixel;
+    glBindTexture(GL_TEXTURE_2D, tex_id);
+    // A damage rectangle usually begins at an arbitrary RGB pixel, so use
+    // byte alignment. GL_UNPACK_ROW_LENGTH lets the driver walk the complete
+    // coalesced frame without first copying the rectangle into a tight buffer.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, image_width);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height,
+                    is_opaque ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, region);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+}
+
 // }}}
 
 // Rounded rect {{{

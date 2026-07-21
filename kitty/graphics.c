@@ -711,6 +711,21 @@ upload_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque, const boo
     }
 }
 
+static void
+upload_region_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque,
+                     const uint8_t *data, const uint32_t x, const uint32_t y,
+                     const uint32_t width, const uint32_t height) {
+    if (!self->context_made_current_for_this_command) {
+        if (!self->window_id) return;
+        if (!make_window_context_current(self->window_id)) return;
+        self->context_made_current_for_this_command = true;
+    }
+    if (img->texture) {
+        send_image_region_to_gpu(img->texture->id, data, img->width,
+                                 x, y, width, height, is_opaque);
+    }
+}
+
 static Image*
 handle_add_command(GraphicsManager *self, const GraphicsCommand *g, const uint8_t *payload, bool *is_dirty, uint32_t iid, bool is_query) {
     bool existing, init_img = true;
@@ -1547,6 +1562,27 @@ update_current_frame(GraphicsManager *self, Image *img, const CoalescedFrameData
     img->current_frame_shown_at = monotonic();
 }
 
+static void
+update_current_frame_region(GraphicsManager *self, Image *img,
+                            const CoalescedFrameData *data,
+                            const uint32_t x, const uint32_t y,
+                            const uint32_t width, const uint32_t height) {
+    if (!data || !data->buf || x >= img->width || y >= img->height) return;
+    const uint32_t clipped_width = MIN(width, img->width - x);
+    const uint32_t clipped_height = MIN(height, img->height - y);
+    if (img->texture) {
+        upload_region_to_gpu(self, img, data->is_opaque, data->buf,
+                             x, y, clipped_width, clipped_height);
+    } else {
+        // A current frame can survive cache pressure or a context reset after
+        // its GPU texture. Recreate it once rather than silently dropping the
+        // first partial edit.
+        upload_to_gpu(self, img, data->is_opaque, data->is_4byte_aligned,
+                      data->buf);
+    }
+    img->current_frame_shown_at = monotonic();
+}
+
 static bool
 reference_chain_too_large(Image *img, const Frame *frame) {
     uint32_t limit = img->width * img->height * 2;
@@ -1688,7 +1724,11 @@ handle_animation_frame_load_command(GraphicsManager *self, GraphicsCommand *g, I
         const ImageAndFrame key = { .image_id = img->internal_id, .frame_id = frame->id };
         bool added = add_to_cache(self, key, cfd.buf, (size_t)bytes_per_pixel * frame->width * frame->height, frame->transient);
         if (added && frame == current_frame(img)) {
-            update_current_frame(self, img, &cfd);
+            update_current_frame_region(self, img, &cfd,
+                                        transmitted_frame.x,
+                                        transmitted_frame.y,
+                                        transmitted_frame.width,
+                                        transmitted_frame.height);
             *is_dirty = true;
         }
         free(cfd.buf);
@@ -1864,7 +1904,9 @@ handle_compose_command(GraphicsManager *self, bool *is_dirty, const GraphicsComm
     if (src_frame == dest_frame) {
         bool x_overlaps = MAX(src_x, dest_x) < (MIN(src_x, dest_x) + width);
         bool y_overlaps = MAX(src_y, dest_y) < (MIN(src_y, dest_y) + height);
-        if (x_overlaps && y_overlaps) {
+        const bool opted_into_overlap = g->compose_mode == 1 &&
+            (g->usage_hints & GRAPHICS_USAGE_HINT_OVERLAPPING_COMPOSE) != 0;
+        if (x_overlaps && y_overlaps && !opted_into_overlap) {
             set_command_failed_response("EINVAL", "The source and destination rectangles overlap and the src and destination frames are the same");
             return;
         }
@@ -1901,7 +1943,9 @@ handle_compose_command(GraphicsManager *self, bool *is_dirty, const GraphicsComm
     dest_frame->x = 0; dest_frame->y = 0; dest_frame->width = img->width; dest_frame->height = img->height;
     dest_frame->base_frame_id = 0; dest_frame->bgcolor = 0;
     *is_dirty = (g->other_frame_number - 1) == img->current_frame_index;
-    if (*is_dirty) update_current_frame(self, img, &dest_data);
+    if (*is_dirty) update_current_frame_region(
+        self, img, &dest_data, (uint32_t)dest_x, (uint32_t)dest_y,
+        (uint32_t)width, (uint32_t)height);
 }
 // }}}
 

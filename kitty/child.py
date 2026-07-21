@@ -291,6 +291,10 @@ class Child:
         env['TERM'] = opts.term
         env['COLORTERM'] = 'truecolor'
         env['KITTY_PID'] = getpid()
+        # Advertise fork-only rendering extensions. Clients gate overlapping
+        # same-frame scroll composition on this marker, so stock kitty keeps
+        # receiving only standard graphics-protocol commands.
+        env['KITTY_KILIX_RENDERING'] = '1'
         env['KITTY_PUBLIC_KEY'] = boss.encryption_public_key
         if self.remote_control_fd > -1:
             env['KITTY_LISTEN_ON'] = f'fd:{self.remote_control_fd}'
