@@ -14,6 +14,9 @@ class BatteryInfo(NamedTuple):
 
 
 BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
+CALENDAR_WIDGET_ACTION = 'kilix_show_calendar_widget'
+DATE_WIDGET_ACTION = 'kilix_show_date_widget'
+CALENDAR_GLYPH = chr(0xf073)
 _CLOCK_TIMER_STARTED = False
 _CLOCK_LAST_TEXT = ''
 _CLOCK_REFRESH_SECONDS = 15.0
@@ -42,6 +45,17 @@ def clock_segment() -> str | None:
     except Exception:
         text = time.strftime('%Y-%m-%d %H:%M')
     return f' {text} '
+
+
+def clock_segments() -> tuple[tuple[str, str], ...]:
+    """Clickable calendar button followed by the configured date/time text."""
+    clock = clock_segment()
+    if clock is None:
+        return ()
+    return (
+        (f' {CALENDAR_GLYPH}', CALENDAR_WIDGET_ACTION),
+        (clock, DATE_WIDGET_ACTION),
+    )
 
 
 def _read_text(path: str) -> str:

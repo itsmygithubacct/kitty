@@ -4,8 +4,10 @@
 import os
 from unittest.mock import patch
 
-from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Region
-from kitty.tab_bar import TabBar, TabBarData
+from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
+from kitty.kilix_battery import CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION
+from kitty.tab_bar import TabBar, TabBarData, as_rgb
+from kitty.utils import color_as_int
 
 from . import BaseTest
 
@@ -23,6 +25,49 @@ class DummyBoss:
 
 
 class TestTabBar(BaseTest):
+
+    def test_clock_status_is_bright_and_clickable(self) -> None:
+        opts = self.set_options({
+            'foreground': Color(0xd3, 0xd7, 0xcf),
+            'tab_bar_edge': BOTTOM_EDGE,
+            'tab_bar_style': 'separator',
+            'tab_title_template': '{title}',
+        })
+        central = region(0, 0, 1000, 160)
+        tab_bar = region(0, 160, 1000, 180)
+        boss = DummyBoss()
+
+        with (
+            patch.dict(os.environ, {
+                'KILIX_CHROME_BATTERY': '0',
+                'KILIX_CHROME_CLOCK': '1',
+                'KILIX_CHROME_CLOCK_FORMAT': 'DATE',
+            }),
+            patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
+            patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 1000, 180, 10, 20)),
+            patch('kitty.tab_bar.set_tab_bar_render_data'),
+            patch('kitty.tab_bar.get_boss', return_value=boss),
+            patch('kitty.tab_bar.ensure_chrome_timers'),
+        ):
+            tb = TabBar(1)
+            tb.layout()
+            segments = tb.right_status_segments()
+            tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
+
+        self.ae(tuple(action for _, action, _ in segments), (
+            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+        ))
+        self.assertTrue(all(
+            fg == as_rgb(color_as_int(opts.foreground))
+            for _, _, fg in segments
+        ))
+        self.ae(tuple(ae.action for ae in tb.action_extents), (
+            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+        ))
+        for extent in tb.action_extents:
+            x = tb.window_geometry.left + extent.x.start * tb.cell_width + 1
+            y = tb.window_geometry.top + 1
+            self.ae(tb.action_at(x, y), extent.action)
 
     def test_horizontal_multi_row_hit_testing_and_hidden_reset(self) -> None:
         self.set_options({

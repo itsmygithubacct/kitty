@@ -32,7 +32,7 @@ from .fast_data_types import (
     viewport_for_window,
     wcswidth,
 )
-from .kilix_battery import battery_segment, clock_segment, ensure_chrome_timers
+from .kilix_battery import battery_segment, clock_segments, ensure_chrome_timers
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
@@ -1019,9 +1019,10 @@ class TabBar:
 
     def right_status_segments(self) -> tuple[tuple[str, str | None, int], ...]:
         ans: list[tuple[str, str | None, int]] = []
-        clock = clock_segment()
-        if clock:
-            ans.append((clock, None, as_rgb(color_as_int(self.draw_data.inactive_fg))))
+        # The default inactive-tab foreground is #444, which is too dim for a
+        # persistent status control. Match the configured terminal foreground.
+        clock_fg = as_rgb(color_as_int(get_options().foreground))
+        ans.extend((text, action, clock_fg) for text, action in clock_segments())
         batt = battery_segment()
         if batt is not None:
             text, action, fg = batt

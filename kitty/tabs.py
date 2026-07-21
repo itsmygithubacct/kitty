@@ -1814,9 +1814,19 @@ class TabManager:  # {{{
             if is_left_release and not drag_started:
                 set_tab_being_dragged()
             if is_left_release and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
-                from .kilix_battery import BATTERY_TOGGLE_ACTION, toggle_battery_percent
+                from .kilix_battery import (
+                    BATTERY_TOGGLE_ACTION,
+                    CALENDAR_WIDGET_ACTION,
+                    DATE_WIDGET_ACTION,
+                    toggle_battery_percent,
+                )
                 if tab_action == BATTERY_TOGGLE_ACTION:
                     toggle_battery_percent()
+                elif tab_action in (CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION):
+                    target = self.active_tab.active_window if self.active_tab else None
+                    if target is not None:
+                        mode = 'calendar' if tab_action == CALENDAR_WIDGET_ACTION else 'date'
+                        get_boss().run_kitten_with_metadata('kilix_clock', (mode,), window=target)
                 self.recent_tab_bar_mouse_events.clear()
             return
 
