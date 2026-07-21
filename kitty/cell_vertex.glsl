@@ -206,7 +206,7 @@ uint is_cursor(uint x, uint y) {
 // }}}
 
 struct CellData {
-    float has_cursor, has_block_cursor;
+    float has_cursor, has_block_cursor, has_mouse_cursor;
     uvec2 pos;
     uint cursor_fg_sprite_idx;
     ColorPair cursor;
@@ -253,7 +253,7 @@ CellData set_vertex_position(vec3 cell_fg, vec3 cell_bg) {
     ColorPair mouse_inverse = ColorPair(cell_fg, cell_bg);  // kilix: true inverse video of the cell under the pointer
     ColorPair non_main_cursor = if_one_then_pair(mouse_only, mouse_inverse, extra_cursor);
     ColorPair cursor = if_one_then_pair(has_main_cursor, main_cursor, non_main_cursor);
-    return CellData(has_cursor, is_block_cursor, pos, cursor_shape_map[int(final_cursor_shape)], cursor);
+    return CellData(has_cursor, is_block_cursor, zero_or_one(mouse_here), pos, cursor_shape_map[int(final_cursor_shape)], cursor);
 }
 
 float background_opacity_for(uint bg, uint colorval, float opacity_if_matched) {  // opacity_if_matched if bg == colorval else 1
@@ -334,6 +334,10 @@ void main() {
     fg_as_uint = has_mark * color_table[NUM_COLORS + MARK_MASK + mark] + (1u - has_mark) * fg_as_uint;
     vec3 foreground = color_to_vec(fg_as_uint);
     CellData cell_data = set_vertex_position(foreground, bg);
+    // An inactive pane sets cursor_opacity to zero to suppress its text cursor.
+    // The software mouse cursor must remain opaque there because the native
+    // pointer is hidden over terminal cells.
+    float cell_cursor_opacity = max(cursor_opacity, cell_data.has_mouse_cursor);
     // }}}
 
     // Foreground {{{
@@ -355,8 +359,8 @@ void main() {
     underline_exclusion_pos = to_underline_exclusion_pos();
 
     // Cursor
-    cursor_color_premult = vec4(cell_data.cursor.bg * cursor_opacity, cursor_opacity);
-    vec3 final_cursor_text_color = mix(foreground, cell_data.cursor.fg, cursor_opacity);
+    cursor_color_premult = vec4(cell_data.cursor.bg * cell_cursor_opacity, cell_cursor_opacity);
+    vec3 final_cursor_text_color = mix(foreground, cell_data.cursor.fg, cell_cursor_opacity);
     foreground = if_one_then(cell_data.has_block_cursor, final_cursor_text_color, foreground);
     decoration_fg = if_one_then(cell_data.has_block_cursor, final_cursor_text_color, decoration_fg);
     cursor_pos = to_sprite_pos(cell_data.pos, cell_data.cursor_fg_sprite_idx * uint(cell_data.has_cursor));
@@ -366,7 +370,7 @@ void main() {
     // Background {{{
     float bg_alpha = calc_background_opacity(bg_as_uint);
     // we use max so that opacity of the block cursor cell background goes from bg_alpha to 1
-    float effective_cursor_opacity = max(cursor_opacity, bg_alpha);
+    float effective_cursor_opacity = max(cell_cursor_opacity, bg_alpha);
     // is_special_cell is either 0 or 1
     float is_special_cell = cell_data.has_block_cursor + float(is_selected & BIT_MASK);
     is_special_cell += float(is_reversed);  // reverse video cells should be opaque as well
@@ -378,7 +382,7 @@ void main() {
     // Selection and cursor
     bg_alpha = if_one_then(cell_data.has_block_cursor, effective_cursor_opacity, bg_alpha);
     bg = if_one_then(float(is_selected & BIT_MASK), if_one_then(use_cell_for_selection_bg, color_to_vec(fg_as_uint), color_to_vec(highlight_bg)), bg);
-    vec3 background_rgb = if_one_then(cell_data.has_block_cursor, mix(bg, cell_data.cursor.bg, cursor_opacity), bg);
+    vec3 background_rgb = if_one_then(cell_data.has_block_cursor, mix(bg, cell_data.cursor.bg, cell_cursor_opacity), bg);
     background = background_rgb;
     // }}}
 
