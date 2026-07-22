@@ -9,6 +9,7 @@ from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION,
     NETWORK_WIDGET_ACTION,
+    VOLUME_WIDGET_ACTION,
 )
 from kitty.tab_bar import TabBar, TabBarData, as_rgb
 from kitty.utils import color_as_int
@@ -49,6 +50,7 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_CLOCK': '1',
                 'KILIX_CHROME_CLOCK_FORMAT': 'DATE',
                 'KILIX_CHROME_NETWORK': '1',
+                'KILIX_CHROME_VOLUME': '1',
             }),
             patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 1000, 180, 10, 20)),
@@ -62,14 +64,16 @@ class TestTabBar(BaseTest):
             tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
 
         self.ae(tuple(action for _, action, _ in segments), (
-            NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+            VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
+            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
         self.assertTrue(all(
             fg == as_rgb(color_as_int(opts.foreground))
             for _, _, fg in segments
         ))
         self.ae(tuple(ae.action for ae in tb.action_extents), (
-            NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+            VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
+            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
         for extent in tb.action_extents:
             x = tb.window_geometry.left + extent.x.start * tb.cell_width + 1
@@ -95,6 +99,7 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_CALENDAR': '0',
                 'KILIX_CHROME_CLOCK': '0',
                 'KILIX_CHROME_NETWORK': '0',
+                'KILIX_CHROME_VOLUME': '0',
             }),
             patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 3600, 200, 10, 20)) as viewport,

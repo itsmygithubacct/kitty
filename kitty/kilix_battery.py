@@ -14,9 +14,11 @@ class BatteryInfo(NamedTuple):
 
 
 BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
+VOLUME_WIDGET_ACTION = 'kilix_show_volume_widget'
 NETWORK_WIDGET_ACTION = 'kilix_show_network_widget'
 CALENDAR_WIDGET_ACTION = 'kilix_show_calendar_widget'
 DATE_WIDGET_ACTION = 'kilix_show_date_widget'
+VOLUME_GLYPH = chr(0xf028)
 NETWORK_GLYPH = chr(0xf1eb)
 CALENDAR_GLYPH = chr(0xf073)
 _CHROME_SETTINGS_TIMER_STARTED = False
@@ -100,6 +102,12 @@ def chrome_value(name: str, default: str = '1') -> str:
 def chrome_enabled(name: str, default: str = '1') -> bool:
     return chrome_value(name, default).lower() not in (
         '', '0', 'no', 'false', 'off', 'disabled')
+
+
+def volume_segment() -> tuple[str, str] | None:
+    if not chrome_enabled('KILIX_CHROME_VOLUME'):
+        return None
+    return f' {VOLUME_GLYPH} ', VOLUME_WIDGET_ACTION
 
 
 def network_segment() -> tuple[str, str] | None:
