@@ -1818,10 +1818,26 @@ class TabManager:  # {{{
                     BATTERY_TOGGLE_ACTION,
                     CALENDAR_WIDGET_ACTION,
                     DATE_WIDGET_ACTION,
+                    NETWORK_WIDGET_ACTION,
                     toggle_battery_percent,
                 )
                 if tab_action == BATTERY_TOGGLE_ACTION:
                     toggle_battery_percent()
+                elif tab_action == NETWORK_WIDGET_ACTION:
+                    target = self.active_tab.active_window if self.active_tab else None
+                    if target is not None:
+                        executable = which('nmtui')
+                        if executable is None:
+                            get_boss().show_error(
+                                'Network settings unavailable',
+                                'nmtui was not found. Install NetworkManager to use this widget.')
+                        elif (tab := target.tabref()) is not None:
+                            tab.new_window(
+                                use_shell=False,
+                                cmd=[executable],
+                                override_title='Network Connections',
+                                overlay_for=target.id,
+                            )
                 elif tab_action in (CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION):
                     target = self.active_tab.active_window if self.active_tab else None
                     if target is not None:

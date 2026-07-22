@@ -12,6 +12,7 @@ from .fast_data_types import (
     get_options,
 )
 from .rgb import color_as_sgr, color_from_int, to_color
+from .kilix_battery import chrome_enabled
 from .tab_bar import draw_attributed_string, safe_builtins
 from .types import WindowGeometry, run_once
 from .utils import color_as_int, log_error
@@ -204,8 +205,8 @@ class WindowTitleBarScreen:
             # kilix fork: an app launched in an overlay (browse / run / screensaver).
             # Split/maximize don't apply to an app window — just a close ✕ that
             # dismisses the app and returns to the shell underneath.
-            segments = (
-                (f' {chr(0xf0156)} ', 'close_window', None),                   # close the app
+            candidates = (
+                ('KILIX_CHROME_BUTTON_CLOSE', f' {chr(0xf0156)} ', 'close_window', None),  # close the app
             )
         else:
             # kilix fork: a regular pane. The maximize glyph reflects state as a
@@ -217,16 +218,21 @@ class WindowTitleBarScreen:
             # down → right. kitty has no native
             # left/up split, so those vsplit/hsplit and then move_window to swap the
             # new pane onto the near side; down/right split in place.
-            segments = (
-                (' + ', 'change_font_size current +2.0', None),                      # increase font size for this kilix window
-                (' - ', 'change_font_size current -2.0', None),                      # decrease font size for this kilix window
-                (f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left', None),  # split left: bold ← (new pane to the left)
-                (f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top', None),   # split up: bold ↑ (new pane above)
-                (f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
-                (f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current', None),  # split right: bold → (new pane to the right)
-                (f' {max_glyph} ', 'toggle_layout stack', None),                        # maximize / zoom pane (glyph = state)
-                (f' {chr(0xf0156)} ', 'close_window', None),                            # close pane
+            candidates = (
+                ('KILIX_CHROME_BUTTON_FONT_INCREASE', ' + ', 'change_font_size current +2.0', None),  # increase font size for this kilix window
+                ('KILIX_CHROME_BUTTON_FONT_DECREASE', ' - ', 'change_font_size current -2.0', None),  # decrease font size for this kilix window
+                ('KILIX_CHROME_BUTTON_SPLIT_LEFT', f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left', None),  # split left: bold ← (new pane to the left)
+                ('KILIX_CHROME_BUTTON_SPLIT_UP', f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top', None),   # split up: bold ↑ (new pane above)
+                ('KILIX_CHROME_BUTTON_SPLIT_DOWN', f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
+                ('KILIX_CHROME_BUTTON_SPLIT_RIGHT', f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current', None),  # split right: bold → (new pane to the right)
+                ('KILIX_CHROME_BUTTON_MAXIMIZE', f' {max_glyph} ', 'toggle_layout stack', None),  # maximize / zoom pane (glyph = state)
+                ('KILIX_CHROME_BUTTON_CLOSE', f' {chr(0xf0156)} ', 'close_window', None),  # close pane
             )
+        segments = tuple(
+            (text, action, segment_fg)
+            for key, text, action, segment_fg in candidates
+            if chrome_enabled(key)
+        )
         total = sum(len(text) for text, _, _ in segments)
         if s.columns > total:
             s.cursor.x = s.columns - total

@@ -14,9 +14,17 @@ class BatteryInfo(NamedTuple):
 
 
 BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
+NETWORK_WIDGET_ACTION = 'kilix_show_network_widget'
 CALENDAR_WIDGET_ACTION = 'kilix_show_calendar_widget'
 DATE_WIDGET_ACTION = 'kilix_show_date_widget'
+NETWORK_GLYPH = chr(0xf1eb)
 CALENDAR_GLYPH = chr(0xf073)
+_CHROME_SETTINGS_TIMER_STARTED = False
+_CHROME_SETTINGS_LAST_SIGNATURE: tuple[object, ...] | None = None
+_CHROME_SETTINGS_CACHE_SIGNATURE: tuple[object, ...] | None = None
+_CHROME_SETTINGS_CACHE: dict[str, str] = {}
+_CHROME_SETTINGS_CACHE_EXISTS = False
+_CHROME_SETTINGS_REFRESH_SECONDS = 1.0
 _CLOCK_TIMER_STARTED = False
 _CLOCK_LAST_TEXT = ''
 _CLOCK_REFRESH_SECONDS = 15.0
@@ -32,14 +40,78 @@ _BATTERY_MID = (color_as_int(to_color('#fce94f')) << 8) | 2
 _BATTERY_HIGH = (color_as_int(to_color('#8ae234')) << 8) | 2
 
 
-def _truthy_env(name: str, default: str = '1') -> bool:
-    return os.environ.get(name, default).lower() not in ('0', 'no', 'false', 'off', 'disabled')
+def _shared_settings_path() -> str:
+    override = os.environ.get('GPU_TERMINAL_SETTINGS_FILE')
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    root = os.environ.get('GPU_TERMINAL_HOME') or os.path.join(
+        os.path.expanduser('~'), '.local', 'gpu_terminal')
+    return os.path.join(os.path.abspath(os.path.expanduser(root)), 'settings.conf')
+
+
+def _shared_settings_signature() -> tuple[object, ...]:
+    path = _shared_settings_path()
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return (path, 'missing')
+    return (
+        path, stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns,
+        stat.st_mode, stat.st_size,
+    )
+
+
+def _shared_settings() -> tuple[dict[str, str], bool]:
+    global _CHROME_SETTINGS_CACHE, _CHROME_SETTINGS_CACHE_EXISTS
+    global _CHROME_SETTINGS_CACHE_SIGNATURE
+    signature = _shared_settings_signature()
+    if signature != _CHROME_SETTINGS_CACHE_SIGNATURE:
+        values: dict[str, str] = {}
+        exists = signature[-1] != 'missing'
+        if exists:
+            try:
+                with open(str(signature[0]), encoding='utf-8', errors='replace') as stream:
+                    for line in stream:
+                        line = line.strip()
+                        if not line or line.startswith('#') or '=' not in line:
+                            continue
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        if key and key.replace('_', '').isalnum() and not key[0].isdigit():
+                            values[key] = value.strip()
+            except OSError:
+                exists = False
+                values = {}
+        _CHROME_SETTINGS_CACHE = values
+        _CHROME_SETTINGS_CACHE_EXISTS = exists
+        _CHROME_SETTINGS_CACHE_SIGNATURE = signature
+    return _CHROME_SETTINGS_CACHE, _CHROME_SETTINGS_CACHE_EXISTS
+
+
+def chrome_value(name: str, default: str = '1') -> str:
+    values, exists = _shared_settings()
+    if exists:
+        return values.get(name, default)
+    # Backward-compatible migration fallback for a fork launched without the
+    # Kilix wrapper. Normal Kilix launches create the shared file first.
+    return os.environ.get(name, default)
+
+
+def chrome_enabled(name: str, default: str = '1') -> bool:
+    return chrome_value(name, default).lower() not in (
+        '', '0', 'no', 'false', 'off', 'disabled')
+
+
+def network_segment() -> tuple[str, str] | None:
+    if not chrome_enabled('KILIX_CHROME_NETWORK'):
+        return None
+    return f' {NETWORK_GLYPH} ', NETWORK_WIDGET_ACTION
 
 
 def clock_segment() -> str | None:
-    if not _truthy_env('KILIX_CHROME_CLOCK'):
+    if not chrome_enabled('KILIX_CHROME_CLOCK'):
         return None
-    fmt = os.environ.get('KILIX_CHROME_CLOCK_FORMAT') or '%Y-%m-%d %H:%M'
+    fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%Y-%m-%d %H:%M') or '%Y-%m-%d %H:%M'
     try:
         text = time.strftime(fmt)
     except Exception:
@@ -49,13 +121,13 @@ def clock_segment() -> str | None:
 
 def clock_segments() -> tuple[tuple[str, str], ...]:
     """Clickable calendar button followed by the configured date/time text."""
+    ans: list[tuple[str, str]] = []
+    if chrome_enabled('KILIX_CHROME_CALENDAR'):
+        ans.append((f' {CALENDAR_GLYPH}', CALENDAR_WIDGET_ACTION))
     clock = clock_segment()
-    if clock is None:
-        return ()
-    return (
-        (f' {CALENDAR_GLYPH}', CALENDAR_WIDGET_ACTION),
-        (clock, DATE_WIDGET_ACTION),
-    )
+    if clock is not None:
+        ans.append((clock, DATE_WIDGET_ACTION))
+    return tuple(ans)
 
 
 def _read_text(path: str) -> str:
@@ -109,7 +181,7 @@ def _read_charge_pair(path: str) -> tuple[float, float] | None:
 
 
 def _read_battery_info_uncached() -> BatteryInfo | None:
-    if not _truthy_env('KILIX_CHROME_BATTERY'):
+    if not chrome_enabled('KILIX_CHROME_BATTERY'):
         return None
     total_now = total_full = 0.0
     capacities: list[float] = []
@@ -178,10 +250,12 @@ def battery_segment() -> tuple[str, str, int] | None:
     return text, BATTERY_TOGGLE_ACTION, _battery_color(info.percent)
 
 
-def _invalidate_all_tab_bars() -> None:
+def _invalidate_all_chrome() -> None:
     from .fast_data_types import get_boss, mark_os_window_dirty
     for tm in get_boss().all_tab_managers:
         tm.mark_tab_bar_dirty()
+        for tab in tm:
+            tab.update_window_title_bars()
         mark_os_window_dirty(tm.os_window_id)
 
 
@@ -190,13 +264,13 @@ def _clock_timer(timer_id: int | None = None) -> None:
     text = clock_segment() or ''
     if text != _CLOCK_LAST_TEXT:
         _CLOCK_LAST_TEXT = text
-        _invalidate_all_tab_bars()
+        _invalidate_all_chrome()
 
 
 def toggle_battery_percent() -> None:
     global _BATTERY_SHOW_PERCENT
     _BATTERY_SHOW_PERCENT = not _BATTERY_SHOW_PERCENT
-    _invalidate_all_tab_bars()
+    _invalidate_all_chrome()
 
 
 def _battery_timer(timer_id: int | None = None) -> None:
@@ -205,12 +279,34 @@ def _battery_timer(timer_id: int | None = None) -> None:
     sig = _battery_signature(battery_info())
     if sig != _BATTERY_LAST_SIGNATURE:
         _BATTERY_LAST_SIGNATURE = sig
-        _invalidate_all_tab_bars()
+        _invalidate_all_chrome()
+
+
+def _chrome_settings_timer(timer_id: int | None = None) -> None:
+    global _CHROME_SETTINGS_LAST_SIGNATURE
+    signature = _shared_settings_signature()
+    if signature != _CHROME_SETTINGS_LAST_SIGNATURE:
+        _CHROME_SETTINGS_LAST_SIGNATURE = signature
+        _shared_settings()
+        _invalidate_all_chrome()
+
+
+def ensure_chrome_settings_timer() -> None:
+    global _CHROME_SETTINGS_LAST_SIGNATURE, _CHROME_SETTINGS_TIMER_STARTED
+    if _CHROME_SETTINGS_TIMER_STARTED:
+        return
+    _CHROME_SETTINGS_TIMER_STARTED = True
+    _CHROME_SETTINGS_LAST_SIGNATURE = _shared_settings_signature()
+    try:
+        from .fast_data_types import add_timer
+        add_timer(_chrome_settings_timer, _CHROME_SETTINGS_REFRESH_SECONDS, True)
+    except Exception as e:
+        log_error(f'Failed to start kilix chrome settings timer: {e}')
 
 
 def ensure_battery_timer() -> None:
     global _BATTERY_TIMER_STARTED
-    if _BATTERY_TIMER_STARTED or not _truthy_env('KILIX_CHROME_BATTERY'):
+    if _BATTERY_TIMER_STARTED or not chrome_enabled('KILIX_CHROME_BATTERY'):
         return
     _BATTERY_TIMER_STARTED = True
     try:
@@ -222,7 +318,7 @@ def ensure_battery_timer() -> None:
 
 def ensure_clock_timer() -> None:
     global _CLOCK_LAST_TEXT, _CLOCK_TIMER_STARTED
-    if _CLOCK_TIMER_STARTED or not _truthy_env('KILIX_CHROME_CLOCK'):
+    if _CLOCK_TIMER_STARTED or not chrome_enabled('KILIX_CHROME_CLOCK'):
         return
     _CLOCK_TIMER_STARTED = True
     _CLOCK_LAST_TEXT = clock_segment() or ''
@@ -234,5 +330,6 @@ def ensure_clock_timer() -> None:
 
 
 def ensure_chrome_timers() -> None:
+    ensure_chrome_settings_timer()
     ensure_clock_timer()
     ensure_battery_timer()

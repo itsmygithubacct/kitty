@@ -5,7 +5,11 @@ import os
 from unittest.mock import patch
 
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
-from kitty.kilix_battery import CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION
+from kitty.kilix_battery import (
+    CALENDAR_WIDGET_ACTION,
+    DATE_WIDGET_ACTION,
+    NETWORK_WIDGET_ACTION,
+)
 from kitty.tab_bar import TabBar, TabBarData, as_rgb
 from kitty.utils import color_as_int
 
@@ -39,9 +43,12 @@ class TestTabBar(BaseTest):
 
         with (
             patch.dict(os.environ, {
+                'GPU_TERMINAL_SETTINGS_FILE': '/kilix-test/missing-settings.conf',
                 'KILIX_CHROME_BATTERY': '0',
+                'KILIX_CHROME_CALENDAR': '1',
                 'KILIX_CHROME_CLOCK': '1',
                 'KILIX_CHROME_CLOCK_FORMAT': 'DATE',
+                'KILIX_CHROME_NETWORK': '1',
             }),
             patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 1000, 180, 10, 20)),
@@ -55,14 +62,14 @@ class TestTabBar(BaseTest):
             tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
 
         self.ae(tuple(action for _, action, _ in segments), (
-            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+            NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
         self.assertTrue(all(
             fg == as_rgb(color_as_int(opts.foreground))
             for _, _, fg in segments
         ))
         self.ae(tuple(ae.action for ae in tb.action_extents), (
-            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+            NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
         for extent in tb.action_extents:
             x = tb.window_geometry.left + extent.x.start * tb.cell_width + 1
@@ -82,11 +89,18 @@ class TestTabBar(BaseTest):
         boss = DummyBoss()
 
         with (
-            patch.dict(os.environ, {'KILIX_CHROME_BATTERY': '0', 'KILIX_CHROME_CLOCK': '0'}),
+            patch.dict(os.environ, {
+                'GPU_TERMINAL_SETTINGS_FILE': '/kilix-test/missing-settings.conf',
+                'KILIX_CHROME_BATTERY': '0',
+                'KILIX_CHROME_CALENDAR': '0',
+                'KILIX_CHROME_CLOCK': '0',
+                'KILIX_CHROME_NETWORK': '0',
+            }),
             patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 3600, 200, 10, 20)) as viewport,
             patch('kitty.tab_bar.set_tab_bar_render_data', side_effect=lambda *args: geometries.append(args[2:6])),
             patch('kitty.tab_bar.get_boss', return_value=boss),
+            patch('kitty.tab_bar.ensure_chrome_timers'),
         ):
             tb = TabBar(1)
             tb.layout()
@@ -131,6 +145,7 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 400, 160, 10, 20)),
             patch('kitty.tab_bar.set_tab_bar_render_data', side_effect=lambda *args: geometries.append(args[2:6])),
             patch('kitty.tab_bar.get_boss', return_value=boss),
+            patch('kitty.tab_bar.ensure_chrome_timers'),
         ):
             tb = TabBar(1)
             tb.layout()
@@ -167,6 +182,7 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 400, 160, 10, 20)),
             patch('kitty.tab_bar.set_tab_bar_render_data'),
             patch('kitty.tab_bar.get_boss', return_value=boss),
+            patch('kitty.tab_bar.ensure_chrome_timers'),
         ):
             tb = TabBar(1)
             tb.layout()
