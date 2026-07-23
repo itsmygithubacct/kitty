@@ -205,6 +205,68 @@ send_key_to_child(id_type window_id, Screen *screen, const GLFWkeyevent *ev) {
     }
 }
 
+static PyObject*
+kilix_synchronized_input_peer_ids(const id_type source_window_id) {
+    if (!global_state.boss) return NULL;
+    PyObject *ans = PyObject_CallMethod(
+        global_state.boss, "kilix_synchronized_input_peer_ids", "K",
+        (unsigned long long)source_window_id
+    );
+    if (!ans) PyErr_Print();
+    return ans;
+}
+
+static void
+kilix_broadcast_key_to_synchronized_panes(Window *source, const GLFWkeyevent *ev) {
+    PyObject *peer_ids = kilix_synchronized_input_peer_ids(source->id);
+    if (!peer_ids) return;
+    PyObject *peers = PySequence_Fast(
+        peer_ids, "kilix_synchronized_input_peer_ids() must return a sequence"
+    );
+    Py_CLEAR(peer_ids);
+    if (!peers) { PyErr_Print(); return; }
+    const Py_ssize_t count = PySequence_Fast_GET_SIZE(peers);
+    PyObject **items = PySequence_Fast_ITEMS(peers);
+    for (Py_ssize_t i = 0; i < count; i++) {
+        const unsigned long long raw_id = PyLong_AsUnsignedLongLong(items[i]);
+        if (raw_id == (unsigned long long)-1 && PyErr_Occurred()) {
+            PyErr_Print();
+            continue;
+        }
+        Window *peer = window_for_window_id((id_type)raw_id);
+        if (peer && peer != source && peer->render_data.screen) {
+            send_key_to_child(peer->id, peer->render_data.screen, ev);
+        }
+    }
+    Py_CLEAR(peers);
+}
+
+static void
+kilix_broadcast_text_to_synchronized_panes(Window *source, const char *text) {
+    PyObject *peer_ids = kilix_synchronized_input_peer_ids(source->id);
+    if (!peer_ids) return;
+    PyObject *peers = PySequence_Fast(
+        peer_ids, "kilix_synchronized_input_peer_ids() must return a sequence"
+    );
+    Py_CLEAR(peer_ids);
+    if (!peers) { PyErr_Print(); return; }
+    const size_t text_size = strlen(text);
+    const Py_ssize_t count = PySequence_Fast_GET_SIZE(peers);
+    PyObject **items = PySequence_Fast_ITEMS(peers);
+    for (Py_ssize_t i = 0; i < count; i++) {
+        const unsigned long long raw_id = PyLong_AsUnsignedLongLong(items[i]);
+        if (raw_id == (unsigned long long)-1 && PyErr_Occurred()) {
+            PyErr_Print();
+            continue;
+        }
+        Window *peer = window_for_window_id((id_type)raw_id);
+        if (peer && peer != source && peer->render_data.screen) {
+            schedule_write_to_child(peer->id, 1, text, text_size);
+        }
+    }
+    Py_CLEAR(peers);
+}
+
 void
 dispatch_buffered_keys(Window *w) {
     if (!w->render_data.screen || !w->buffered_keys.count) return;
@@ -212,6 +274,7 @@ dispatch_buffered_keys(Window *w) {
     for (size_t i = 0; i < w->buffered_keys.count; i++) {
         debug("Sending previously buffered key ");
         send_key_to_child(w->id, w->render_data.screen, keys + i);
+        kilix_broadcast_key_to_synchronized_panes(w, keys + i);
     }
     free(w->buffered_keys.key_data); zero_at_ptr(&w->buffered_keys);
 }
@@ -255,6 +318,7 @@ on_key_input(const GLFWkeyevent *ev) {
         case GLFW_IME_COMMIT_TEXT:
             if (*text) {
                 schedule_write_to_child(w->id, 1, text, strlen(text));
+                kilix_broadcast_text_to_synchronized_panes(w, text);
                 debug("committed pre-edit text: %s sent to child as text.\n", text);
             } else debug("committed pre-edit text: (null)\n");
             screen_update_overlay_text(screen, NULL);
@@ -307,7 +371,10 @@ on_key_input(const GLFWkeyevent *ev) {
         GLFWkeyevent *k = w->buffered_keys.key_data;
         k[w->buffered_keys.count++] = *ev;
         debug("buffering key until child is ready\n");
-    } else send_key_to_child(w->id, screen, ev);
+    } else {
+        send_key_to_child(w->id, screen, ev);
+        kilix_broadcast_key_to_synchronized_panes(w, ev);
+    }
 #undef dispatch_key_event
 }
 

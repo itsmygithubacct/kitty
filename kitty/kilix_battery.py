@@ -384,9 +384,13 @@ def battery_segment() -> tuple[str, str, int] | None:
 
 def _invalidate_all_chrome() -> None:
     from .fast_data_types import get_boss, mark_os_window_dirty
+    synchronized_input_enabled = chrome_enabled(
+        'KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT')
     for tm in get_boss().all_tab_managers:
         tm.mark_tab_bar_dirty()
         for tab in tm:
+            tab.kilix_apply_synchronized_input_setting(
+                synchronized_input_enabled)
             tab.update_window_title_bars()
         mark_os_window_dirty(tm.os_window_id)
 
@@ -486,7 +490,9 @@ def ensure_clock_timer() -> None:
 
 
 def ensure_chrome_timers() -> None:
+    from .kilix_memory import ensure_pane_memory_timer
     ensure_chrome_settings_timer()
     ensure_thermal_timer()
     ensure_clock_timer()
     ensure_battery_timer()
+    ensure_pane_memory_timer()

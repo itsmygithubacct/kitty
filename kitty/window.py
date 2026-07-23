@@ -1120,6 +1120,10 @@ class Window:
         # app launched by `kilix browse/run/screensaver`)?
         tab = self.tabref()
         is_maximized = bool(tab is not None and tab.current_layout.name == 'stack')
+        is_overlay = tab is not None and tab.overlay_parent(self) is not None
+        from .kilix_memory import pane_memory_segment
+        memory_segment = (
+            None if is_overlay else pane_memory_segment(self.child.pid))
 
         data = WindowTitleData(
             title=self.title or '',
@@ -1129,7 +1133,11 @@ class Window:
             needs_attention=self.needs_attention,
             has_activity_since_last_focus=has_activity,
             is_maximized=is_maximized,
-            is_overlay=tab is not None and tab.overlay_parent(self) is not None,
+            is_overlay=is_overlay,
+            is_synchronized_input=bool(
+                tab is not None
+                and tab.kilix_synchronized_input_enabled(self.id)),
+            pane_memory_text=memory_segment[0] if memory_segment else '',
         )
         # If template evaluates to empty string, zero title bar geometry to hide it
         if pts.render(data, progress_percent):

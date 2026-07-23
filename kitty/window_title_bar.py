@@ -13,9 +13,13 @@ from .fast_data_types import (
 )
 from .rgb import color_as_sgr, color_from_int, to_color
 from .kilix_battery import chrome_enabled
+from .kilix_memory import MEMORY_WIDGET_ACTION
 from .tab_bar import draw_attributed_string, safe_builtins
 from .types import WindowGeometry, run_once
 from .utils import color_as_int, log_error
+
+
+_MEMORY_CHIP_COLOR = (color_as_int(to_color('#8ae234')) << 8) | 2
 
 
 @lru_cache
@@ -89,6 +93,8 @@ class WindowTitleData(NamedTuple):
     has_activity_since_last_focus: bool = False
     is_maximized: bool = False   # kilix fork: pane is zoomed (stack layout)
     is_overlay: bool = False     # kilix fork: an app overlay (browse/run/screensaver)
+    is_synchronized_input: bool = False  # kilix fork: pane receives broadcast keys
+    pane_memory_text: str = ''  # kilix fork: dynamic process-tree memory chip
 
 
 @run_once
@@ -199,8 +205,9 @@ class WindowTitleBarScreen:
         # Dispatched by TabManager.handle_window_title_bar_mouse on a single left-click.
         self.button_cols = {}
         # kilix fork: Nerd Font glyphs (bundled Symbols Nerd Font Mono, pinned via the
-        # symbol_map line in kitty.conf). Each button is " glyph " = 3 cells (all wcwidth 1),
-        # so len(text) == columns advanced, keeping the button_cols hit-test exact.
+        # symbol_map line in kitty.conf). Ordinary buttons are three cells; the
+        # memory chip expands with its value. All glyphs are wcwidth 1, so
+        # len(text) still matches the button_cols hit-test exactly.
         if data.is_overlay:
             # kilix fork: an app launched in an overlay (browse / run / screensaver).
             # Split/maximize don't apply to an app window — just a close ✕ that
@@ -219,6 +226,8 @@ class WindowTitleBarScreen:
             # left/up split, so those vsplit/hsplit and then move_window to swap the
             # new pane onto the near side; down/right split in place.
             candidates = (
+                (None, data.pane_memory_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # dynamic process-tree memory chip
+                ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ', 'kilix_toggle_synchronized_input', None),  # join/leave synchronized keyboard input
                 ('KILIX_CHROME_BUTTON_FONT_INCREASE', ' + ', 'change_font_size current +2.0', None),  # increase font size for this kilix window
                 ('KILIX_CHROME_BUTTON_FONT_DECREASE', ' - ', 'change_font_size current -2.0', None),  # decrease font size for this kilix window
                 ('KILIX_CHROME_BUTTON_SPLIT_LEFT', f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left', None),  # split left: bold ← (new pane to the left)
@@ -231,7 +240,7 @@ class WindowTitleBarScreen:
         segments = tuple(
             (text, action, segment_fg)
             for key, text, action, segment_fg in candidates
-            if chrome_enabled(key)
+            if text and (key is None or chrome_enabled(key))
         )
         total = sum(len(text) for text, _, _ in segments)
         if s.columns > total:
@@ -240,8 +249,15 @@ class WindowTitleBarScreen:
             for text, action, segment_fg in segments:
                 start = s.cursor.x
                 seg_fg = segment_fg or fg
-                # kilix fork: reverse-video the button currently under the cursor (hover)
-                if action and start <= self.hovered_col < start + len(text):
+                # kilix fork: reverse-video hover, and keep synchronized-input
+                # buttons depressed while their panes belong to the broadcast set.
+                is_depressed = (
+                    action == 'kilix_toggle_synchronized_input'
+                    and data.is_synchronized_input
+                )
+                if action and (
+                        is_depressed
+                        or start <= self.hovered_col < start + len(text)):
                     s.cursor.fg, s.cursor.bg = bg, seg_fg
                     draw_attributed_string(text, s)
                     s.cursor.fg, s.cursor.bg = seg_fg, bg

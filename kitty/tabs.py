@@ -208,6 +208,13 @@ class Tab:  # {{{
         self.enabled_layouts = [x.lower() for x in getattr(session_tab, 'enabled_layouts', None) or get_options().enabled_layouts]
         self.borders = Borders(self.os_window_id, self.id)
         self.windows: WindowList = WindowList(self)
+        # kilix fork: base panes whose keyboard buttons are depressed. Input
+        # typed into any selected pane is copied to the other selected panes in
+        # this tab. Overlays are deliberately never members.
+        self.kilix_synchronized_input_ids: set[int] = set()
+        from .kilix_battery import chrome_enabled
+        self.kilix_synchronized_input_control_enabled = chrome_enabled(
+            'KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT')
         self._last_used_layout: str | None = None
         self._current_layout_name: str | None = None
         self.cwd = self.args.directory
@@ -284,8 +291,10 @@ class Tab:  # {{{
         for window in other_tab.windows:
             detach_window(other_tab.os_window_id, other_tab.id, window.id)
         self.windows = other_tab.windows
+        self.kilix_synchronized_input_ids = set(other_tab.kilix_synchronized_input_ids)
         self.windows.change_tab(self)
         other_tab.windows = WindowList(other_tab)
+        other_tab.kilix_synchronized_input_ids.clear()
         for window in self.windows:
             window.change_tab(self)
             attach_window(self.os_window_id, self.id, window.id)
@@ -484,6 +493,104 @@ class Tab:  # {{{
             is_active = wg is active_group
             for w in wg.windows:
                 w.update_title_bar(is_active=is_active)
+
+    @ac('tab', 'Open the Kilix Memory dashboard in a new tab')
+    def kilix_show_memory_widget(self) -> None:
+        from .kilix_memory import kilix_memory_target
+        target = kilix_memory_target()
+        if target is None:
+            get_boss().show_error(
+                'Kilix Memory unavailable',
+                'Neither an installed Kilix Memory dashboard nor its source '
+                'checkout could be found.')
+            return
+        manager = self.tab_manager_ref()
+        if manager is not None:
+            cmd, cwd = target
+            manager.new_tab(SpecialWindow(
+                cmd, override_title='Kilix Memory', cwd=cwd))
+
+    def kilix_synchronized_input_panes(self) -> tuple[Window, ...]:
+        """Return panes that show the keyboard button, excluding overlays."""
+        return tuple(
+            group.windows[0]
+            for group in self.windows.iter_all_layoutable_groups()
+            if group.windows
+        )
+
+    def _prune_kilix_synchronized_input_ids(self) -> set[int]:
+        pane_ids = {window.id for window in self.kilix_synchronized_input_panes()}
+        self.kilix_synchronized_input_ids.intersection_update(pane_ids)
+        return pane_ids
+
+    def kilix_synchronized_input_enabled(self, window_id: int) -> bool:
+        self._prune_kilix_synchronized_input_ids()
+        return (
+            self.kilix_synchronized_input_control_enabled
+            and window_id in self.kilix_synchronized_input_ids
+        )
+
+    def kilix_synchronized_input_peer_ids(self, source_window_id: int) -> tuple[int, ...]:
+        """IDs receiving a copy of source input, or empty when source is not selected."""
+        if not self.kilix_synchronized_input_control_enabled:
+            return ()
+        panes = self.kilix_synchronized_input_panes()
+        pane_ids = {window.id for window in panes}
+        selected = self.kilix_synchronized_input_ids
+        selected.intersection_update(pane_ids)
+        if source_window_id not in pane_ids or source_window_id not in selected:
+            return ()
+        return tuple(
+            window.id for window in panes
+            if window.id != source_window_id and window.id in selected
+        )
+
+    @ac('win', 'Toggle synchronized keyboard input for the active pane')
+    def kilix_toggle_synchronized_input(self) -> None:
+        if not self.kilix_synchronized_input_control_enabled:
+            return
+        window = self.active_window
+        if window is None:
+            return
+        pane_ids = self._prune_kilix_synchronized_input_ids()
+        if window.id not in pane_ids:
+            return
+        if window.id in self.kilix_synchronized_input_ids:
+            self.kilix_synchronized_input_ids.remove(window.id)
+        else:
+            self.kilix_synchronized_input_ids.add(window.id)
+        self.update_window_title_bars()
+
+    def kilix_set_all_synchronized_input(self, enabled: bool) -> None:
+        pane_ids = self._prune_kilix_synchronized_input_ids()
+        if enabled and self.kilix_synchronized_input_control_enabled:
+            self.kilix_synchronized_input_ids = pane_ids
+        else:
+            self.kilix_synchronized_input_ids.clear()
+        self.update_window_title_bars()
+
+    def kilix_apply_synchronized_input_setting(self, enabled: bool) -> None:
+        self.kilix_synchronized_input_control_enabled = enabled
+        if not enabled:
+            self.kilix_synchronized_input_ids.clear()
+
+    def kilix_synchronized_input_double_click(self, window_id: int) -> None:
+        """Promote a keyboard-button double-click to a whole-tab toggle.
+
+        The first release has already performed the normal per-pane toggle.
+        If every pane was selected before that first click, the clicked pane is
+        now the sole deselected pane, so clear the tab. In every other case,
+        select all panes.
+        """
+        pane_ids = self._prune_kilix_synchronized_input_ids()
+        if window_id not in pane_ids:
+            return
+        selected = self.kilix_synchronized_input_ids
+        all_were_selected = (
+            window_id not in selected
+            and pane_ids - {window_id} <= selected
+        )
+        self.kilix_set_all_synchronized_input(not all_were_selected)
 
     def title_changed(self, window: Window) -> None:
         self.update_window_title_bars()
@@ -830,6 +937,7 @@ class Tab:  # {{{
         return prev
 
     def remove_window(self, window: Window, destroy: bool = True, do_post_removal_update: bool = True) -> None:
+        self.kilix_synchronized_input_ids.discard(window.id)
         self.windows.remove_window(window)
         if destroy:
             remove_window(self.os_window_id, self.id, window.id)
@@ -1974,10 +2082,15 @@ class TabManager:  # {{{
             act = getattr(pts, 'button_cols', {}).get(col)
         if act is not None:
             # kilix fork: dispatch the button on a single left-click. Returning
-            # unconditionally (without clearing the event buffer) means the second
-            # click of a double-click reports click_count()==2 and cannot re-fire.
-            if self.recent_title_bar_mouse_events.click_count() == 1:
+            # without clearing the first event means a keyboard-button double-click
+            # can promote the per-pane toggle to the whole tab on its second release.
+            click_count = self.recent_title_bar_mouse_events.click_count()
+            if click_count == 1:
                 boss.combine(act, window_for_dispatch=w)
+            elif click_count == 2 and act == 'kilix_toggle_synchronized_input':
+                if (tab := w.tabref()) is not None:
+                    tab.kilix_synchronized_input_double_click(w.id)
+                self.recent_title_bar_mouse_events.clear()
             return
         # kilix fork: single left-click on the (non-button) title opens the pane action menu,
         # targeting the clicked pane (already focused on PRESS above). Maximize now lives on

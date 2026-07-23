@@ -1744,6 +1744,18 @@ class Boss:
     def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
         return self.mappings.dispatch_possible_special_key(ev)
 
+    def kilix_synchronized_input_peer_ids(self, source_window_id: int) -> tuple[int, ...]:
+        """Return selected peers for native keyboard delivery.
+
+        keys.c sends the event to each returned window itself so every pane's
+        cursor-key mode, extended-keyboard mode, repeat mode, and terminal
+        signal handling remain authoritative.
+        """
+        window = self.window_id_map.get(source_window_id)
+        if window is not None and (tab := window.tabref()) is not None:
+            return tab.kilix_synchronized_input_peer_ids(source_window_id)
+        return ()
+
     def on_shortcut_key_release(self, ev: KeyEvent) -> bool:
         window = self.active_window
         if window is not None:
