@@ -1819,11 +1819,24 @@ class TabManager:  # {{{
                     CALENDAR_WIDGET_ACTION,
                     DATE_WIDGET_ACTION,
                     NETWORK_WIDGET_ACTION,
+                    THERMAL_WIDGET_ACTION,
                     VOLUME_WIDGET_ACTION,
+                    kilix_temps_target,
                     toggle_battery_percent,
                 )
                 if tab_action == BATTERY_TOGGLE_ACTION:
                     toggle_battery_percent()
+                elif tab_action == THERMAL_WIDGET_ACTION:
+                    target = kilix_temps_target()
+                    if target is None:
+                        get_boss().show_error(
+                            'Kilix Temps unavailable',
+                            'kilix-temps was not found. Install it in PATH or '
+                            'check it out under GPU_TERMINAL_SOURCE_HOME.')
+                    else:
+                        cmd, cwd = target
+                        self.new_tab(SpecialWindow(
+                            cmd, override_title='Kilix Temps', cwd=cwd))
                 elif tab_action == VOLUME_WIDGET_ACTION:
                     target = self.active_tab.active_window if self.active_tab else None
                     if target is not None:

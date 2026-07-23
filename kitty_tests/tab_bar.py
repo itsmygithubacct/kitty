@@ -2,13 +2,17 @@
 # License: GPL v3 Copyright: 2026, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
+from kitty import kilix_battery
 from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION,
     NETWORK_WIDGET_ACTION,
+    THERMAL_WIDGET_ACTION,
     VOLUME_WIDGET_ACTION,
 )
 from kitty.tab_bar import TabBar, TabBarData, as_rgb
@@ -50,6 +54,7 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_CLOCK': '1',
                 'KILIX_CHROME_CLOCK_FORMAT': 'DATE',
                 'KILIX_CHROME_NETWORK': '1',
+                'KILIX_CHROME_TEMPERATURE': '0',
                 'KILIX_CHROME_VOLUME': '1',
             }),
             patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
@@ -57,6 +62,8 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.set_tab_bar_render_data'),
             patch('kitty.tab_bar.get_boss', return_value=boss),
             patch('kitty.tab_bar.ensure_chrome_timers'),
+            patch('kitty.tab_bar.thermal_segment', return_value=(
+                ' thermal ', THERMAL_WIDGET_ACTION, 42)),
         ):
             tb = TabBar(1)
             tb.layout()
@@ -64,21 +71,72 @@ class TestTabBar(BaseTest):
             tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
 
         self.ae(tuple(action for _, action, _ in segments), (
-            VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
+            THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
             CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
+        self.ae(segments[0][2], 42)
         self.assertTrue(all(
             fg == as_rgb(color_as_int(opts.foreground))
-            for _, _, fg in segments
+            for _, _, fg in segments[1:]
         ))
         self.ae(tuple(ae.action for ae in tb.action_extents), (
-            VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
+            THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
             CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
         for extent in tb.action_extents:
             x = tb.window_geometry.left + extent.x.start * tb.cell_width + 1
             y = tb.window_geometry.top + 1
             self.ae(tb.action_at(x, y), extent.action)
+
+    def test_thermal_status_uses_hottest_sensor_and_policy_colors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'sys'
+            zone = root / 'class' / 'thermal' / 'thermal_zone0'
+            hwmon = root / 'class' / 'hwmon' / 'hwmon0'
+            zone.mkdir(parents=True)
+            hwmon.mkdir(parents=True)
+            (zone / 'temp').write_text('65000\n')
+            sensor = hwmon / 'temp1_input'
+            settings_path = Path(directory) / 'missing-settings.conf'
+            with (
+                patch.dict(os.environ, {
+                    'GPU_TERMINAL_SETTINGS_FILE': str(settings_path),
+                    'KILIX_CHROME_TEMPERATURE': '1',
+                    'KILIX_THERMAL_SYS_ROOT': str(root),
+                }),
+                patch.object(
+                    kilix_battery, '_CHROME_SETTINGS_CACHE_SIGNATURE', None),
+            ):
+                colors = []
+                for raw, shown in (('79000\n', '79°'),
+                                   ('85000\n', '85°'),
+                                   ('95000\n', '95°')):
+                    sensor.write_text(raw)
+                    kilix_battery._THERMAL_CACHE_UNTIL = 0.0
+                    segment = kilix_battery.thermal_segment()
+                    self.assertIsNotNone(segment)
+                    text, action, color = segment
+                    self.assertIn(shown, text)
+                    self.ae(action, THERMAL_WIDGET_ACTION)
+                    colors.append(color)
+            self.ae(colors, [
+                kilix_battery._BATTERY_HIGH,
+                kilix_battery._BATTERY_MID,
+                kilix_battery._BATTERY_LOW,
+            ])
+
+    def test_kilix_temps_source_target_forces_graphics(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            project = source / 'kilix-temps'
+            executable = project / 'build' / 'kilix-temps'
+            executable.parent.mkdir(parents=True)
+            executable.write_text('#!/bin/sh\n')
+            executable.chmod(0o755)
+            with patch.dict(os.environ, {
+                    'GPU_TERMINAL_SOURCE_HOME': str(source)}):
+                self.ae(kilix_battery.kilix_temps_target(), (
+                    [str(executable), '--graphics'], str(project)))
 
     def test_horizontal_multi_row_hit_testing_and_hidden_reset(self) -> None:
         self.set_options({
@@ -99,6 +157,7 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_CALENDAR': '0',
                 'KILIX_CHROME_CLOCK': '0',
                 'KILIX_CHROME_NETWORK': '0',
+                'KILIX_CHROME_TEMPERATURE': '0',
                 'KILIX_CHROME_VOLUME': '0',
             }),
             patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),

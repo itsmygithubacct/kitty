@@ -2,10 +2,11 @@
 
 import os
 import time
+from glob import iglob
 from typing import NamedTuple
 
 from .rgb import to_color
-from .utils import color_as_int, log_error
+from .utils import color_as_int, log_error, which
 
 
 class BatteryInfo(NamedTuple):
@@ -13,11 +14,18 @@ class BatteryInfo(NamedTuple):
     status: str
 
 
+class ThermalInfo(NamedTuple):
+    celsius: float
+    level: str
+
+
 BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
+THERMAL_WIDGET_ACTION = 'kilix_show_thermal_widget'
 VOLUME_WIDGET_ACTION = 'kilix_show_volume_widget'
 NETWORK_WIDGET_ACTION = 'kilix_show_network_widget'
 CALENDAR_WIDGET_ACTION = 'kilix_show_calendar_widget'
 DATE_WIDGET_ACTION = 'kilix_show_date_widget'
+THERMOMETER_GLYPH = chr(0xf2c9)
 VOLUME_GLYPH = chr(0xf028)
 NETWORK_GLYPH = chr(0xf1eb)
 CALENDAR_GLYPH = chr(0xf073)
@@ -30,6 +38,13 @@ _CHROME_SETTINGS_REFRESH_SECONDS = 1.0
 _CLOCK_TIMER_STARTED = False
 _CLOCK_LAST_TEXT = ''
 _CLOCK_REFRESH_SECONDS = 15.0
+_THERMAL_CACHE: ThermalInfo | None = None
+_THERMAL_CACHE_ROOT = ''
+_THERMAL_CACHE_UNTIL = 0.0
+_THERMAL_LAST_SIGNATURE: tuple[int, str] | None = None
+_THERMAL_TIMER_STARTED = False
+_THERMAL_CACHE_SECONDS = 3.0
+_THERMAL_REFRESH_SECONDS = 5.0
 _BATTERY_SHOW_PERCENT = True
 _BATTERY_CACHE: BatteryInfo | None = None
 _BATTERY_CACHE_UNTIL = 0.0
@@ -40,6 +55,7 @@ _BATTERY_REFRESH_SECONDS = 30.0
 _BATTERY_LOW = (color_as_int(to_color('#ef2929')) << 8) | 2
 _BATTERY_MID = (color_as_int(to_color('#fce94f')) << 8) | 2
 _BATTERY_HIGH = (color_as_int(to_color('#8ae234')) << 8) | 2
+_THERMAL_UNKNOWN = (color_as_int(to_color('#888a85')) << 8) | 2
 
 
 def _shared_settings_path() -> str:
@@ -102,6 +118,99 @@ def chrome_value(name: str, default: str = '1') -> str:
 def chrome_enabled(name: str, default: str = '1') -> bool:
     return chrome_value(name, default).lower() not in (
         '', '0', 'no', 'false', 'off', 'disabled')
+
+
+def kilix_temps_target() -> tuple[list[str], str | None] | None:
+    """Resolve the graphical dashboard without relying on the caller's cwd."""
+    source_home = os.environ.get('GPU_TERMINAL_SOURCE_HOME') or os.path.join(
+        os.path.expanduser('~'), 'gpu_terminal')
+    project = os.path.join(
+        os.path.abspath(os.path.expanduser(source_home)), 'kilix-temps')
+    for candidate in (
+        os.path.join(project, 'build', 'kilix-temps'),
+        os.path.join(project, 'kilix-temps'),
+    ):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return [candidate, '--graphics'], project
+    if executable := which('kilix-temps'):
+        return [executable, '--graphics'], None
+    return None
+
+
+def _thermal_sys_root() -> str:
+    value = os.environ.get('KILIX_THERMAL_SYS_ROOT') or '/sys'
+    return os.path.abspath(os.path.expanduser(value))
+
+
+def _read_temperature(path: str) -> float | None:
+    value = _read_number(path)
+    if value is None:
+        return None
+    celsius = value / 1000.0 if abs(value) > 1000.0 else value
+    if celsius <= 0.0 or celsius > 250.0:
+        return None
+    return celsius
+
+
+def _thermal_level(celsius: float) -> str:
+    if celsius >= 90.0:
+        return 'red'
+    if celsius >= 80.0:
+        return 'yellow'
+    return 'green'
+
+
+def _read_thermal_info_uncached() -> ThermalInfo | None:
+    root = _thermal_sys_root()
+    paths = (
+        *iglob(os.path.join(root, 'class', 'thermal', 'thermal_zone*', 'temp')),
+        *iglob(os.path.join(root, 'class', 'hwmon', 'hwmon*', 'temp*_input')),
+    )
+    readings = [value for path in paths
+                if (value := _read_temperature(path)) is not None]
+    if not readings:
+        return None
+    celsius = max(readings)
+    return ThermalInfo(celsius, _thermal_level(celsius))
+
+
+def thermal_info() -> ThermalInfo | None:
+    global _THERMAL_CACHE, _THERMAL_CACHE_ROOT, _THERMAL_CACHE_UNTIL
+    root = _thermal_sys_root()
+    now = time.monotonic()
+    if root != _THERMAL_CACHE_ROOT or now >= _THERMAL_CACHE_UNTIL:
+        _THERMAL_CACHE = _read_thermal_info_uncached()
+        _THERMAL_CACHE_ROOT = root
+        _THERMAL_CACHE_UNTIL = now + _THERMAL_CACHE_SECONDS
+    return _THERMAL_CACHE
+
+
+def _thermal_color(info: ThermalInfo | None) -> int:
+    if info is None:
+        return _THERMAL_UNKNOWN
+    if info.level == 'red':
+        return _BATTERY_LOW
+    if info.level == 'yellow':
+        return _BATTERY_MID
+    return _BATTERY_HIGH
+
+
+def _thermal_signature(info: ThermalInfo | None) -> tuple[int, str] | None:
+    return None if info is None else (round(info.celsius), info.level)
+
+
+def thermal_segment() -> tuple[str, str, int] | None:
+    global _THERMAL_LAST_SIGNATURE
+    if not chrome_enabled('KILIX_CHROME_TEMPERATURE', '0'):
+        return None
+    info = thermal_info()
+    _THERMAL_LAST_SIGNATURE = _thermal_signature(info)
+    temperature = '--' if info is None else str(round(info.celsius))
+    return (
+        f' {THERMOMETER_GLYPH} {temperature}° ',
+        THERMAL_WIDGET_ACTION,
+        _thermal_color(info),
+    )
 
 
 def volume_segment() -> tuple[str, str] | None:
@@ -290,6 +399,17 @@ def _battery_timer(timer_id: int | None = None) -> None:
         _invalidate_all_chrome()
 
 
+def _thermal_timer(timer_id: int | None = None) -> None:
+    global _THERMAL_CACHE_UNTIL, _THERMAL_LAST_SIGNATURE
+    if not chrome_enabled('KILIX_CHROME_TEMPERATURE', '0'):
+        return
+    _THERMAL_CACHE_UNTIL = 0.0
+    sig = _thermal_signature(thermal_info())
+    if sig != _THERMAL_LAST_SIGNATURE:
+        _THERMAL_LAST_SIGNATURE = sig
+        _invalidate_all_chrome()
+
+
 def _chrome_settings_timer(timer_id: int | None = None) -> None:
     global _CHROME_SETTINGS_LAST_SIGNATURE
     signature = _shared_settings_signature()
@@ -324,6 +444,19 @@ def ensure_battery_timer() -> None:
         log_error(f'Failed to start kilix battery chrome timer: {e}')
 
 
+def ensure_thermal_timer() -> None:
+    global _THERMAL_TIMER_STARTED
+    if _THERMAL_TIMER_STARTED or not chrome_enabled(
+            'KILIX_CHROME_TEMPERATURE', '0'):
+        return
+    _THERMAL_TIMER_STARTED = True
+    try:
+        from .fast_data_types import add_timer
+        add_timer(_thermal_timer, _THERMAL_REFRESH_SECONDS, True)
+    except Exception as e:
+        log_error(f'Failed to start kilix thermal chrome timer: {e}')
+
+
 def ensure_clock_timer() -> None:
     global _CLOCK_LAST_TEXT, _CLOCK_TIMER_STARTED
     if _CLOCK_TIMER_STARTED or not chrome_enabled('KILIX_CHROME_CLOCK'):
@@ -339,5 +472,6 @@ def ensure_clock_timer() -> None:
 
 def ensure_chrome_timers() -> None:
     ensure_chrome_settings_timer()
+    ensure_thermal_timer()
     ensure_clock_timer()
     ensure_battery_timer()

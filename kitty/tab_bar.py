@@ -37,6 +37,7 @@ from .kilix_battery import (
     clock_segments,
     ensure_chrome_timers,
     network_segment,
+    thermal_segment,
     volume_segment,
 )
 from .progress import ProgressState
@@ -1028,6 +1029,10 @@ class TabBar:
         # The default inactive-tab foreground is #444, which is too dim for a
         # persistent status control. Match the configured terminal foreground.
         clock_fg = as_rgb(color_as_int(get_options().foreground))
+        thermal = thermal_segment()
+        if thermal is not None:
+            text, action, fg = thermal
+            ans.append((text, action, fg))
         volume = volume_segment()
         if volume is not None:
             text, action = volume
