@@ -108,9 +108,10 @@ class TestTabBar(BaseTest):
                     kilix_battery, '_CHROME_SETTINGS_CACHE_SIGNATURE', None),
             ):
                 colors = []
-                for raw, shown in (('79000\n', '79°'),
-                                   ('85000\n', '85°'),
-                                   ('95000\n', '95°')):
+                for raw, shown in (('79940\n', '79.9°'),
+                                   ('79960\n', '80.0°'),
+                                   ('89940\n', '89.9°'),
+                                   ('89960\n', '90.0°')):
                     sensor.write_text(raw)
                     kilix_battery._THERMAL_CACHE_UNTIL = 0.0
                     segment = kilix_battery.thermal_segment()
@@ -121,6 +122,7 @@ class TestTabBar(BaseTest):
                     colors.append(color)
             self.ae(colors, [
                 kilix_battery._BATTERY_HIGH,
+                kilix_battery._BATTERY_MID,
                 kilix_battery._BATTERY_MID,
                 kilix_battery._BATTERY_LOW,
             ])
@@ -134,9 +136,43 @@ class TestTabBar(BaseTest):
             executable.write_text('#!/bin/sh\n')
             executable.chmod(0o755)
             with patch.dict(os.environ, {
-                    'GPU_TERMINAL_SOURCE_HOME': str(source)}):
+                    'GPU_TERMINAL_SOURCE_HOME': str(source)}, clear=True), \
+                    patch('kitty.kilix_battery.which', return_value=None):
                 self.ae(kilix_battery.kilix_temps_target(), (
                     [str(executable), '--graphics'], str(project)))
+
+    def test_kilix_temps_installed_target_precedes_incomplete_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            raw_launcher = source / 'kilix-temps' / 'kilix-temps'
+            raw_launcher.parent.mkdir(parents=True)
+            raw_launcher.write_text('#!/bin/sh\n')
+            raw_launcher.chmod(0o755)
+            with patch.dict(os.environ, {
+                    'GPU_TERMINAL_SOURCE_HOME': str(source)}, clear=True), \
+                    patch('kitty.kilix_battery.which',
+                          return_value='/usr/local/bin/kilix-temps'):
+                self.ae(kilix_battery.kilix_temps_target(), (
+                    ['/usr/local/bin/kilix-temps', '--graphics'], None))
+
+    def test_kilix_temps_falls_back_to_pinned_kilix_installer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            kilix = Path(directory) / 'kilix'
+            kilix.write_text('#!/bin/sh\n')
+            kilix.chmod(0o755)
+            with patch.dict(os.environ, {
+                    'GPU_TERMINAL_SOURCE_HOME': str(Path(directory) / 'source'),
+                    'KILIX_HOME': directory}, clear=True), \
+                    patch('kitty.kilix_battery.which', return_value=None):
+                self.ae(kilix_battery.kilix_temps_target(), (
+                    [str(kilix), 'temps', '--graphics'], None))
+
+    def test_thermal_reader_rejects_non_finite_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'temp'
+            for value in ('nan\n', 'inf\n', '-inf\n'):
+                path.write_text(value)
+                self.assertIsNone(kilix_battery._read_temperature(str(path)))
 
     def test_horizontal_multi_row_hit_testing_and_hidden_reset(self) -> None:
         self.set_options({

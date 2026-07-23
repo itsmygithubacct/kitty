@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import math
 import os
 import time
 from glob import iglob
@@ -122,18 +123,24 @@ def chrome_enabled(name: str, default: str = '1') -> bool:
 
 def kilix_temps_target() -> tuple[list[str], str | None] | None:
     """Resolve the graphical dashboard without relying on the caller's cwd."""
+    # An explicitly installed command is the most reliable target. In
+    # particular, do not let an incomplete development checkout shadow it.
+    if executable := which('kilix-temps'):
+        return [executable, '--graphics'], None
     source_home = os.environ.get('GPU_TERMINAL_SOURCE_HOME') or os.path.join(
         os.path.expanduser('~'), 'gpu_terminal')
     project = os.path.join(
         os.path.abspath(os.path.expanduser(source_home)), 'kilix-temps')
-    for candidate in (
-        os.path.join(project, 'build', 'kilix-temps'),
-        os.path.join(project, 'kilix-temps'),
-    ):
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return [candidate, '--graphics'], project
-    if executable := which('kilix-temps'):
-        return [executable, '--graphics'], None
+    candidate = os.path.join(project, 'build', 'kilix-temps')
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return [candidate, '--graphics'], project
+    # Every Kilix launch exports KILIX_HOME. Its `temps` command installs the
+    # exact dashboard/graphics closure selected by this Kilix checkout before
+    # starting it, which also makes a fresh standalone Kilix checkout useful.
+    if kilix_home := os.environ.get('KILIX_HOME'):
+        kilix = os.path.join(kilix_home, 'kilix')
+        if os.path.isfile(kilix) and os.access(kilix, os.X_OK):
+            return [kilix, 'temps', '--graphics'], None
     return None
 
 
@@ -147,7 +154,7 @@ def _read_temperature(path: str) -> float | None:
     if value is None:
         return None
     celsius = value / 1000.0 if abs(value) > 1000.0 else value
-    if celsius <= 0.0 or celsius > 250.0:
+    if not math.isfinite(celsius) or celsius <= 0.0 or celsius > 250.0:
         return None
     return celsius
 
@@ -160,6 +167,12 @@ def _thermal_level(celsius: float) -> str:
     return 'green'
 
 
+def _display_temperature(celsius: float) -> float:
+    # Derive both text and policy color from the same rounded value so a sensor
+    # just below a boundary cannot display that boundary in the lower color.
+    return float(f'{celsius:.1f}')
+
+
 def _read_thermal_info_uncached() -> ThermalInfo | None:
     root = _thermal_sys_root()
     paths = (
@@ -170,7 +183,7 @@ def _read_thermal_info_uncached() -> ThermalInfo | None:
                 if (value := _read_temperature(path)) is not None]
     if not readings:
         return None
-    celsius = max(readings)
+    celsius = _display_temperature(max(readings))
     return ThermalInfo(celsius, _thermal_level(celsius))
 
 
@@ -195,8 +208,8 @@ def _thermal_color(info: ThermalInfo | None) -> int:
     return _BATTERY_HIGH
 
 
-def _thermal_signature(info: ThermalInfo | None) -> tuple[int, str] | None:
-    return None if info is None else (round(info.celsius), info.level)
+def _thermal_signature(info: ThermalInfo | None) -> tuple[float, str] | None:
+    return None if info is None else (round(info.celsius, 1), info.level)
 
 
 def thermal_segment() -> tuple[str, str, int] | None:
@@ -205,7 +218,9 @@ def thermal_segment() -> tuple[str, str, int] | None:
         return None
     info = thermal_info()
     _THERMAL_LAST_SIGNATURE = _thermal_signature(info)
-    temperature = '--' if info is None else str(round(info.celsius))
+    # The cached reading is rounded by _display_temperature before its level is
+    # selected, so this text and the policy color always describe one value.
+    temperature = '--' if info is None else f'{info.celsius:.1f}'
     return (
         f' {THERMOMETER_GLYPH} {temperature}° ',
         THERMAL_WIDGET_ACTION,

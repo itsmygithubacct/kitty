@@ -1831,8 +1831,8 @@ class TabManager:  # {{{
                     if target is None:
                         get_boss().show_error(
                             'Kilix Temps unavailable',
-                            'kilix-temps was not found. Install it in PATH or '
-                            'check it out under GPU_TERMINAL_SOURCE_HOME.')
+                            'Neither an installed Kilix Temps dashboard nor a '
+                            'Kilix installer could be found.')
                     else:
                         cmd, cwd = target
                         self.new_tab(SpecialWindow(
