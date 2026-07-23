@@ -118,7 +118,7 @@ class TestWindowChrome(BaseTest):
             'combine | launch --location=hsplit --cwd=current | move_window top',
             actions)
         self.assertIn('change_font_size current +2.0', actions)
-        self.assertIn('close_window', actions)
+        self.assertIn('kilix_close_persistent_window', actions)
 
         with patch('kitty.window_title_bar.chrome_enabled', return_value=True):
             title_bar.render(data, '')

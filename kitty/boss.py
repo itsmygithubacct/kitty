@@ -1090,9 +1090,80 @@ class Boss:
         if window:
             self.child_monitor.mark_for_close(window.id)
 
+    def recover_pty_broker_sessions(self) -> None:
+        if getattr(self, '_pty_broker_recovery_done', False):
+            return
+        self._pty_broker_recovery_done = True
+        if os.environ.get('KITTY_PTY_BROKER_AUTO_RECOVER', '1') == '0':
+            return
+        from .pty_broker import attach_command, configuration, detached_sessions
+        executable, runtime = configuration()
+        if not executable:
+            return
+        sessions = detached_sessions(executable, runtime)
+        tm = self.active_tab_manager
+        if not sessions or tm is None:
+            return
+        original_tab = tm.active_tab
+        with Window.set_ignore_focus_changes_for_new_windows():
+            for status in sessions:
+                session_id = status['id']
+                cwd = status.get('cwd')
+                if not isinstance(cwd, str) or not os.path.isdir(cwd):
+                    cwd = None
+                tm.new_tab(special_window=SpecialWindow(
+                    attach_command(executable, runtime, session_id),
+                    override_title=f'recovered:{session_id[:8]}',
+                    cwd=cwd,
+                    env={
+                        'KITTY_PTY_BROKER_BYPASS': '1',
+                        'KITTY_PTY_BROKER_SESSION': session_id,
+                    },
+                ))
+        if original_tab is not None and original_tab in tm:
+            tm.set_active_tab(original_tab)
+
     @ac('win', 'Close the currently active window')
     def close_window(self) -> None:
         self.mark_window_for_close(self.window_for_dispatch)
+
+    @ac('win', '''
+    Close a persistent Kilix pane with confirmation
+
+    A broker-backed pane normally detaches when its frontend disappears. This
+    action is the deliberate exception: after confirmation it terminates the
+    broker's child process group and closes the frontend.
+    ''')
+    def kilix_close_persistent_window(self) -> None:
+        window = self.window_for_dispatch or self.active_window
+        if window is None:
+            return
+        if not window.child.is_pty_brokered:
+            self.close_window_with_confirmation()
+            return
+        message = _(
+            'Are you sure you want to close this pane? Its persistent shell '
+            'and every process running inside it will be terminated.'
+        )
+        self.confirm(
+            message, self.handle_kilix_persistent_close_confirmation,
+            window.id, window=window, title=_('Close persistent pane?'))
+
+    def handle_kilix_persistent_close_confirmation(
+        self, confirmed: bool, window_id: int
+    ) -> None:
+        if not confirmed:
+            return
+        window = self.window_id_map.get(window_id)
+        if window is None:
+            return
+        if not window.child.terminate_pty_broker():
+            self.show_error(
+                _('Could not close persistent pane'),
+                _('The PTY broker did not acknowledge termination. The pane '
+                  'was left attached so its processes are not lost.'))
+            return
+        self.mark_window_for_close(window)
 
     def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None = None) -> tuple[str, int]:
         num_running_programs = 0
@@ -1473,6 +1544,7 @@ class Boss:
                 self.launch_urls(*urls)
             else:
                 self.startup_first_child(first_os_window_id, startup_sessions=startup_sessions)
+            self.recover_pty_broker_sessions()
 
 
         if (opts := get_options()).update_check_interval > 0 and not self.update_check_started and getattr(sys, 'frozen', False):
@@ -2434,7 +2506,7 @@ class Boss:
             copts = common_opts_as_dict(get_options())
             env = {
                 'KITTY_COMMON_OPTS': json.dumps(copts),
-                'KITTY_CHILD_PID': str(w.child.pid),
+                'KITTY_CHILD_PID': str(w.child.process_tree_root_pid),
                 'OVERLAID_WINDOW_LINES': str(w.screen.lines),
                 'OVERLAID_WINDOW_COLS': str(w.screen.columns),
             }

@@ -274,7 +274,7 @@ def _memory_timer(timer_id: int | None = None) -> None:
             tab_changed = False
             for window in tab:
                 child = getattr(window, 'child', None)
-                pid = getattr(child, 'pid', 0)
+                pid = getattr(child, 'process_tree_root_pid', 0)
                 label = pane_memory_label(pid) if pid else ''
                 current[window.id] = label
                 if _LAST_LABELS.get(window.id) != label:

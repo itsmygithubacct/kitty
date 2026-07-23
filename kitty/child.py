@@ -256,6 +256,7 @@ class Child:
         remote_control_fd: int = -1,
         hold_after_ssh: bool = False,
         startup_command_via_shell_integration: Sequence[str] | str = (),
+        use_pty_broker: bool = False,
     ):
         self.is_clone_launch = is_clone_launch
         self.id = next(child_counter)
@@ -273,6 +274,18 @@ class Child:
         self.cwd = os.path.abspath(cwd)
         self.stdin = stdin
         self.env = env or {}
+        from .pty_broker import configuration, new_session_id, valid_session_id
+        broker_executable, broker_runtime = configuration()
+        requested_session = self.env.get('KITTY_PTY_BROKER_SESSION', '')
+        bypass = self.env.get('KITTY_PTY_BROKER_BYPASS') == '1'
+        self.pty_broker_executable = broker_executable
+        self.pty_broker_runtime = broker_runtime
+        self.pty_broker_spawn = bool(use_pty_broker and broker_executable and broker_runtime and not bypass)
+        self.pty_broker_session_id = (
+            requested_session if isinstance(requested_session, str) and valid_session_id(requested_session)
+            else (new_session_id() if self.pty_broker_spawn else '')
+        )
+        self._pty_broker_status_cache: tuple[float, dict[str, object]] = (0, {})
         self.startup_command_via_shell_integration = startup_command_via_shell_integration
         self.final_env:dict[str, str] = {}
         self.is_default_shell = bool(self.argv and self.argv[0] == shell_path)
@@ -295,6 +308,8 @@ class Child:
         # same-frame scroll composition on this marker, so stock kitty keeps
         # receiving only standard graphics-protocol commands.
         env['KITTY_KILIX_RENDERING'] = '1'
+        if self.pty_broker_session_id:
+            env['KITTY_PTY_BROKER_SESSION'] = self.pty_broker_session_id
         env['KITTY_PUBLIC_KEY'] = boss.encryption_public_key
         if self.remote_control_fd > -1:
             env['KITTY_LISTEN_ON'] = f'fd:{self.remote_control_fd}'
@@ -397,11 +412,15 @@ class Child:
                     argv.append('--cwd=' + cwd)
                     cwd = os.path.expanduser('~')
                 argv = ['/usr/bin/login', '-f', '-l', '-p', user] + argv
-        self.final_exe = final_exe = which(argv[0]) or argv[0]
-        self.final_argv0 = argv[0]
         if self.hold:
             argv = cmdline_for_hold(argv)
-            final_exe = argv[0]
+        if self.pty_broker_spawn:
+            from .pty_broker import wrap_command
+            argv = wrap_command(
+                self.pty_broker_executable, self.pty_broker_runtime,
+                self.pty_broker_session_id, argv, self.final_env)
+        self.final_exe = final_exe = which(argv[0]) or argv[0]
+        self.final_argv0 = argv[0]
         env = tuple(f'{k}={v}' for k, v in self.final_env.items())
         pid = fast_data_types.spawn(
             final_exe, cwd, tuple(argv), env, master, slave, stdin_read_fd, stdin_write_fd,
@@ -445,6 +464,49 @@ class Child:
             ans = list(self.argv)
         return ans
 
+    @property
+    def is_pty_brokered(self) -> bool:
+        return bool(
+            self.pty_broker_executable and self.pty_broker_runtime
+            and self.pty_broker_session_id
+        )
+
+    def pty_broker_status(self) -> dict[str, object]:
+        if not self.is_pty_brokered:
+            return {}
+        now = monotonic()
+        cached_at, cached = self._pty_broker_status_cache
+        if now - cached_at < 1:
+            return cached
+        from .pty_broker import query_status
+        status = query_status(
+            self.pty_broker_executable, self.pty_broker_runtime,
+            self.pty_broker_session_id)
+        self._pty_broker_status_cache = now, status
+        return status
+
+    def terminate_pty_broker(self) -> bool:
+        if not self.is_pty_brokered:
+            return True
+        from .pty_broker import terminate
+        return terminate(
+            self.pty_broker_executable, self.pty_broker_runtime,
+            self.pty_broker_session_id)
+
+    def _pty_broker_foreground_pgrp(self) -> int:
+        value = self.pty_broker_status().get('foreground_pgrp', -1)
+        return value if isinstance(value, int) else -1
+
+    def _pty_broker_child_pid(self) -> int | None:
+        value = self.pty_broker_status().get('child_pid')
+        return value if isinstance(value, int) and value > 0 else None
+
+    @property
+    def process_tree_root_pid(self) -> int | None:
+        if self.is_pty_brokered:
+            return self._pty_broker_child_pid() or self.pid
+        return self.pid
+
     def process_desc(self, pid: int) -> ProcessDesc:
         ans: ProcessDesc = {'pid': pid, 'cmdline': None, 'cwd': None}
         with suppress(Exception):
@@ -455,6 +517,9 @@ class Child:
 
     @property
     def foreground_processes(self) -> list[ProcessDesc]:
+        if self.is_pty_brokered:
+            pgrp = self._pty_broker_foreground_pgrp()
+            return [self.process_desc(x) for x in processes_in_group(pgrp)] if pgrp >= 0 else []
         if self.child_fd is None:
             return []
         try:
@@ -469,7 +534,10 @@ class Child:
         if self.child_fd is None:
             return []
         try:
-            foreground_process_group_id = os.tcgetpgrp(self.child_fd)
+            foreground_process_group_id = (
+                self._pty_broker_foreground_pgrp()
+                if self.is_pty_brokered else os.tcgetpgrp(self.child_fd)
+            )
             if foreground_process_group_id < 0:
                 return []
             gmap = process_group_map()
@@ -488,8 +556,9 @@ class Child:
     @property
     def cmdline(self) -> list[str]:
         try:
-            assert self.pid is not None
-            return self.cmdline_of_pid(self.pid) or list(self.argv)
+            pid = self.process_tree_root_pid
+            assert pid is not None
+            return self.cmdline_of_pid(pid) or list(self.argv)
         except Exception:
             return list(self.argv)
 
@@ -504,22 +573,27 @@ class Child:
     @property
     def environ(self) -> dict[str, str]:
         try:
-            assert self.pid is not None
-            return environ_of_process(self.pid) or self.final_env.copy()
+            pid = self.process_tree_root_pid
+            assert pid is not None
+            return environ_of_process(pid) or self.final_env.copy()
         except Exception:
             return self.final_env.copy()
 
     @property
     def current_cwd(self) -> str | None:
         with suppress(Exception):
-            assert self.pid is not None
-            return cwd_of_process(self.pid)
+            pid = self.process_tree_root_pid
+            assert pid is not None
+            return cwd_of_process(pid)
         return None
 
     def get_pid_for_cwd(self, oldest: bool = False) -> int | None:
         with suppress(Exception):
             assert self.child_fd is not None
-            pgrp = os.tcgetpgrp(self.child_fd)
+            pgrp = (
+                self._pty_broker_foreground_pgrp()
+                if self.is_pty_brokered else os.tcgetpgrp(self.child_fd)
+            )
             foreground_processes = processes_in_group(pgrp) if pgrp >= 0 else []
             if foreground_processes:
                 # there is no easy way that I know of to know which process is the
@@ -533,7 +607,7 @@ class Child:
                 # With this script , the foreground process group will contain
                 # both the bash instance running the script and vim.
                 return min(foreground_processes) if oldest else max(foreground_processes)
-        return self.pid
+        return self.process_tree_root_pid
 
     @property
     def pid_for_cwd(self) -> int | None:

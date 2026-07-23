@@ -773,6 +773,7 @@ class Tab:  # {{{
         remote_control_fd: int = -1,
         hold_after_ssh: bool = False,
         startup_command_via_shell_integration: Sequence[str] | str = (),
+        use_pty_broker: bool = False,
     ) -> Child:
         check_for_suitability = True
         if cmd is None:
@@ -824,7 +825,8 @@ class Tab:  # {{{
                 cmd, cwd or self.cwd, stdin, fenv, cwd_from, is_clone_launch=is_clone_launch,
                 add_listen_on_env_var=add_listen_on_env_var, hold=hold, pass_fds=pass_fds,
                 remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh,
-                startup_command_via_shell_integration=startup_command_via_shell_integration)
+                startup_command_via_shell_integration=startup_command_via_shell_integration,
+                use_pty_broker=use_pty_broker)
         ans.fork()
         return ans
 
@@ -880,6 +882,10 @@ class Tab:  # {{{
             is_clone_launch=is_clone_launch, add_listen_on_env_var=False if allow_remote_control and remote_control_passwords else True,
             hold=hold, pass_fds=pass_fds, remote_control_fd=remote_control_fd, hold_after_ssh=hold_after_ssh,
             startup_command_via_shell_integration=startup_command_via_shell_integration,
+            use_pty_broker=(
+                overlay_for is None and not overlay_behind
+                and not (env and env.get('KITTY_PTY_BROKER_BYPASS') == '1')
+            ),
         )
         window = Window(
             self, child, self.args, override_title=override_title,

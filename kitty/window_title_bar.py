@@ -235,7 +235,7 @@ class WindowTitleBarScreen:
                 ('KILIX_CHROME_BUTTON_SPLIT_DOWN', f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
                 ('KILIX_CHROME_BUTTON_SPLIT_RIGHT', f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current', None),  # split right: bold → (new pane to the right)
                 ('KILIX_CHROME_BUTTON_MAXIMIZE', f' {max_glyph} ', 'toggle_layout stack', None),  # maximize / zoom pane (glyph = state)
-                ('KILIX_CHROME_BUTTON_CLOSE', f' {chr(0xf0156)} ', 'close_window', None),  # close pane
+                ('KILIX_CHROME_BUTTON_CLOSE', f' {chr(0xf0156)} ', 'kilix_close_persistent_window', None),  # confirm + terminate persistent pane
             )
         segments = tuple(
             (text, action, segment_fg)

@@ -895,7 +895,7 @@ class Window:
         if field in ('id', 'window_id'):
             return pat.pattern == str(self.id)
         if field == 'pid':
-            return pat.pattern == str(self.child.pid)
+            return pat.pattern == str(self.child.process_tree_root_pid)
         if field == 'title':
             return pat.search(self.override_title or self.title) is not None
         if field in 'cwd':
@@ -1123,7 +1123,8 @@ class Window:
         is_overlay = tab is not None and tab.overlay_parent(self) is not None
         from .kilix_memory import pane_memory_segment
         memory_segment = (
-            None if is_overlay else pane_memory_segment(self.child.pid))
+            None if is_overlay else pane_memory_segment(
+                self.child.process_tree_root_pid))
 
         data = WindowTitleData(
             title=self.title or '',
@@ -1996,7 +1997,7 @@ class Window:
 
     @property
     def root_in_foreground_processes(self) -> bool:
-        q = self.child.pid
+        q = self.child.process_tree_root_pid
         for p in self.child.foreground_processes:
             if p['pid'] == q:
                 return True
@@ -2181,7 +2182,7 @@ class Window:
             'is_active': is_active,
             'title': self.title,
             'title_overridden': self.override_title is not None,
-            'pid': self.child.pid,
+            'pid': self.child.process_tree_root_pid,
             'cwd': self.child.current_cwd or self.child.cwd,
             'cmdline': self.child.cmdline,
             'last_reported_cmdline': self.last_cmd_cmdline,
