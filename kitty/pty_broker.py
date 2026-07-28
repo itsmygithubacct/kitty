@@ -50,6 +50,40 @@ def journal_limit(environment: Mapping[str, str] | None = None) -> int:
     return value if 0 <= value <= 1024 * 1024 * 1024 else 67108864
 
 
+def transcript_limit(environment: Mapping[str, str] | None = None) -> int:
+    env = os.environ if environment is None else environment
+    raw = env.get('KITTY_PTY_BROKER_TRANSCRIPT_LIMIT', '8388608')
+    try:
+        value = int(raw)
+    except ValueError:
+        return 8388608
+    return value if 0 <= value <= 1024 * 1024 * 1024 else 8388608
+
+
+def transcript_options(
+    session_id: str,
+    environment: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Return the broker flags that record this pane's output, if enabled.
+
+    Session logging is opt-out rather than opt-in, so an unset directory means
+    the host did not configure it and no transcript is written.  The session ID
+    is already constrained to a safe single path component.
+    """
+    env = os.environ if environment is None else environment
+    directory = env.get('KITTY_PTY_BROKER_TRANSCRIPT_DIR', '')
+    if not directory or not os.path.isabs(directory) or not os.path.isdir(directory):
+        return []
+    graphics = env.get('KITTY_PTY_BROKER_TRANSCRIPT_GRAPHICS', 'elide')
+    if graphics not in {'elide', 'keep'}:
+        graphics = 'elide'
+    return [
+        '--transcript', os.path.join(directory, f'{session_id}.log'),
+        '--transcript-limit', str(transcript_limit(env)),
+        '--transcript-graphics', graphics,
+    ]
+
+
 def wrap_command(
     executable: str,
     runtime: str,
@@ -61,8 +95,10 @@ def wrap_command(
         raise ValueError('invalid PTY broker command')
     answer = [
         executable, '--runtime-dir', runtime, 'run', '--id', session_id,
-        '--journal-limit', str(journal_limit(environment)), '--',
+        '--journal-limit', str(journal_limit(environment)),
     ]
+    answer.extend(transcript_options(session_id, environment))
+    answer.append('--')
     answer.extend(command)
     return answer
 
