@@ -34,6 +34,7 @@ from .fast_data_types import (
 )
 from .kilix_battery import (
     battery_segment,
+    chrome_value,
     clock_segments,
     ensure_chrome_timers,
     network_segment,
@@ -915,7 +916,7 @@ class TabBar:
         if not self.is_vertical:
             wanted = sum(max(0, wcswidth(t)) + 1 for t, _ in window_entries())
             if wanted:
-                self.window_reserve = min(wanted, max(0, self.right_status_start // 3))
+                self.window_reserve = min(wanted, max(0, self.right_status_start // 2))
 
         def row_limit(line: int) -> int:
             return self.tab_limit if line == 0 else s.columns
@@ -1111,46 +1112,68 @@ class TabBar:
         if line >= s.lines:
             return
         limit = self.right_status_start if line == 0 else s.columns
-        # Fit the run into whatever the pages left behind rather than dropping
-        # it: with wide pages and a full status area there may only be room for
-        # short labels, and a taskbar that silently renders nothing is worse
-        # than one with abbreviated names.
         available = limit - 1 - x
-        if available < 6:
-            return
-        per_item = max(3, min(18, available // max(1, len(entries)) - 3))
-        entries = window_entries(per_item)
         opts = get_options()
         default_bg = as_rgb(color_as_int(self.draw_data.default_bg))
-        # Same palette family as an inactive page, so the two read as one strip
-        # — but separated by the *soft* powerline glyph rather than the solid
-        # arrow tabs use, so a window is visibly not a page.
+        # Same palette family as an inactive page so the strip reads as one
+        # thing, but each window gets its own padded slot with a soft separator
+        # between slots -- close enough to a page to be obviously the same kind
+        # of control, different enough not to be mistaken for one.
         item_bg = as_rgb(color_as_int(opts.inactive_tab_background))
         live_fg = as_rgb(color_as_int(opts.foreground))
         dim_fg = as_rgb(color_as_int(opts.inactive_tab_foreground))
         _, soft_separator = powerline_symbols.get(
             self.draw_data.powerline_style, ('', ''))
+        sep = f' {soft_separator} '
+        sep_w = max(0, wcswidth(sep))
+
+        try:
+            title_w = int(chrome_value('KILIX_CHROME_WINDOWS_MAX_TITLE', '14') or 14)
+        except Exception:
+            title_w = 14
+        # Rather than shrinking every label until they all fit -- which is how
+        # this ended up as a row of three-character stubs -- keep the labels
+        # readable and show only as many as the space allows, then say how many
+        # were left over.
+        slot = 0
+        shown = 0
+        for title_w in range(max(6, title_w), 5, -2):
+            slot = title_w + 2
+            shown = 0
+            used = 0
+            while shown < len(entries):
+                need = slot if shown == 0 else slot + sep_w
+                if used + need > available:
+                    break
+                used += need
+                shown += 1
+            if shown:
+                break
+        if not shown:
+            return
+
+        entries = window_entries(title_w)
+        hidden = len(entries) - shown
         extents: list[ActionExtent] = []
         s.cursor.y = line
         s.cursor.x = x
-        for i, (text, action) in enumerate(entries):
-            sep = f' {soft_separator}' if i else ' '
-            width = max(0, wcswidth(text)) + max(0, wcswidth(sep))
-            if width <= 0 or s.cursor.x + width > limit - 1:
-                break  # out of room: the clock and status keep priority
+        for i, (text, action) in enumerate(entries[:shown]):
             s.cursor.bold = s.cursor.italic = False
-            s.cursor.bg = item_bg
-            s.cursor.fg = dim_fg
-            draw_attributed_string(sep, s)
+            if i:
+                s.cursor.bg = default_bg
+                s.cursor.fg = dim_fg
+                draw_attributed_string(sep, s)
             before = s.cursor.x
+            s.cursor.bg = item_bg
             s.cursor.fg = dim_fg if text.lstrip().startswith(MINIMISED_GLYPH) else live_fg
-            draw_attributed_string(text, s)
+            # pad to a uniform slot so the windows line up like the pages do
+            draw_attributed_string(text.ljust(slot)[:slot], s)
             extents.append(
                 ActionExtent(action, CellRange(before, s.cursor.x), CellRange(line, line)))
-        if extents:
-            # close the run back to the bar background
+        if hidden > 0 and s.cursor.x + 4 <= limit - 1:
             s.cursor.bg = default_bg
-            s.draw(' ')
+            s.cursor.fg = dim_fg
+            draw_attributed_string(f' +{hidden}', s)
         s.cursor.bold = s.cursor.italic = False
         s.cursor.fg = s.cursor.bg = 0
         self.window_extents = tuple(extents)
