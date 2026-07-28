@@ -21,10 +21,12 @@ returns nothing and Kilix's tab bar is unchanged.
 """
 
 import os
+import re
+import subprocess
 import time
 
 from .kilix_battery import chrome_enabled, chrome_value
-from .utils import log_error
+from .utils import log_error, which
 
 # Clicking an entry activates that window. The window id is appended, so the
 # dispatcher in tabs.py can recover it without a side table that could go stale
@@ -33,141 +35,139 @@ WINDOW_ACTIVATE_ACTION_PREFIX = 'kilix_activate_window:'
 
 MINIMISED_GLYPH = '_'
 
-_REFRESH_SECONDS = 1.0
+_REFRESH_SECONDS = 2.0
 _TIMER_STARTED = False
 _LAST_SIGNATURE: tuple[object, ...] | None = None
 
 _CACHE: tuple[tuple[int, str, bool], ...] = ()
 _CACHE_UNTIL = 0.0
-_CACHE_SECONDS = 0.75
+_CACHE_SECONDS = 1.5
 
 _XLIB_UNAVAILABLE_LOGGED = False
 _display = None
 _display_name: str | None = None
 
 
-class _NoDisplay(Exception):
-    pass
+SKIP_STATES = ('_NET_WM_STATE_SKIP_TASKBAR', '_NET_WM_STATE_SKIP_PAGER')
+SKIP_TYPES = ('_NET_WM_WINDOW_TYPE_DOCK', '_NET_WM_WINDOW_TYPE_DESKTOP',
+              '_NET_WM_WINDOW_TYPE_SPLASH')
 
 
-def _get_display():          # type: ignore[no-untyped-def]
-    """One long-lived X connection, reopened if the display changes or dies."""
-    global _display, _display_name, _XLIB_UNAVAILABLE_LOGGED
-    name = os.environ.get('DISPLAY') or ''
-    if not name:
-        raise _NoDisplay
-    if _display is not None and _display_name == name:
-        return _display
+def _xprop(*args: str) -> str:
+    """Query X properties with xprop.
+
+    Deliberately not python-xlib: the terminal embeds its own interpreter whose
+    sys.path does not include the system dist-packages, so `import Xlib` fails
+    inside Kilix even when python3-xlib is installed. xprop ships in x11-utils,
+    which Pleb already requires for the session's own EWMH readiness check.
+    """
+    if not os.environ.get('DISPLAY'):
+        return ''
     try:
-        from Xlib import display as xdisplay
+        out = subprocess.run(
+            ('xprop', *args), capture_output=True, text=True, timeout=5,
+            env=os.environ.copy())
     except Exception:
-        # python-xlib is a Pleb dependency; outside a Pleb install it may be
-        # absent. Say so once, then stay quiet — this runs on a timer.
-        if not _XLIB_UNAVAILABLE_LOGGED:
-            _XLIB_UNAVAILABLE_LOGGED = True
-            log_error(
-                'kilix: python-xlib unavailable; native windows will not be '
-                'listed in the tab bar')
-        raise _NoDisplay
-    try:
-        _display = xdisplay.Display(name)
-        _display_name = name
-    except Exception:
-        _display = None
-        _display_name = None
-        raise _NoDisplay
-    return _display
+        return ''
+    return out.stdout if out.returncode == 0 else ''
 
 
-def _drop_display() -> None:
-    global _display, _display_name
-    try:
-        if _display is not None:
-            _display.close()
-    except Exception:
-        pass
-    _display = None
-    _display_name = None
+def _prop_ids(text: str) -> list[int]:
+    """Window ids from an xprop window-list property."""
+    if '#' not in text:
+        return []
+    ans: list[int] = []
+    for token in text.split('#', 1)[1].split(','):
+        token = token.strip()
+        if token.startswith('0x'):
+            try:
+                ans.append(int(token, 16))
+            except ValueError:
+                pass
+    return ans
 
 
-def _window_ids(d, root, atom_name: str) -> list[int]:   # type: ignore[no-untyped-def]
-    from Xlib import Xatom
-    prop = root.get_full_property(d.intern_atom(atom_name), Xatom.WINDOW)
-    return list(prop.value) if prop else []
-
-
-def _own_window_ids(d, root) -> set[int]:                # type: ignore[no-untyped-def]
-    """Kilix's own top-level windows, which must never appear as entries."""
-    ids: set[int] = set()
-    # Deliberately NOT keyed on $WINDOWID: kitty sets that in the environment it
-    # hands to *child* processes (see tabs.py), so this process never has its
-    # own id there — and when Kilix was started from another terminal, WINDOWID
-    # is that terminal's window, which would hide an unrelated window from the
-    # taskbar. WM_CLASS is authoritative here: the kilix launcher execs the
-    # engine with `--class kilix` precisely so it groups as itself.
-    own_class = 'kilix'
-    for wid in _window_ids(d, root, '_NET_CLIENT_LIST'):
-        try:
-            cls = d.create_resource_object('window', wid).get_wm_class()
-        except Exception:
-            continue
-        if cls and any(c and c.lower() == own_class for c in cls):
-            ids.add(wid)
-    return ids
-
-
-def _window_title(d, win) -> str:                        # type: ignore[no-untyped-def]
-    # _NET_WM_NAME (UTF-8) is the modern property; fall back to WM_NAME, which
-    # is all some clients set (xterm, for one).
-    try:
-        prop = win.get_full_property(d.intern_atom('_NET_WM_NAME'), 0)
-        if prop and prop.value:
-            value = prop.value
-            if isinstance(value, bytes):
-                return value.decode('utf-8', 'replace')
-            return str(value)
-    except Exception:
-        pass
-    try:
-        name = win.get_wm_name()
-        if name:
-            return name if isinstance(name, str) else name.decode('utf-8', 'replace')
-    except Exception:
-        pass
-    return ''
-
-
-def _is_minimised(d, win) -> bool:                       # type: ignore[no-untyped-def]
-    from Xlib import Xatom
-    try:
-        prop = win.get_full_property(d.intern_atom('_NET_WM_STATE'), Xatom.ATOM)
-    except Exception:
-        return False
-    if not prop:
-        return False
-    hidden = d.intern_atom('_NET_WM_STATE_HIDDEN')
-    return hidden in set(prop.value)
-
-
-def _has_window_manager(d, root) -> bool:                # type: ignore[no-untyped-def]
+def _has_window_manager() -> bool:
     """The same validated handshake pleb-session uses.
 
     A stale _NET_SUPPORTING_WM_CHECK left by a window manager that died would
     otherwise make us advertise a taskbar for windows nobody can manage.
     """
-    from Xlib import Xatom
-    try:
-        prop = root.get_full_property(
-            d.intern_atom('_NET_SUPPORTING_WM_CHECK'), Xatom.WINDOW)
-        if not prop or not prop.value:
-            return False
-        child_id = prop.value[0]
-        child = d.create_resource_object('window', child_id)
-        back = child.get_full_property(
-            d.intern_atom('_NET_SUPPORTING_WM_CHECK'), Xatom.WINDOW)
-        return bool(back and back.value and back.value[0] == child_id)
-    except Exception:
+    root = _prop_ids(_xprop('-root', '-notype', '_NET_SUPPORTING_WM_CHECK'))
+    if not root:
         return False
+    child = _prop_ids(_xprop('-id', str(root[0]), '-notype', '_NET_SUPPORTING_WM_CHECK'))
+    return bool(child) and child[0] == root[0]
+
+
+def _quoted(line: str) -> list[str]:
+    return re.findall(r'"((?:[^"\\]|\\.)*)"', line)
+
+
+def _window_info(wid: int) -> tuple[str, bool] | None:
+    """(title, minimised) for a window, or None if it must not be listed."""
+    text = _xprop('-id', str(wid), '-notype', '_NET_WM_NAME', 'WM_NAME',
+                  'WM_CLASS', '_NET_WM_STATE', '_NET_WM_WINDOW_TYPE')
+    if not text:
+        return None
+    net_name = wm_name = ''
+    classes: list[str] = []
+    state = types = ''
+    for line in text.splitlines():
+        if line.startswith('_NET_WM_NAME'):
+            got = _quoted(line)
+            net_name = got[0] if got else ''
+        elif line.startswith('WM_NAME'):
+            got = _quoted(line)
+            wm_name = got[0] if got else ''
+        elif line.startswith('WM_CLASS'):
+            classes = _quoted(line)
+        elif line.startswith('_NET_WM_STATE'):
+            state = line
+        elif line.startswith('_NET_WM_WINDOW_TYPE'):
+            types = line
+    # Kilix must never list itself. WM_CLASS is authoritative: the launcher
+    # execs the engine with `--class kilix`.
+    if any(c.lower() == 'kilix' for c in classes):
+        return None
+    # Panels, docks and anything asking to be skipped are not tasks. The
+    # desktop's own panel sets SKIP_TASKBAR precisely so lists like this one
+    # leave it alone.
+    if any(flag in state for flag in SKIP_STATES):
+        return None
+    if any(flag in types for flag in SKIP_TYPES):
+        return None
+    return (net_name or wm_name), ('_NET_WM_STATE_HIDDEN' in state)
+
+
+def _activate_command(window_id: int) -> tuple[str, ...] | None:
+    hexid = f'0x{window_id:x}'
+    if which('wmctrl'):
+        return ('wmctrl', '-i', '-a', hexid)
+    if which('xdotool'):
+        return ('xdotool', 'windowactivate', hexid)
+    # Fall back to the system interpreter, which -- unlike the one embedded in
+    # the terminal -- can import python-xlib. Sending _NET_ACTIVE_WINDOW with
+    # source indication 2 (a pager acting for the user) is what restores a
+    # minimised window and focuses it in one step.
+    if which('python3'):
+        return ('python3', '-c', _ACTIVATE_SNIPPET, hexid)
+    return None
+
+
+_ACTIVATE_SNIPPET = """
+import sys
+from Xlib import X, display
+from Xlib.protocol import event
+d = display.Display()
+root = d.screen().root
+win = d.create_resource_object('window', int(sys.argv[1], 16))
+root.send_event(event.ClientMessage(
+    window=win, client_type=d.intern_atom('_NET_ACTIVE_WINDOW'),
+    data=(32, [2, X.CurrentTime, 0, 0, 0])),
+    event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+d.flush()
+"""
 
 
 def in_pleb_session() -> bool:
@@ -191,23 +191,13 @@ def native_windows() -> tuple[tuple[int, str, bool], ...]:
         return _CACHE
     ans: list[tuple[int, str, bool]] = []
     try:
-        d = _get_display()
-        root = d.screen().root
-        if _has_window_manager(d, root):
-            skip = _own_window_ids(d, root)
-            for wid in _window_ids(d, root, '_NET_CLIENT_LIST'):
-                if wid in skip:
+        if _has_window_manager():
+            for wid in _prop_ids(_xprop('-root', '-notype', '_NET_CLIENT_LIST')):
+                info = _window_info(wid)
+                if info is None:
                     continue
-                win = d.create_resource_object('window', wid)
-                try:
-                    ans.append((wid, _window_title(d, win), _is_minimised(d, win)))
-                except Exception:
-                    continue
-    except _NoDisplay:
-        ans = []
+                ans.append((wid, info[0], info[1]))
     except Exception as e:
-        # A dead connection must not wedge the tab bar permanently.
-        _drop_display()
         log_error(f'kilix: failed to list native windows: {e}')
         ans = []
     _CACHE = tuple(ans)
@@ -235,27 +225,21 @@ def window_entries() -> tuple[tuple[str, str], ...]:
 
 def activate_window(window_id: int) -> bool:
     """Restore (if minimised) and focus a native window, as a pager does."""
-    try:
-        from Xlib import X
-        from Xlib.protocol import event as xevent
-        d = _get_display()
-        root = d.screen().root
-        win = d.create_resource_object('window', window_id)
-        # source indication 2 == a pager/taskbar acting on the user's behalf;
-        # window managers honour it even when focus stealing prevention is on.
-        ev = xevent.ClientMessage(
-            window=win, client_type=d.intern_atom('_NET_ACTIVE_WINDOW'),
-            data=(32, [2, X.CurrentTime, 0, 0, 0]))
-        root.send_event(
-            ev, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
-        d.flush()
-        return True
-    except _NoDisplay:
+    cmd = _activate_command(window_id)
+    if cmd is None:
+        log_error('kilix: no way to activate a window (install wmctrl or xdotool)')
         return False
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5,
+                             env=os.environ.copy())
     except Exception as e:
-        _drop_display()
         log_error(f'kilix: failed to activate window 0x{window_id:x}: {e}')
         return False
+    if res.returncode != 0:
+        log_error(f'kilix: failed to activate window 0x{window_id:x}: '
+                  f'{res.stderr.strip()}')
+        return False
+    return True
 
 
 def action_window_id(action: str) -> int | None:
