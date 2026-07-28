@@ -40,6 +40,7 @@ from .kilix_battery import (
     thermal_segment,
     volume_segment,
 )
+from .kilix_voice import dictate_segment, speak_segment
 from .kilix_windows import MINIMISED_GLYPH, window_entries
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
@@ -1050,6 +1051,12 @@ class TabBar:
         if volume is not None:
             text, action = volume
             ans.append((text, action, clock_fg))
+        # Voice sits beside volume because both are audio, and ahead of network
+        # so the clock and battery cluster on the right edge never moves when a
+        # widget appears, disappears or changes colour.
+        for voice in (speak_segment(), dictate_segment()):
+            if voice is not None:
+                ans.append(voice)
         network = network_segment()
         if network is not None:
             text, action = network

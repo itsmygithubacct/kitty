@@ -1938,6 +1938,18 @@ class TabManager:  # {{{
                     kilix_temps_target,
                     toggle_battery_percent,
                 )
+                from .kilix_voice import (
+                    DICTATE_ACTION,
+                    SPEAK_ACTION,
+                    begin_dictation,
+                    end_dictation,
+                    is_pixel_pane,
+                    pane_echo_disabled,
+                    read_extent,
+                    speak,
+                    stop_speech,
+                    voice_state,
+                )
                 from .kilix_windows import (
                     action_window_id,
                     activate_window,
@@ -1976,6 +1988,41 @@ class TabManager:  # {{{
                                 override_title='Volume Control',
                                 overlay_for=target.id,
                             )
+                elif tab_action == SPEAK_ACTION:
+                    if voice_state.speaking:
+                        # Toggle: the button that started the read stops it.
+                        stop_speech()
+                    elif (target := (self.active_tab.active_window if self.active_tab else None)) is not None:
+                        if is_pixel_pane(target):
+                            get_boss().show_error(
+                                'Read aloud unavailable',
+                                'This pane is drawing pixels rather than text, so there is '
+                                'nothing to read. Read aloud works on terminal panes.')
+                        elif read_extent() == 'selection' and not target.has_selection():
+                            get_boss().show_error(
+                                'Nothing selected',
+                                'The read extent is set to "selection". Select text in the '
+                                'pane first, or set the extent to "screen".')
+                        else:
+                            # A selection is what the user pointed at, so it wins over the
+                            # configured extent; scrollback is the only extent needing more
+                            # than the visible screen.
+                            text = target.text_for_selection() if target.has_selection() else target.as_text(
+                                as_ansi=False, add_history=read_extent() == 'scrollback')
+                            if (error := speak(text)) is not None:
+                                get_boss().show_error('Read aloud failed', error)
+                elif tab_action == DICTATE_ACTION:
+                    if voice_state.listening:
+                        # Toggle: a second click stops and flushes what was heard.
+                        end_dictation(flush=True)
+                    elif (target := (self.active_tab.active_window if self.active_tab else None)) is not None:
+                        if pane_echo_disabled(target):
+                            get_boss().show_error(
+                                'Dictation refused',
+                                'This pane is at a hidden prompt. Kilix does not dictate '
+                                'into a password prompt.')
+                        elif (error := begin_dictation(target.id)) is not None:
+                            get_boss().show_error('Dictation unavailable', error)
                 elif tab_action == NETWORK_WIDGET_ACTION:
                     target = self.active_tab.active_window if self.active_tab else None
                     if target is not None:
