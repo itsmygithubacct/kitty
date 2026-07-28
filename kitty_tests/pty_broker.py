@@ -11,6 +11,7 @@ from kitty.child import Child
 from kitty.pty_broker import (
     configuration,
     journal_limit,
+    new_session_id,
     transcript_limit,
     transcript_options,
     valid_session_id,
@@ -127,3 +128,16 @@ class TestPtyBrokerIntegration(BaseTest):
                 cmdline_of_pid.assert_called_once_with(456)
         with patch.object(child, '_pty_broker_child_pid', return_value=None):
             self.ae(child.process_tree_root_pid, 123)
+
+    def test_session_id_leaves_room_for_the_control_socket_path(self) -> None:
+        # The broker builds <runtime>/sessions/<id>/control.sock and refuses a
+        # path that will not fit a Unix socket address. A 32-character ID
+        # overflowed that with Kilix's own default runtime directory, so every
+        # pane failed to start and the terminal exited with no windows.
+        limit = 108  # sizeof(struct sockaddr_un.sun_path) on Linux
+        runtime = os.path.expanduser(
+            '~/.local/gpu_terminal/kilix/session/pty-broker')
+        session_id = new_session_id()
+        self.ae(len(session_id), 16)
+        projected = os.path.join(runtime, 'sessions', session_id, 'control.sock')
+        self.assertLess(len(projected), limit)

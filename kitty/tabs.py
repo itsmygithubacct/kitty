@@ -1938,7 +1938,16 @@ class TabManager:  # {{{
                     kilix_temps_target,
                     toggle_battery_percent,
                 )
-                if tab_action == BATTERY_TOGGLE_ACTION:
+                from .kilix_windows import (
+                    action_window_id,
+                    activate_window,
+                )
+                native_window = action_window_id(tab_action)
+                if native_window is not None:
+                    # Restores it first if it was minimised, so a tab-bar entry
+                    # is a complete route back to a hidden window.
+                    activate_window(native_window)
+                elif tab_action == BATTERY_TOGGLE_ACTION:
                     toggle_battery_percent()
                 elif tab_action == THERMAL_WIDGET_ACTION:
                     target = kilix_temps_target()

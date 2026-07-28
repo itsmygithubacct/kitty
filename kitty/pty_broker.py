@@ -37,7 +37,16 @@ def valid_session_id(value: str) -> bool:
 
 
 def new_session_id() -> str:
-    return secrets.token_hex(16)
+    # The ID becomes a path component of the broker's control socket:
+    #   <runtime-dir>/sessions/<id>/control.sock
+    # A Unix socket address is limited to sizeof(sun_path), 108 bytes on Linux,
+    # and the broker refuses anything longer. With Kilix's default runtime
+    # directory (~/.local/gpu_terminal/kilix/session/pty-broker, 55 bytes) a
+    # 32-character ID produced a 110-byte path, so every pane failed to start
+    # and the terminal exited with no windows. 16 characters leaves ~14 bytes of
+    # headroom for a relocated KILIX_STORAGE_HOME while keeping a 2**64 space,
+    # which is ample for short-lived per-pane sessions.
+    return secrets.token_hex(8)
 
 
 def journal_limit(environment: Mapping[str, str] | None = None) -> int:

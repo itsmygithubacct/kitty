@@ -40,6 +40,7 @@ from .kilix_battery import (
     thermal_segment,
     volume_segment,
 )
+from .kilix_windows import MINIMISED_GLYPH, window_entries
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
 from .types import WindowGeometry, run_once
@@ -1029,6 +1030,14 @@ class TabBar:
         # The default inactive-tab foreground is #444, which is too dim for a
         # persistent status control. Match the configured terminal foreground.
         clock_fg = as_rgb(color_as_int(get_options().foreground))
+        # Native X11 windows come first, so the taskbar sits next to the tabs
+        # rather than beyond the clock. Under Pleb these are the browsers and
+        # dialogs Openbox manages; a minimised one is still listed here, which
+        # is the only on-screen representation it has.
+        minimised_fg = as_rgb(color_as_int(get_options().inactive_tab_foreground))
+        for text, action in window_entries():
+            ans.append((text, action, minimised_fg
+                        if text.lstrip().startswith(MINIMISED_GLYPH) else clock_fg))
         thermal = thermal_segment()
         if thermal is not None:
             text, action, fg = thermal
