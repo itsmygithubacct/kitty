@@ -528,6 +528,12 @@ def draw_tab_with_powerline(
         if extra > 0 and extra + 1 < screen.cursor.x:
             screen.cursor.x -= extra + 1
             screen.draw('…')
+        elif extra < 0:
+            # Pad a short title out to its slot so every page is the same
+            # width. Without this a page called "sh" and one called
+            # "build-and-deploy" get wildly different tabs, and the strip
+            # reflows every time a title changes.
+            screen.draw(' ' * -extra)
 
     if not needs_soft_separator:
         screen.draw(' ')
@@ -651,6 +657,7 @@ class TabBar:
         self.blank_rects: tuple[Border, ...] = ()
         self.tab_extents: Sequence[TabExtent] = ()
         self.action_extents: Sequence[ActionExtent] = ()
+        self.window_extents: Sequence[ActionExtent] = ()
         self.right_status_start = 0
         self.laid_out_once = False
         self.left_edge_is_default = True
@@ -945,9 +952,10 @@ class TabBar:
                 ideal_tab_lengths[i] = tl = max(1, s.cursor.x)
                 if tab.is_active:
                     active_idx = i
-                if tl < default_max_tab_length:
-                    max_tab_lengths[i] = tl
-                    extra += default_max_tab_length - tl
+                # Deliberately not shrinking a short tab to its content: every
+                # page keeps the same slot, which is what makes the strip read
+                # as an even row rather than a ragged one. draw_tab_with_powerline
+                # pads the title to fill it.
             if extra > 0:
                 if ideal_tab_lengths[active_idx] > max_tab_lengths[active_idx]:
                     d = min(extra, ideal_tab_lengths[active_idx] - max_tab_lengths[active_idx])
@@ -980,6 +988,9 @@ class TabBar:
             s.erase_in_line(0, False)  # Ensure no long titles bleed after the last tab
         self.tab_extents = cr
         self.align()
+        # after align(): align() inserts characters to shift the tabs, which
+        # would displace anything already drawn beside them.
+        self.draw_native_window_entries()
         self.draw_right_status_segments(right_segments)
         return self._update_edge_defaults(False)
 
@@ -987,6 +998,7 @@ class TabBar:
         s = self.screen
         self.last_laid_out_tabs = data
         self.tab_extents = ()
+        self.window_extents = ()
         s.cursor.x = s.cursor.y = 0
         s.erase_in_display(2, False)
         if not data:
@@ -1030,14 +1042,6 @@ class TabBar:
         # The default inactive-tab foreground is #444, which is too dim for a
         # persistent status control. Match the configured terminal foreground.
         clock_fg = as_rgb(color_as_int(get_options().foreground))
-        # Native X11 windows come first, so the taskbar sits next to the tabs
-        # rather than beyond the clock. Under Pleb these are the browsers and
-        # dialogs Openbox manages; a minimised one is still listed here, which
-        # is the only on-screen representation it has.
-        minimised_fg = as_rgb(color_as_int(get_options().inactive_tab_foreground))
-        for text, action in window_entries():
-            ans.append((text, action, minimised_fg
-                        if text.lstrip().startswith(MINIMISED_GLYPH) else clock_fg))
         thermal = thermal_segment()
         if thermal is not None:
             text, action, fg = thermal
@@ -1060,8 +1064,68 @@ class TabBar:
     def right_status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
         return sum(max(0, wcswidth(text)) for text, _, _ in segments)
 
+    def draw_native_window_entries(self) -> None:
+        """Continue the tab row with the native X11 windows Openbox manages.
+
+        Pleb ships no panel, so the tab bar is the taskbar. These entries sit
+        immediately after the real tabs on the same row; a minimised window is
+        drawn dimmed and is otherwise unrepresented on screen. They are kept
+        out of tab_extents deliberately — those carry real tab ids that drive
+        tab switching and dragging — and go through the action mechanism, so a
+        click activates the window instead of selecting a nonexistent tab.
+        """
+        self.window_extents = ()
+        entries = window_entries()
+        if not entries:
+            return
+        s = self.screen
+        if self.tab_extents:
+            last = self.tab_extents[-1]
+            line, x = last.y.end, last.x.end
+        else:
+            line, x = 0, 0
+        if line >= s.lines:
+            return
+        limit = self.right_status_start if line == 0 else s.columns
+        opts = get_options()
+        default_bg = as_rgb(color_as_int(self.draw_data.default_bg))
+        # Same palette family as an inactive page, so the two read as one strip
+        # — but separated by the *soft* powerline glyph rather than the solid
+        # arrow tabs use, so a window is visibly not a page.
+        item_bg = as_rgb(color_as_int(opts.inactive_tab_background))
+        live_fg = as_rgb(color_as_int(opts.foreground))
+        dim_fg = as_rgb(color_as_int(opts.inactive_tab_foreground))
+        _, soft_separator = powerline_symbols.get(
+            self.draw_data.powerline_style, ('', ''))
+        extents: list[ActionExtent] = []
+        s.cursor.y = line
+        s.cursor.x = x
+        for i, (text, action) in enumerate(entries):
+            sep = f' {soft_separator}' if i else ' '
+            width = max(0, wcswidth(text)) + max(0, wcswidth(sep))
+            if width <= 0 or s.cursor.x + width > limit - 1:
+                break  # out of room: the clock and status keep priority
+            s.cursor.bold = s.cursor.italic = False
+            s.cursor.bg = item_bg
+            s.cursor.fg = dim_fg
+            draw_attributed_string(sep, s)
+            before = s.cursor.x
+            s.cursor.fg = dim_fg if text.lstrip().startswith(MINIMISED_GLYPH) else live_fg
+            draw_attributed_string(text, s)
+            extents.append(
+                ActionExtent(action, CellRange(before, s.cursor.x), CellRange(line, line)))
+        if extents:
+            # close the run back to the bar background
+            s.cursor.bg = default_bg
+            s.draw(' ')
+        s.cursor.bold = s.cursor.italic = False
+        s.cursor.fg = s.cursor.bg = 0
+        self.window_extents = tuple(extents)
+
     def draw_right_status_segments(self, segments: Sequence[tuple[str, str | None, int]]) -> None:
-        self.action_extents = ()
+        # Window entries were laid out first and share the action mechanism, so
+        # they must survive this pass rather than be cleared by it.
+        self.action_extents = tuple(self.window_extents)
         width = self.right_status_width(segments)
         if width <= 0 or self.screen.columns <= width:
             return
@@ -1082,7 +1146,7 @@ class TabBar:
                 extents.append(ActionExtent(action, CellRange(before, end), CellRange(0, 0)))
         s.cursor.bold = s.cursor.italic = False
         s.cursor.fg = s.cursor.bg = 0
-        self.action_extents = tuple(extents)
+        self.action_extents = tuple(self.window_extents) + tuple(extents)
 
     def align_with_factor(self, factor: int = 1) -> None:
         if not self.tab_extents:

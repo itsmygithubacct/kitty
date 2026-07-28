@@ -99,16 +99,13 @@ def _window_ids(d, root, atom_name: str) -> list[int]:   # type: ignore[no-untyp
 def _own_window_ids(d, root) -> set[int]:                # type: ignore[no-untyped-def]
     """Kilix's own top-level windows, which must never appear as entries."""
     ids: set[int] = set()
-    # WINDOWID is exported to the terminal's children by the terminal itself.
-    try:
-        own = os.environ.get('WINDOWID')
-        if own:
-            ids.add(int(own, 0))
-    except Exception:
-        pass
-    # Match on WM_CLASS too: Kilix may own more than one top level (dialogs,
-    # additional OS windows), and WINDOWID only names one of them.
-    own_class = (chrome_value('KILIX_WINDOW_CLASS', '') or 'kilix').lower()
+    # Deliberately NOT keyed on $WINDOWID: kitty sets that in the environment it
+    # hands to *child* processes (see tabs.py), so this process never has its
+    # own id there — and when Kilix was started from another terminal, WINDOWID
+    # is that terminal's window, which would hide an unrelated window from the
+    # taskbar. WM_CLASS is authoritative here: the kilix launcher execs the
+    # engine with `--class kilix` precisely so it groups as itself.
+    own_class = 'kilix'
     for wid in _window_ids(d, root, '_NET_CLIENT_LIST'):
         try:
             cls = d.create_resource_object('window', wid).get_wm_class()
@@ -173,10 +170,21 @@ def _has_window_manager(d, root) -> bool:                # type: ignore[no-untyp
         return False
 
 
+def in_pleb_session() -> bool:
+    """Only Pleb makes its tab bar the desktop's taskbar.
+
+    On an ordinary desktop the user already has a panel, and listing every
+    window of their session inside a terminal's tab bar would be noise. These
+    are the same markers pleb-session exports for the GUI-alias decision.
+    """
+    return (os.environ.get('XDG_SESSION_DESKTOP', '').lower() == 'pleb'
+            or os.environ.get('XDG_CURRENT_DESKTOP', '') == 'Pleb')
+
+
 def native_windows() -> tuple[tuple[int, str, bool], ...]:
     """(window id, title, minimised) for every managed window but our own."""
     global _CACHE, _CACHE_UNTIL
-    if not chrome_enabled('KILIX_CHROME_WINDOWS', '0'):
+    if not in_pleb_session() or not chrome_enabled('KILIX_CHROME_WINDOWS'):
         return ()
     now = time.monotonic()
     if now < _CACHE_UNTIL:
@@ -265,7 +273,7 @@ def _signature() -> tuple[object, ...]:
 
 def _windows_timer(timer_id: int | None = None) -> None:
     global _CACHE_UNTIL, _LAST_SIGNATURE
-    if not chrome_enabled('KILIX_CHROME_WINDOWS', '0'):
+    if not in_pleb_session() or not chrome_enabled('KILIX_CHROME_WINDOWS'):
         return
     _CACHE_UNTIL = 0.0
     sig = _signature()
@@ -277,7 +285,7 @@ def _windows_timer(timer_id: int | None = None) -> None:
 
 def ensure_windows_timer() -> None:
     global _TIMER_STARTED
-    if _TIMER_STARTED or not chrome_enabled('KILIX_CHROME_WINDOWS', '0'):
+    if _TIMER_STARTED or not in_pleb_session() or not chrome_enabled('KILIX_CHROME_WINDOWS'):
         return
     _TIMER_STARTED = True
     try:
