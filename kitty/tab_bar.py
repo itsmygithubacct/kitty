@@ -1011,6 +1011,7 @@ class TabBar:
         self.last_laid_out_tabs = data
         self.tab_extents = ()
         self.window_extents = ()
+        self.window_reserve = 0
         s.cursor.x = s.cursor.y = 0
         s.erase_in_display(2, False)
         if not data:

@@ -41,7 +41,12 @@ _LAST_SIGNATURE: tuple[object, ...] | None = None
 
 _CACHE: tuple[tuple[int, str, bool], ...] = ()
 _CACHE_UNTIL = 0.0
-_CACHE_SECONDS = 1.5
+# Longer than _REFRESH_SECONDS on purpose. Each refresh spawns an xprop per
+# window, and the tab bar asks for entries while it is drawing -- if the cache
+# expired before the timer next fired, that work would land on the render path
+# and stall a frame. The timer invalidates explicitly, so it stays the only
+# thing that pays for a refresh; this is just the ceiling if it ever stops.
+_CACHE_SECONDS = 10.0
 
 _XLIB_UNAVAILABLE_LOGGED = False
 _display = None
