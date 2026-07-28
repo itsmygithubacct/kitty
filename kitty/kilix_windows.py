@@ -205,20 +205,25 @@ def native_windows() -> tuple[tuple[int, str, bool], ...]:
     return _CACHE
 
 
-def window_entries() -> tuple[tuple[str, str], ...]:
-    """(label, action) per native window, in the tab bar's own text style."""
-    try:
-        limit = int(chrome_value('KILIX_CHROME_WINDOWS_MAX_TITLE', '18') or 18)
-    except Exception:
-        limit = 18
-    limit = max(4, limit)
+def window_entries(max_title: int | None = None) -> tuple[tuple[str, str], ...]:
+    """(label, action) per native window, in the tab bar's own text style.
+
+    max_title lets the caller fit the run into whatever space is left beside
+    the pages; without it the configured default applies.
+    """
+    if max_title is None:
+        try:
+            max_title = int(chrome_value('KILIX_CHROME_WINDOWS_MAX_TITLE', '18') or 18)
+        except Exception:
+            max_title = 18
+    limit = max(3, max_title)
     ans: list[tuple[str, str]] = []
     for wid, title, minimised in native_windows():
         text = title.strip() or f'0x{wid:x}'
-        if len(text) > limit:
-            text = text[:limit - 1] + '…'
         if minimised:
             text = f'{MINIMISED_GLYPH}{text}'
+        if len(text) > limit:
+            text = text[:limit - 1] + '…'
         ans.append((f' {text} ', f'{WINDOW_ACTIVATE_ACTION_PREFIX}{wid}'))
     return tuple(ans)
 

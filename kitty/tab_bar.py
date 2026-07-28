@@ -1094,6 +1094,15 @@ class TabBar:
         if line >= s.lines:
             return
         limit = self.right_status_start if line == 0 else s.columns
+        # Fit the run into whatever the pages left behind rather than dropping
+        # it: with wide pages and a full status area there may only be room for
+        # short labels, and a taskbar that silently renders nothing is worse
+        # than one with abbreviated names.
+        available = limit - 1 - x
+        if available < 6:
+            return
+        per_item = max(3, min(18, available // max(1, len(entries)) - 3))
+        entries = window_entries(per_item)
         opts = get_options()
         default_bg = as_rgb(color_as_int(self.draw_data.default_bg))
         # Same palette family as an inactive page, so the two read as one strip
