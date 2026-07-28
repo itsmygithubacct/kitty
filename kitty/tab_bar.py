@@ -659,6 +659,7 @@ class TabBar:
         self.tab_extents: Sequence[TabExtent] = ()
         self.action_extents: Sequence[ActionExtent] = ()
         self.window_extents: Sequence[ActionExtent] = ()
+        self.window_reserve = 0
         self.right_status_start = 0
         self.laid_out_once = False
         self.left_edge_is_default = True
@@ -906,8 +907,18 @@ class TabBar:
         ed = ExtraData()
         self.last_laid_out_tabs = data
 
+        # Hold back part of the first row for the native-window taskbar before
+        # the pages are laid out. Pages are sized to fill whatever they are
+        # given, so without a reservation they take the whole bar and the
+        # taskbar has nowhere to draw. Capped at a third: pages keep priority.
+        self.window_reserve = 0
+        if not self.is_vertical:
+            wanted = sum(max(0, wcswidth(t)) + 1 for t, _ in window_entries())
+            if wanted:
+                self.window_reserve = min(wanted, max(0, self.right_status_start // 3))
+
         def row_limit(line: int) -> int:
-            return self.right_status_start if line == 0 else s.columns
+            return self.tab_limit if line == 0 else s.columns
 
         def draw_tab(
             line: int,
@@ -1071,6 +1082,11 @@ class TabBar:
     def right_status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
         return sum(max(0, wcswidth(text)) for text, _, _ in segments)
 
+    @property
+    def tab_limit(self) -> int:
+        """Columns the pages may use: the status area and the taskbar are theirs."""
+        return max(1, self.right_status_start - self.window_reserve)
+
     def draw_native_window_entries(self) -> None:
         """Continue the tab row with the native X11 windows Openbox manages.
 
@@ -1173,7 +1189,7 @@ class TabBar:
             if not extents:
                 continue
             end = extents[-1].x.end
-            limit = self.right_status_start if line == 0 else self.screen.columns
+            limit = self.tab_limit if line == 0 else self.screen.columns
             if end < limit - 1:
                 shift = (limit - end) // factor
                 self.screen.cursor.x = 0
