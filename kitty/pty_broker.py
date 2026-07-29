@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -91,6 +92,71 @@ def transcript_options(
         '--transcript-limit', str(transcript_limit(env)),
         '--transcript-graphics', graphics,
     ]
+
+
+def transcript_metadata_path(
+    session_id: str,
+    environment: Mapping[str, str] | None = None,
+) -> str:
+    """Return this pane's transcript sidecar path, or '' if not recording."""
+    env = os.environ if environment is None else environment
+    directory = env.get('KITTY_PTY_BROKER_TRANSCRIPT_DIR', '')
+    if not directory or not os.path.isabs(directory) or not os.path.isdir(directory):
+        return ''
+    if not valid_session_id(session_id):
+        return ''
+    return os.path.join(directory, f'{session_id}.meta')
+
+
+def _one_line(value: str, limit: int = 2048) -> str:
+    """Collapse a value onto one line so the sidecar stays line-oriented."""
+    flattened = value.replace('\r', ' ').replace('\n', ' ').strip()
+    return flattened[:limit]
+
+
+def write_transcript_metadata(
+    session_id: str,
+    cwd: str,
+    command: Sequence[str],
+    environment: Mapping[str, str] | None = None,
+) -> str:
+    """Record which pane a transcript belongs to, for `kilix transcript list`.
+
+    Session IDs are random, so the index can otherwise only offer a hash --
+    no help at all when what you are looking for is "the tab I had open on
+    that directory".  This is advisory: a sidecar that cannot be written must
+    never keep a pane from starting, so every failure here is swallowed.
+    """
+    path = transcript_metadata_path(session_id, environment)
+    if not path:
+        return ''
+    created = False
+    fd = -1
+    try:
+        payload = (
+            f'cwd={_one_line(cwd)}\n'
+            f'cmd={_one_line(shlex.join(command))}\n'
+        )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, 'O_NOFOLLOW'):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
+        created = True
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8',
+                       errors='surrogateescape') as sidecar:
+            fd = -1
+            sidecar.write(payload)
+    except (OSError, UnicodeError, ValueError):
+        if fd >= 0:
+            os.close(fd)
+        if created:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        return ''
+    return path
 
 
 def wrap_command(

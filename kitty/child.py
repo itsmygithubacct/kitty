@@ -415,7 +415,12 @@ class Child:
         if self.hold:
             argv = cmdline_for_hold(argv)
         if self.pty_broker_spawn:
-            from .pty_broker import wrap_command
+            from .pty_broker import wrap_command, write_transcript_metadata
+            # Recorded from the launch request rather than the wrapped argv, so
+            # the transcript index names the program that was asked for instead
+            # of the broker invocation built around it.
+            write_transcript_metadata(
+                self.pty_broker_session_id, self.cwd, self.argv, self.final_env)
             argv = wrap_command(
                 self.pty_broker_executable, self.pty_broker_runtime,
                 self.pty_broker_session_id, argv, self.final_env)
