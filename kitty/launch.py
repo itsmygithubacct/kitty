@@ -204,7 +204,7 @@ or the kitty remote control feature with :option:`kitten @ launch --copy-env`.
 --location
 type=choices
 default=default
-choices=first,after,before,neighbor,last,vsplit,hsplit,split,default
+choices=first,after,before,neighbor,last,vsplit,vsplit-before,hsplit,hsplit-before,split,default
 Where to place the newly created window when it is added to a tab which already
 has existing windows in it. :code:`after` and :code:`before` place the new
 window before or after the active window. :code:`neighbor` is a synonym for
@@ -213,7 +213,10 @@ window before or after the active window. :code:`neighbor` is a synonym for
 instead of at the end. The values of :code:`vsplit`, :code:`hsplit` and
 :code:`split` are only used by the :code:`splits` layout and control if the new
 window is placed in a vertical, horizontal or automatic split with the currently
-active window. The default is to place the window in a layout dependent manner,
+active window; they put the new window on the far side of that split, that is,
+to the right or below. :code:`vsplit-before` and :code:`hsplit-before` are the
+same splits with the new window on the near side instead, that is, to the left
+or above. The default is to place the window in a layout dependent manner,
 typically, after the currently active window. See :option:`--next-to <launch --next-to>`
 to use a window other than the currently active window.
 

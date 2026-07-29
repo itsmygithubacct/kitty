@@ -364,7 +364,9 @@ class Layout:
         if location is not None:
             if location in ('after', 'vsplit', 'hsplit'):
                 pass
-            elif location == 'before':
+            elif location in ('before', 'vsplit-before', 'hsplit-before'):
+                # Layouts other than splits have no axis, so the near side of
+                # one is just "before the active window" in list order.
                 before = True
             elif location == 'first':
                 before = True

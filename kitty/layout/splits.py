@@ -634,12 +634,26 @@ class Splits(Layout):
         bias: float | None = None,
         next_to: WindowType | None = None,
     ) -> None:
+        # The axis and the side are independent choices, so all four
+        # placements exist -- but only three of them had names. vsplit and
+        # hsplit are always the far side of their axis, and before is the near
+        # side of whichever axis the layout happens to default to, which makes
+        # it left or up depending on configuration rather than on what the
+        # caller asked for. vsplit-before and hsplit-before name the two that
+        # were missing, so a caller can say "to the left" or "above" and mean
+        # it. Without them the only way to reach those sides was to split the
+        # other way and then move_window to swap, which needs a keybinding and
+        # so was unavailable to remote control entirely.
         horizontal = self.default_axis_is_horizontal
         after = True
         if location == 'vsplit':
             horizontal = True
         elif location == 'hsplit':
             horizontal = False
+        elif location == 'vsplit-before':
+            horizontal, after = True, False
+        elif location == 'hsplit-before':
+            horizontal, after = False, False
         elif location in ('before', 'first'):
             after = False
         aw = next_to or all_windows.active_window

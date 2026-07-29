@@ -222,16 +222,19 @@ class WindowTitleBarScreen:
             max_glyph = chr(0xf0293) if data.is_maximized else chr(0xeab9)     # fullscreen ⇄ small square
             # kilix fork: plus/minus change only this OS window's font size
             # (kitty's supported local scope), then arrows read left → up →
-            # down → right. kitty has no native
-            # left/up split, so those vsplit/hsplit and then move_window to swap the
-            # new pane onto the near side; down/right split in place.
+            # down → right. All four split in place: left and up used to
+            # vsplit/hsplit and then move_window to swap the new pane onto the
+            # near side, because kitty had no name for those two placements.
+            # The splits layout always supported them, so the fork added
+            # vsplit-before and hsplit-before rather than keeping a workaround
+            # that only a keybinding could perform.
             candidates = (
                 (None, data.pane_memory_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # dynamic process-tree memory chip
                 ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ', 'kilix_toggle_synchronized_input', None),  # join/leave synchronized keyboard input
                 ('KILIX_CHROME_BUTTON_FONT_INCREASE', ' + ', 'change_font_size current +2.0', None),  # increase font size for this kilix window
                 ('KILIX_CHROME_BUTTON_FONT_DECREASE', ' - ', 'change_font_size current -2.0', None),  # decrease font size for this kilix window
-                ('KILIX_CHROME_BUTTON_SPLIT_LEFT', f' {chr(0xf0731)} ', 'combine | launch --location=vsplit --cwd=current | move_window left', None),  # split left: bold ← (new pane to the left)
-                ('KILIX_CHROME_BUTTON_SPLIT_UP', f' {chr(0xf0737)} ', 'combine | launch --location=hsplit --cwd=current | move_window top', None),   # split up: bold ↑ (new pane above)
+                ('KILIX_CHROME_BUTTON_SPLIT_LEFT', f' {chr(0xf0731)} ', 'launch --location=vsplit-before --cwd=current', None),  # split left: bold ← (new pane to the left)
+                ('KILIX_CHROME_BUTTON_SPLIT_UP', f' {chr(0xf0737)} ', 'launch --location=hsplit-before --cwd=current', None),   # split up: bold ↑ (new pane above)
                 ('KILIX_CHROME_BUTTON_SPLIT_DOWN', f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
                 ('KILIX_CHROME_BUTTON_SPLIT_RIGHT', f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current', None),  # split right: bold → (new pane to the right)
                 ('KILIX_CHROME_BUTTON_MAXIMIZE', f' {max_glyph} ', 'toggle_layout stack', None),  # maximize / zoom pane (glyph = state)

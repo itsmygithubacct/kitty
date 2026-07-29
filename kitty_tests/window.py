@@ -115,7 +115,7 @@ class TestWindowChrome(BaseTest):
             title_bar.render(data, '')
         actions = set(title_bar.button_cols.values())
         self.assertNotIn(
-            'combine | launch --location=hsplit --cwd=current | move_window top',
+            'launch --location=hsplit-before --cwd=current',
             actions)
         self.assertIn('change_font_size current +2.0', actions)
         self.assertIn('kilix_close_persistent_window', actions)
@@ -123,7 +123,7 @@ class TestWindowChrome(BaseTest):
         with patch('kitty.window_title_bar.chrome_enabled', return_value=True):
             title_bar.render(data, '')
         self.assertIn(
-            'combine | launch --location=hsplit --cwd=current | move_window top',
+            'launch --location=hsplit-before --cwd=current',
             set(title_bar.button_cols.values()))
 
     def test_synchronized_input_button_is_depressed_and_configurable(self) -> None:

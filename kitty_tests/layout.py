@@ -273,6 +273,70 @@ class TestLayout(BaseTest):
         self.ae(q.neighbors_for_window(windows[2], all_windows), {'left': [1], 'right': [4], 'top': [2]})
         self.ae(q.neighbors_for_window(windows[3], all_windows), {'left': [3], 'top': [2]})
 
+    def test_splits_near_side(self):
+        # vsplit/hsplit put the new window on the far side of the split. The
+        # -before forms are the same axis with the new window on the near side,
+        # which is the only way to say "to the left of" or "above" -- before
+        # they existed the near side could only be reached by splitting the
+        # other way and then moving the window to swap the two.
+        for location, horizontal in (('vsplit-before', True), ('hsplit-before', False)):
+            q = create_layout(Splits)
+            all_windows = create_windows(q, num=0)
+            first = Window(1)
+            q.add_window(all_windows, first)
+            second = Window(2)
+            q.add_window(all_windows, second, location=location)
+            q(all_windows)
+            pair = q.pairs_root.pair_for_window(2)
+            self.ae(pair.horizontal, horizontal)
+            new_group = all_windows.group_for_window(second)
+            old_group = all_windows.group_for_window(first)
+            # `one` is the near side: left for a horizontal pair, top for a
+            # vertical one.
+            self.ae(pair.one, new_group.id)
+            self.ae(pair.two, old_group.id)
+
+        # And the far-side forms remain the other way round.
+        for location, horizontal in (('vsplit', True), ('hsplit', False)):
+            q = create_layout(Splits)
+            all_windows = create_windows(q, num=0)
+            first = Window(1)
+            q.add_window(all_windows, first)
+            second = Window(2)
+            q.add_window(all_windows, second, location=location)
+            q(all_windows)
+            pair = q.pairs_root.pair_for_window(2)
+            self.ae(pair.horizontal, horizontal)
+            self.ae(pair.one, all_windows.group_for_window(first).id)
+            self.ae(pair.two, all_windows.group_for_window(second).id)
+
+    def test_near_side_locations_in_layouts_without_an_axis(self):
+        # Only the splits layout has an axis to have a near side of. Every
+        # other layout must treat the two new values exactly as it treats
+        # `before`, rather than falling through to the after-the-active-window
+        # default and putting the window on the wrong end.
+        def order(layout_class, location):
+            q = create_layout(layout_class)
+            all_windows = create_windows(q, num=0)
+            for win_id in (1, 2, 3):
+                q.add_window(all_windows, Window(win_id))
+            # Adding a window makes it active, so window 3 is what the new one
+            # is placed relative to.
+            q.add_window(all_windows, Window(4), location=location)
+            q(all_windows)
+            # Group order, not `list(all_windows)`: the WindowList iterates in
+            # creation order, so it looks identical whatever the placement was.
+            return [g.id for g in all_windows.groups]
+
+        for layout_class in (Horizontal, Tall, Grid):
+            expected = order(layout_class, 'before')
+            for location in ('vsplit-before', 'hsplit-before'):
+                self.ae(order(layout_class, location), expected,
+                        f'{layout_class.__name__} mishandled {location}')
+            # ...and still differs from the far-side default, or the assertion
+            # above would pass for the wrong reason.
+            self.assertNotEqual(order(layout_class, 'after'), expected)
+
     def test_splits_maximize(self):
         q = create_layout(Splits)
         all_windows = create_windows(q, num=0)
