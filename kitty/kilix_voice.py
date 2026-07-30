@@ -194,7 +194,8 @@ def voice_daemon_target() -> tuple[list[str], str | None] | None:
     source_home = os.environ.get('GPU_TERMINAL_SOURCE_HOME') or os.path.join(
         os.path.expanduser('~'), 'gpu_terminal')
     project = os.path.join(
-        os.path.abspath(os.path.expanduser(source_home)), 'kilix-voice')
+        os.path.abspath(os.path.expanduser(source_home)),
+        'kilix-apps', 'kilix-voice')
     candidate = os.path.join(project, 'kilix-voiced')
     if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
         return [candidate], project
