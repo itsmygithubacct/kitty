@@ -1250,6 +1250,13 @@ class Tab:  # {{{
         return self.windows.num_groups
 
     @property
+    def window_for_tab_split_drag(self) -> Window | None:
+        """Return the pane a tab drag may merge, when the tab is one pane."""
+        if self.num_window_groups != 1:
+            return None
+        return self.active_window_for_cwd or self.active_window
+
+    @property
     def active_session_name(self) -> str:
         w = self.active_window
         return '' if w is None else w.created_in_session_name
@@ -2220,6 +2227,47 @@ class TabManager:  # {{{
                 return win
         return None
 
+    def _window_drop_target_at(self, x: int, y: int, source_window_id: int = 0) -> WindowBeingDropped | None:
+        """Resolve a pane drop target and its Tilix-style quadrant."""
+        from .fast_data_types import cell_size_for_window, viewport_for_window
+        central = viewport_for_window(self.os_window_id)[0]
+        dest_window = self._find_window_at(x, y)
+        if dest_window is None or dest_window.id == source_window_id:
+            return None
+        rel_x = x - central.left
+        rel_y = y - central.top
+        g = dest_window.geometry
+        if dest_window.show_title_bar:
+            _, ch = cell_size_for_window(self.os_window_id)
+            opts = get_options()
+            tb_top = g.top if opts.window_title_bar == 'top' else g.bottom - ch
+            if tb_top <= rel_y < tb_top + ch:
+                return WindowBeingDropped(dest_window.id, 5)
+        active_tab = self.active_tab
+        if active_tab is None:
+            return None
+        dx = rel_x - (g.left + g.right) / 2
+        dy = rel_y - (g.top + g.bottom) / 2
+        match active_tab.current_layout.drag_overlay_mode:
+            case DragOverlayMode.axis_y:
+                direction = 'bottom' if dy > 0 else 'top'
+            case DragOverlayMode.axis_x:
+                direction = 'right' if dx > 0 else 'left'
+            case DragOverlayMode.free:
+                # Kilix: the pane's true corner-to-corner diagonals split it
+                # into four triangles, including on non-square panes.
+                half_width = (g.right - g.left) / 2 or 1
+                half_height = (g.bottom - g.top) / 2 or 1
+                if abs(dx) * half_height >= abs(dy) * half_width:
+                    direction = 'right' if dx > 0 else 'left'
+                else:
+                    direction = 'bottom' if dy > 0 else 'top'
+            case DragOverlayMode.full:
+                # A maximized/stacked pane is a target, but not a valid split.
+                return WindowBeingDropped(dest_window.id)
+        quadrant = {'left': 1, 'right': 2, 'top': 3, 'bottom': 4}[direction]
+        return WindowBeingDropped(dest_window.id, quadrant)
+
     def _set_drag_target_window(self, window_id: int, quadrant: int = 0) -> None:
         ''' Highlight window_id's title bar as the drop target; 0 clears. quadrant!=0 shows quadrant overlay instead '''
         from .fast_data_types import set_window_drag_overlay
@@ -2243,7 +2291,10 @@ class TabManager:  # {{{
         else:
             self.window_being_dropped = None
 
-    def on_window_drop_move(self, window_id: int = 0, is_dest: bool = False, x: int = 0, y: int = 0) -> None:
+    def on_window_drop_move(
+        self, window_id: int = 0, is_dest: bool = False,
+        x: int = 0, y: int = 0, body_only: bool = False,
+    ) -> None:
         if not is_dest:
             self._set_drag_target_window(0)
             self._set_drag_target_tab(0)
@@ -2265,55 +2316,39 @@ class TabManager:  # {{{
             self._set_drag_target_tab(self.tab_bar.tab_id_at(x, y))
             return
         self._set_drag_target_tab(0)
-        dest_window = self._find_window_at(x, y)
-        if dest_window and dest_window.id != window_id:
-            from .fast_data_types import viewport_for_window as _vfw
-            central = _vfw(self.os_window_id)[0]
-            rel_y = y - central.top
-            if dest_window.show_title_bar:
-                from .fast_data_types import cell_size_for_window
-                _, ch = cell_size_for_window(self.os_window_id)
-                g = dest_window.geometry
-                opts = get_options()
-                tb_top = g.top if opts.window_title_bar == 'top' else g.bottom - ch
-                if tb_top <= rel_y < tb_top + ch:
-                    # Title bar hover: full window + title bar highlight (swap)
-                    self._set_drag_target_window(dest_window.id, 5)
-                    return
-            active_tab = self.active_tab
-            if active_tab is not None:
-                rel_x = x - central.left
-                g = dest_window.geometry
-                dx = rel_x - (g.left + g.right) / 2
-                dy = rel_y - (g.top + g.bottom) / 2
-                quad_map = {'left': 1, 'right': 2, 'top': 3, 'bottom': 4}
-                match active_tab.current_layout.drag_overlay_mode:
-                    case DragOverlayMode.axis_y:
-                        direction = 'bottom' if dy > 0 else 'top'
-                    case DragOverlayMode.axis_x:
-                        direction = 'right' if dx > 0 else 'left'
-                    case DragOverlayMode.free:
-                        # kilix fork: Tilix-style diagonal quadrants — the pane's true
-                        # corner-to-corner diagonals split it into 4 triangles, so the
-                        # highlighted half follows the diagonals on non-square panes.
-                        hw = (g.right - g.left) / 2 or 1
-                        hh = (g.bottom - g.top) / 2 or 1
-                        if abs(dx) * hh >= abs(dy) * hw:
-                            direction = 'right' if dx > 0 else 'left'
-                        else:
-                            direction = 'bottom' if dy > 0 else 'top'
-                    case DragOverlayMode.full:
-                        # kilix fork: reject drops on a maximized/stacked pane (Tilix behavior)
-                        self._set_drag_target_window(0)
-                        return
-                self._set_drag_target_window(dest_window.id, quad_map[direction])
-            else:
-                self._set_drag_target_window(0)
+        target = self._window_drop_target_at(x, y, window_id)
+        if (
+            target is not None and target.quadrant
+            and (not body_only or target.quadrant in (1, 2, 3, 4))
+        ):
+            self._set_drag_target_window(target.window_id, target.quadrant)
         else:
             self._set_drag_target_window(0)
 
+    def on_tab_split_drop(
+        self, tab: Tab, x: int = 0, y: int = 0,
+        target: WindowBeingDropped | None = None,
+    ) -> bool:
+        """Merge a one-pane tab beside the pane selected by a body drop."""
+        source_window = tab.window_for_tab_split_drag
+        if source_window is None or source_window.tabref() is not tab:
+            return False
+        target = target or self._window_drop_target_at(x, y, source_window.id)
+        if target is None or target.quadrant not in (1, 2, 3, 4):
+            return False
+        boss = get_boss()
+        dest_window = boss.window_id_map.get(target.window_id)
+        if dest_window is None or dest_window.tabref() is not self.active_tab:
+            return False
+        direction: Literal['left', 'right', 'top', 'bottom'] = {
+            1: 'left', 2: 'right', 3: 'top', 4: 'bottom',
+        }[target.quadrant]
+        self._set_drag_target_window(0)
+        boss._insert_window_in_direction(source_window, dest_window, direction)
+        return True
+
     def on_window_drop(self, x: int, y: int, window_id: int) -> None:
-        from .fast_data_types import cell_size_for_window, viewport_for_window
+        from .fast_data_types import viewport_for_window
         boss = get_boss()
         # A window is being dropped on this tab manager, so the tab bar must have been
         # visible to the user (showing the "+" button). Ensure it stays visible for the
@@ -2343,33 +2378,20 @@ class TabManager:  # {{{
         if not in_central:
             return
 
-        rel_x = x - central.left
-        rel_y = y - central.top
         if (active_tab := self.active_tab) is None:
             return
 
-        dest_window = None
-        dest_in_title_bar = False
-        opts = get_options()
-        cw, ch = cell_size_for_window(self.os_window_id)
-        for win in active_tab:
-            g = win.geometry
-            if opts.window_title_bar == 'top':
-                tb_top, tb_bottom = g.top, g.top + ch
-            else:
-                tb_top, tb_bottom = g.bottom - ch, g.bottom
-            if g.left <= rel_x < g.right and g.top <= rel_y < g.bottom:
-                dest_window = win
-                dest_in_title_bar = getattr(win, 'show_title_bar', False) and (tb_top <= rel_y < tb_bottom)
-                break
-
-        if dest_window is None or dest_window.id == window_id:
+        target = self._window_drop_target_at(x, y, window_id)
+        if target is None:
             # Dropped on empty space or self; if different tab, move there
             if active_tab is not w.tabref():
                 boss._move_window_to(w, target_tab_id=active_tab.id)
             return
+        dest_window = boss.window_id_map.get(target.window_id)
+        if dest_window is None or target.quadrant == 0:
+            return
 
-        if dest_in_title_bar:
+        if target.quadrant == 5:
             if (src_tab := w.tabref()) is dest_window.tabref() and src_tab is not None:
                 # Same tab: swap positions
                 src_tab.swap_windows(w, dest_window)
@@ -2377,26 +2399,9 @@ class TabManager:  # {{{
                 # Cross-tab title bar drop: move to the destination tab
                 boss._move_window_to(w, target_tab_id=active_tab.id)
         else:
-            g = dest_window.geometry
-            dx = rel_x - (g.left + g.right) / 2
-            dy = rel_y - (g.top + g.bottom) / 2
-            match active_tab.current_layout.drag_overlay_mode:
-                case DragOverlayMode.axis_y:
-                    direction: Literal['left', 'right', 'top', 'bottom'] = 'bottom' if dy > 0 else 'top'
-                case DragOverlayMode.axis_x:
-                    direction = 'right' if dx > 0 else 'left'
-                case DragOverlayMode.free:
-                    # kilix fork: same Tilix-style diagonal quadrants as the live preview,
-                    # so the split that lands matches the highlighted half exactly.
-                    hw = (g.right - g.left) / 2 or 1
-                    hh = (g.bottom - g.top) / 2 or 1
-                    if abs(dx) * hh >= abs(dy) * hw:
-                        direction = 'right' if dx > 0 else 'left'
-                    else:
-                        direction = 'bottom' if dy > 0 else 'top'
-                case _:
-                    # kilix fork: maximized/stacked (DragOverlayMode.full) — reject the split
-                    return
+            direction: Literal['left', 'right', 'top', 'bottom'] = {
+                1: 'left', 2: 'right', 3: 'top', 4: 'bottom',
+            }[target.quadrant]
             boss._insert_window_in_direction(w, dest_window, direction)
 
     def update_progress(self) -> None:

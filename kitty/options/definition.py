@@ -907,7 +907,10 @@ sets the shape when dragging in rectangular selection mode.
 opt('drag_threshold', '5', option_type='positive_int', ctype='int', long_text='''
 The threshold distance the mouse must move to start a drag and drop. Dragging
 works for tabs and windows. You can drag tabs to re-order them, detach
-them into new OS Windows or move them to another OS Window. Similarly,
+them into new OS Windows or move them to another OS Window. When a tab
+contains one pane, dropping it onto a pane in another OS Window merges it
+there as a left, right, top or bottom split; dropping it on the tab bar keeps
+it as a tab. Similarly,
 by dragging the titlebar of a window (see :ac:`toggle_window_title_bars`)
 you can re-order it in its layout, detach it or move it to another tab.
 A value of zero disables all dragging.
