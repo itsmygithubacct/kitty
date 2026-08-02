@@ -2023,7 +2023,13 @@ class TabManager:  # {{{
                         # Toggle: a second click stops and flushes what was heard.
                         end_dictation(flush=True)
                     elif (target := (self.active_tab.active_window if self.active_tab else None)) is not None:
-                        if pane_echo_disabled(target):
+                        if is_pixel_pane(target):
+                            get_boss().show_error(
+                                'Dictation unavailable',
+                                'This pane is drawing pixels rather than terminal text, so '
+                                'dictated text has nowhere visible to go. Voice input works '
+                                'in terminal panes.')
+                        elif pane_echo_disabled(target):
                             get_boss().show_error(
                                 'Dictation refused',
                                 'This pane is at a hidden prompt. Kilix does not dictate '

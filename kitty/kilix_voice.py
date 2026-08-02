@@ -28,12 +28,12 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import termios
 import time
 from contextlib import suppress
 from dataclasses import dataclass
-from itertools import count
 from typing import TYPE_CHECKING
 
 from .kilix_battery import chrome_enabled, chrome_value
@@ -76,6 +76,7 @@ _AVAILABILITY_SECONDS = 5.0
 
 _CONTROL_TIMEOUT = 0.25
 _CONTROL_MAX_BYTES = 1 << 16
+_CONTROL_MAX_REQUEST_BYTES = 192 * 1024
 _SPAWN_SETTLE_SECONDS = 0.25
 _SPAWN_POLL_SECONDS = 0.02
 # A SOCK_SEQPACKET send has to fit one datagram, and the pane behind an
@@ -85,14 +86,13 @@ _SPAWN_POLL_SECONDS = 0.02
 # place. Every preset except `unlimited` is far below it.
 _MAX_REQUEST_CHARS = 32768
 _DICTATION_MAX_BYTES = 1 << 16
+_DICTATION_STOP_SECONDS = 5.0
 
 _VOICE_REFRESH_SECONDS = 0.1
+_SPEECH_STATUS_SECONDS = 0.25
+_SPEECH_RETRY_SECONDS = 5.0
 _VOICE_TIMER_ID: int | None = None
 _VOICE_LAST_SIGNATURE: tuple[object, ...] | None = None
-
-_control: socket.socket | None = None
-_ids = count(1)
-
 
 @dataclass
 class VoiceState:
@@ -100,6 +100,7 @@ class VoiceState:
 
     speaking: bool = False
     listening: bool = False
+    stopping: bool = False
     # Recorded when the microphone is clicked and never re-read, so a transcript
     # cannot land in a pane the user switched to mid-sentence.
     target_window_id: int = 0
@@ -107,8 +108,14 @@ class VoiceState:
     partial: str = ''
     dictation_socket: socket.socket | None = None
     dictation_path: str = ''
-    speech_id: int = 0
-    dictation_id: int = 0
+    stop_deadline: float = 0.0
+    stop_limit: float = 0.0
+    stop_confirmed: bool = False
+    stop_uncertainty_reported: bool = False
+    daemon_pid: int = 0
+    speech_error_serial: int = 0
+    speech_uncertainty_reported: bool = False
+    next_speech_poll: float = 0.0
 
 
 voice_state = VoiceState()
@@ -177,11 +184,35 @@ def control_socket_path() -> str:
 
 
 def _ensure_session_voice_dir() -> str:
+    return _validated_session_voice_dir(create=True)
+
+
+def _validated_session_voice_dir(create: bool = False) -> str:
+    """Return the private real session directory, never following its leaf."""
     path = session_voice_dir()
-    os.makedirs(path, mode=0o700, exist_ok=True)
-    # makedirs honours the umask, and an existing directory keeps whatever mode
-    # it already had, so neither call alone guarantees 0700.
-    os.chmod(path, 0o700)
+    if create:
+        parent = os.path.dirname(path)
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+        try:
+            os.mkdir(path, 0o700)
+        except FileExistsError:
+            pass
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_CLOEXEC', 0)
+    flags |= getattr(os, 'O_NOFOLLOW', 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise OSError(f'unsafe voice session directory: {path}') from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise OSError(f'voice session directory is not owned by this user: {path}')
+        if create:
+            os.fchmod(descriptor, 0o700)
+        elif stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise OSError(f'voice session directory is not private: {path}')
+    finally:
+        os.close(descriptor)
     return path
 
 
@@ -300,6 +331,16 @@ def flag_error(message: str) -> str:
     return message
 
 
+def report_async_error(title: str, message: str) -> None:
+    """Show a worker failure that arrived after the originating click returned."""
+    flag_error(message)
+    try:
+        from .fast_data_types import get_boss
+        get_boss().show_error(title, message)
+    except Exception as e:
+        log_error(f'kilix voice: could not show asynchronous error: {e}')
+
+
 def _spawn_daemon() -> bool:
     target = voice_daemon_target()
     if target is None:
@@ -318,13 +359,18 @@ def _spawn_daemon() -> bool:
 
 def _connect_control() -> socket.socket | None:
     try:
+        directory = _validated_session_voice_dir()
+    except OSError as error:
+        log_error(f'kilix voice: {error}')
+        return None
+    try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     except OSError as e:
         log_error(f'kilix voice: SOCK_SEQPACKET unavailable: {e}')
         return None
     sock.settimeout(_CONTROL_TIMEOUT)
     try:
-        sock.connect(control_socket_path())
+        sock.connect(os.path.join(directory, 'control.sock'))
     except OSError:
         sock.close()
         return None
@@ -332,46 +378,21 @@ def _connect_control() -> socket.socket | None:
 
 
 def control_connection(spawn: bool = True) -> socket.socket | None:
-    """One connection for the session, opened on first use.
+    """Open one connection for one request, lazily starting the daemon.
 
-    The daemon reports `speech-done` asynchronously, so the connection has to
-    outlive the request that started the speech; a per-click connect would also
-    pay the handshake on every button press.
+    kilix-voiced deliberately serves exactly one request per connection and
+    closes it after the reply. Keeping that socket would make every later stop,
+    status, or dictation request write to a closed peer.
     """
-    global _control
-    if _control is not None:
-        return _control
     sock = _connect_control()
     if sock is None and spawn and _spawn_daemon():
-        # The lazy spawn costs this wait once per session — every later click
-        # finds the socket already there. Bounded, because a daemon that cannot
-        # start must degrade the widget, not freeze the tab bar.
+        # Bounded, because a daemon that cannot start must degrade the widget,
+        # not freeze the tab bar.
         deadline = time.monotonic() + _SPAWN_SETTLE_SECONDS
         while sock is None and time.monotonic() < deadline:
             time.sleep(_SPAWN_POLL_SECONDS)
             sock = _connect_control()
-    _control = sock
-    return _control
-
-
-def _close_control() -> None:
-    global _control
-    if _control is not None:
-        with suppress(OSError):
-            _control.close()
-        _control = None
-
-
-def _lost_daemon(detail: str) -> None:
-    """Forget a daemon that died, rather than rendering state it no longer has."""
-    log_error(f'kilix voice: lost the voice daemon: {detail}')
-    _close_control()
-    voice_state.speaking = False
-    if voice_state.listening:
-        _close_dictation_socket()
-        voice_state.listening = False
-        voice_state.target_window_id = 0
-    flag_error('The voice daemon stopped unexpectedly.')
+    return sock
 
 
 def _recv_message(sock: socket.socket) -> dict[str, object] | None:
@@ -386,64 +407,91 @@ def _recv_message(sock: socket.socket) -> dict[str, object] | None:
     return message if isinstance(message, dict) else None
 
 
-def _apply_event(message: dict[str, object]) -> None:
-    if message.get('event') == 'speech-done':
-        voice_state.speaking = False
-
-
 def send_control(request: dict[str, object], spawn: bool = True) -> dict[str, object] | None:
     """Send one request, return its reply, or None when unreachable.
 
     This runs on kitty's UI thread, so every wait is bounded by
-    _CONTROL_TIMEOUT. Async events that arrive while the reply is outstanding
-    are applied in passing instead of being discarded. `spawn=False` is for the
-    stop requests: a daemon that is not running has nothing to stop, and
-    starting one to say so would be the wrong answer to a click.
+    _CONTROL_TIMEOUT. `spawn=False` is for stop/status requests: a daemon that
+    is not running has nothing to stop or report, and starting one to say so
+    would be the wrong answer.
     """
     sock = control_connection(spawn)
     if sock is None:
         return None
     try:
-        sock.settimeout(_CONTROL_TIMEOUT)
-        sock.send(json.dumps(request).encode('utf-8') + b'\n')
-        # The budget covers the whole exchange, not each recv, so an event
-        # arriving ahead of the reply cannot double the time spent here.
-        deadline = time.monotonic() + _CONTROL_TIMEOUT
-        while (remaining := deadline - time.monotonic()) > 0:
-            sock.settimeout(remaining)
-            message = _recv_message(sock)
-            if message is None:
-                _lost_daemon('control connection closed')
+        with sock:
+            sock.settimeout(_CONTROL_TIMEOUT)
+            payload = (json.dumps(
+                request, ensure_ascii=False, separators=(',', ':')) + '\n'
+            ).encode('utf-8')
+            if len(payload) > _CONTROL_MAX_REQUEST_BYTES:
+                log_error('kilix voice: control request exceeds transport bound')
                 return None
-            if 'event' in message:
-                _apply_event(message)
-                continue
-            return message
+            written = sock.send(payload)
+            if written != len(payload):
+                raise OSError('voice control request was only partially sent')
+            return _recv_message(sock)
     except TimeoutError:
         return None
     except OSError as e:
-        _lost_daemon(str(e))
+        log_error(f'kilix voice: control request failed: {e}')
     return None
 
 
-def _drain_control_events() -> None:
-    """Apply whatever the daemon has said since the last poll, without waiting."""
-    sock = _control
-    if sock is None:
+def poll_speech_status() -> None:
+    """Clear speaking state when the one-request daemon reports completion."""
+    if not voice_state.speaking:
         return
-    sock.settimeout(0.0)
-    while True:
-        try:
-            message = _recv_message(sock)
-        except (BlockingIOError, TimeoutError):
-            return
-        except OSError as e:
-            _lost_daemon(str(e))
-            return
-        if message is None:
-            _lost_daemon('control connection closed')
-            return
-        _apply_event(message)
+    now = time.monotonic()
+    if now < voice_state.next_speech_poll:
+        return
+    voice_state.next_speech_poll = now + _SPEECH_STATUS_SECONDS
+    reply = send_control({'op': 'status'}, spawn=False)
+    if reply is None:
+        _handle_unknown_speech_status(
+            'The voice daemon could not be reached while read aloud was active.')
+        return
+    if not reply.get('ok'):
+        _handle_unknown_speech_status(
+            str(reply.get('error') or 'The voice daemon refused status.'))
+        return
+    status = reply.get('status')
+    if not isinstance(status, dict):
+        _handle_unknown_speech_status(
+            'The voice daemon returned an unreadable status.')
+        return
+    voice_state.speech_uncertainty_reported = False
+    pid = status.get('pid')
+    if isinstance(pid, int) and pid != voice_state.daemon_pid:
+        voice_state.daemon_pid = pid
+        voice_state.speech_error_serial = 0
+    serial = status.get('speech_error_serial')
+    if isinstance(serial, int) and serial > voice_state.speech_error_serial:
+        voice_state.speech_error_serial = serial
+        if message := status.get('speech_error'):
+            report_async_error('Read aloud failed', str(message))
+    voice_state.speaking = bool(status.get('speaking'))
+
+
+def _handle_unknown_speech_status(message: str) -> None:
+    """Fail safe without claiming silence unless a stop is acknowledged."""
+    stop_reply = send_control({'op': 'stop-speech'}, spawn=False)
+    if isinstance(stop_reply, dict) and stop_reply.get('ok'):
+        voice_state.speaking = False
+        voice_state.speech_uncertainty_reported = False
+        report_async_error(
+            'Read aloud stopped', f'{message} Playback was stopped for safety.')
+        return
+    voice_state.speaking = True
+    # Two failed control requests can consume two timeouts. Back off so an
+    # unreachable daemon cannot monopolize kitty's UI thread.
+    voice_state.next_speech_poll = time.monotonic() + _SPEECH_RETRY_SECONDS
+    ensure_voice_timer()
+    if not voice_state.speech_uncertainty_reported:
+        voice_state.speech_uncertainty_reported = True
+        report_async_error(
+            'Could not confirm read aloud stopped',
+            f'{message} Kilix will keep the speaking indicator active and retry.')
 
 
 def speak(text: str) -> str | None:
@@ -455,33 +503,63 @@ def speak(text: str) -> str | None:
         return flag_error(
             'No speech engine is available. Install espeak-ng, then run '
             '`kilix voice doctor`.')
-    voice_state.speech_id = next(_ids)
     reply = send_control({
         'op': 'speak',
         'text': text[:_MAX_REQUEST_CHARS],
-        # The daemon reads the same shared settings file, but carrying the voice
-        # and rate in the request means a settings rewrite landing between this
-        # click and the synthesis cannot split one read across two settings.
-        'voice': tts_voice(),
-        'rate': tts_rate(),
-        'id': voice_state.speech_id,
     })
     if reply is None:
+        # As with dictation, a timed-out acknowledgement can arrive after the
+        # daemon accepted the turn. Silence that ambiguous turn best-effort so
+        # the widget cannot look idle while speech continues.
+        stop_reply = _request_stop_speech_best_effort()
+        if isinstance(stop_reply, dict) and stop_reply.get('ok'):
+            voice_state.speaking = False
+            return flag_error(
+                'The voice daemon did not acknowledge read aloud; playback was '
+                'stopped for safety. Run `kilix voice doctor`.')
+        voice_state.speaking = True
+        voice_state.speech_uncertainty_reported = True
+        voice_state.next_speech_poll = time.monotonic() + _SPEECH_STATUS_SECONDS
+        ensure_voice_timer()
         return flag_error(
-            'The voice daemon could not be reached. Run `kilix voice doctor`.')
+            'The voice daemon did not acknowledge read aloud or confirm that '
+            'playback stopped. The speaking indicator will remain active while '
+            'Kilix retries; run `kilix voice doctor`.')
     if not reply.get('ok'):
         return flag_error(
             str(reply.get('error') or 'The voice daemon refused the request.'))
-    voice_state.speaking = True
+    voice_state.speaking = bool(reply.get('chunks', 1))
+    voice_state.speech_uncertainty_reported = False
+    voice_state.next_speech_poll = 0.0
     ensure_voice_timer()
     _invalidate()
     return None
 
 
+def _request_stop_speech_best_effort() -> dict[str, object] | None:
+    return send_control({'op': 'stop-speech'}, spawn=False)
+
+
 def stop_speech() -> None:
-    send_control({'op': 'stop-speech', 'id': voice_state.speech_id}, spawn=False)
-    voice_state.speaking = False
-    _invalidate()
+    reply = send_control({'op': 'stop-speech'}, spawn=False)
+    if reply is None:
+        # A stop is idempotent. Retry on a fresh one-request connection before
+        # deciding whether it is safe to render the widget as idle.
+        reply = send_control({'op': 'stop-speech'}, spawn=False)
+    if reply is not None and reply.get('ok'):
+        voice_state.speaking = False
+        voice_state.speech_uncertainty_reported = False
+        _invalidate()
+        return
+    voice_state.speaking = True
+    voice_state.speech_uncertainty_reported = True
+    voice_state.next_speech_poll = 0.0
+    ensure_voice_timer()
+    report_async_error(
+        'Could not confirm read aloud stopped',
+        str((reply or {}).get('error') or
+            'The voice daemon did not confirm that playback stopped. Kilix '
+            'will keep checking and leave the speaking indicator active.'))
 
 
 def is_pixel_pane(window: Window) -> bool:
@@ -546,10 +624,22 @@ def deliver_dictation(text: str) -> None:
         # A pane that closed mid-dictation discards its text rather than letting
         # it land in whatever pane inherited the window id.
         return
+    if is_pixel_pane(window):
+        # Checked again here and not only at click time: the recorded window can
+        # switch from a terminal to a framebuffer while recognition is still in
+        # progress.  Do not feed invisible keystrokes to that application.
+        report_async_error(
+            'Dictation unavailable',
+            'The pane switched to pixel output while Kilix was listening; the '
+            'transcript was discarded. Voice input works in terminal panes.')
+        return
     if pane_echo_disabled(window):
         # Checked again here and not only at click time: a password prompt can
         # appear while the user is still speaking.
-        flag_error('The pane is at a hidden prompt; the transcript was discarded.')
+        report_async_error(
+            'Dictation refused',
+            'The pane reached a hidden prompt while Kilix was listening; the '
+            'transcript was discarded.')
         return
     if window.screen.in_bracketed_paste_mode:
         # One literal insert rather than a stream of keystrokes, so a shell
@@ -568,6 +658,20 @@ def _close_dictation_socket() -> None:
     if path:
         with suppress(OSError):
             os.unlink(path)
+
+
+def _finish_dictation() -> None:
+    """Close local dictation state without sending another daemon request."""
+    _close_dictation_socket()
+    voice_state.listening = False
+    voice_state.stopping = False
+    voice_state.stop_deadline = 0.0
+    voice_state.stop_limit = 0.0
+    voice_state.stop_confirmed = False
+    voice_state.stop_uncertainty_reported = False
+    voice_state.target_window_id = 0
+    voice_state.partial = ''
+    _invalidate()
 
 
 def begin_dictation(window_id: int) -> str | None:
@@ -604,15 +708,36 @@ def begin_dictation(window_id: int) -> str | None:
         return flag_error(f'Could not open the dictation socket: {e}')
     voice_state.dictation_socket = sock
     voice_state.dictation_path = path
-    voice_state.dictation_id = next(_ids)
     reply = send_control({
         'op': 'dictate',
         'sock': path,
-        'max_seconds': stt_max_seconds(),
-        'model': stt_model(),
-        'id': voice_state.dictation_id,
     })
     if reply is None or not reply.get('ok'):
+        if reply is None:
+            # A lost/late acknowledgement is ambiguous: the daemon may already
+            # have opened the microphone. Stop best-effort before removing the
+            # only socket on which that accepted turn could report its result.
+            stop_reply = send_control({'op': 'stop-dictation'}, spawn=False)
+            if not (isinstance(stop_reply, dict) and stop_reply.get('ok')):
+                # Neither the initial turn nor its compensating stop was
+                # acknowledged. Retain the return socket and active indicator
+                # until status/retries or the daemon's configured limit make a
+                # bounded cleanup possible.
+                voice_state.listening = True
+                voice_state.stopping = True
+                voice_state.target_window_id = window_id
+                voice_state.partial = ''
+                now = time.monotonic()
+                voice_state.stop_deadline = now + _DICTATION_STOP_SECONDS
+                voice_state.stop_limit = (
+                    now + stt_max_seconds() + _DICTATION_STOP_SECONDS)
+                voice_state.stop_uncertainty_reported = True
+                ensure_voice_timer()
+                _invalidate()
+                return flag_error(
+                    'The voice daemon did not acknowledge dictation or confirm '
+                    'that the microphone stopped. The listening indicator will '
+                    'remain active while Kilix retries.')
         _close_dictation_socket()
         if reply is None:
             return flag_error(
@@ -620,6 +745,11 @@ def begin_dictation(window_id: int) -> str | None:
         return flag_error(
             str(reply.get('error') or 'The voice daemon refused to listen.'))
     voice_state.listening = True
+    voice_state.stopping = False
+    voice_state.stop_deadline = 0.0
+    voice_state.stop_limit = 0.0
+    voice_state.stop_confirmed = False
+    voice_state.stop_uncertainty_reported = False
     voice_state.target_window_id = window_id
     voice_state.partial = ''
     ensure_voice_timer()
@@ -636,10 +766,16 @@ def poll_dictation() -> None:
         try:
             raw = sock.recv(_DICTATION_MAX_BYTES)
         except BlockingIOError:
+            if (voice_state.stopping
+                    and time.monotonic() >= voice_state.stop_deadline):
+                poll_dictation_stop()
             return
         except OSError as e:
-            end_dictation()
-            flag_error(f'Dictation failed: {e}')
+            # The local return path failed before the daemon reported a final;
+            # stop capture best-effort so an idle icon never leaves the mic open.
+            send_control({'op': 'stop-dictation'}, spawn=False)
+            _finish_dictation()
+            report_async_error('Dictation failed', str(e))
             return
         try:
             message = json.loads(raw.decode('utf-8', 'replace'))
@@ -648,36 +784,110 @@ def poll_dictation() -> None:
         if not isinstance(message, dict):
             continue
         if (partial := message.get('partial')) is not None:
-            # Kept for the live hint text and as the flush fallback below, but
-            # deliberately not rendered in the tab bar: a variable-width segment
-            # would shove the clock and battery cluster sideways per syllable.
+            # Kept for a future live hint, but deliberately not rendered in the
+            # tab bar: a variable-width segment would shove the clock and battery
+            # cluster sideways per syllable. It is never injected as a final.
             voice_state.partial = str(partial)
         elif (error := message.get('error')) is not None:
-            end_dictation()
-            flag_error(str(error))
+            _finish_dictation()
+            report_async_error('Dictation failed', str(error))
             return
         elif (final := message.get('final')) is not None:
-            deliver_dictation(str(final))
-            end_dictation()
+            final_text = str(final)
+            if sanitize_for_injection(final_text):
+                deliver_dictation(final_text)
+            else:
+                report_async_error(
+                    'Dictation finished',
+                    'No speech was recognized, so no text was inserted.')
+            _finish_dictation()
             return
 
 
 def end_dictation(flush: bool = False) -> None:
-    """Stop listening and take the return socket down with it.
+    """Request stop and retain the return socket for the authoritative final.
 
-    `flush` delivers whatever utterance the daemon still had in hand, which is
-    what a second click on the microphone is asking for.
+    The daemon acknowledges stop before its recognizer emits the final DGRAM.
+    Closing here would lose that result, so a second click enters a bounded
+    stopping state and the normal timer keeps polling. Partial recognition is
+    never injected as a substitute for a final transcript.
     """
-    if voice_state.listening:
-        reply = send_control(
-            {'op': 'stop-dictation', 'id': voice_state.dictation_id}, spawn=False)
-        if flush and reply is not None and reply.get('ok'):
-            deliver_dictation(str(reply.get('text') or voice_state.partial))
-    _close_dictation_socket()
-    voice_state.listening = False
-    voice_state.target_window_id = 0
-    voice_state.partial = ''
+    del flush  # retained for the tab-dispatch API; all stops now flush safely
+    if not voice_state.listening:
+        return
+    if voice_state.stopping:
+        send_control({'op': 'stop-dictation'}, spawn=False)
+        voice_state.stop_deadline = min(
+            time.monotonic() + _DICTATION_STOP_SECONDS,
+            voice_state.stop_limit or float('inf'))
+        return
+    reply = send_control({'op': 'stop-dictation'}, spawn=False)
+    if reply is None:
+        reply = send_control({'op': 'stop-dictation'}, spawn=False)
+    now = time.monotonic()
+    voice_state.stopping = True
+    voice_state.stop_confirmed = bool(
+        isinstance(reply, dict) and reply.get('ok'))
+    voice_state.stop_deadline = now + _DICTATION_STOP_SECONDS
+    voice_state.stop_limit = now + stt_max_seconds() + _DICTATION_STOP_SECONDS
+    ensure_voice_timer()
     _invalidate()
+    if reply is None or not reply.get('ok'):
+        _report_dictation_stop_uncertainty(
+            str((reply or {}).get('error') or
+                'The voice daemon did not confirm that the microphone stopped. '
+                'Kilix will keep the listening indicator active and retry.'))
+
+
+def _report_dictation_stop_uncertainty(message: str) -> None:
+    if voice_state.stop_uncertainty_reported:
+        return
+    voice_state.stop_uncertainty_reported = True
+    report_async_error('Could not confirm dictation stopped', message)
+
+
+def poll_dictation_stop() -> None:
+    """Confirm an acknowledged/ambiguous stop without hiding an open mic."""
+    if voice_state.stop_confirmed:
+        _finish_dictation()
+        report_async_error(
+            'Dictation finished without text',
+            'The microphone is closed, but the voice daemon returned no final '
+            'transcript; no text was inserted.')
+        return
+    now = time.monotonic()
+    if voice_state.stop_limit and now >= voice_state.stop_limit:
+        send_control({'op': 'stop-dictation'}, spawn=False)
+        _finish_dictation()
+        report_async_error(
+            'Dictation stop could not be confirmed',
+            'Kilix could not confirm a final transcript or daemon status before '
+            'the configured recording limit elapsed. A final stop was sent and '
+            'the local result socket was closed; run `kilix voice doctor`.')
+        return
+    reply = send_control({'op': 'status'}, spawn=False)
+    status = reply.get('status') if isinstance(reply, dict) and reply.get('ok') else None
+    if isinstance(status, dict) and status.get('listening') is False:
+        # The daemon sends its final datagram before clearing `listening`. Give
+        # that packet one more timer tick to arrive before reporting it lost.
+        voice_state.stop_confirmed = True
+        voice_state.stop_deadline = now + _VOICE_REFRESH_SECONDS
+        return
+
+    stop_reply = send_control({'op': 'stop-dictation'}, spawn=False)
+    if isinstance(stop_reply, dict) and stop_reply.get('ok'):
+        voice_state.stop_confirmed = True
+    limit = voice_state.stop_limit or (now + _DICTATION_STOP_SECONDS)
+    voice_state.stop_deadline = min(now + _DICTATION_STOP_SECONDS, limit)
+    if isinstance(status, dict) and status.get('listening') is True:
+        message = (
+            'The microphone is taking longer than expected to stop. Kilix is '
+            'keeping the listening indicator active and retrying.')
+    else:
+        message = (
+            'Kilix could not confirm that the microphone is closed. The '
+            'listening indicator remains active while Kilix retries.')
+    _report_dictation_stop_uncertainty(message)
 
 
 def _voice_signature() -> tuple[object, ...]:
@@ -691,7 +901,7 @@ def _voice_signature() -> tuple[object, ...]:
 def _voice_timer(timer_id: int | None = None) -> None:
     global _VOICE_LAST_SIGNATURE
     del timer_id
-    _drain_control_events()
+    poll_speech_status()
     if voice_state.listening:
         poll_dictation()
     signature = _voice_signature()
