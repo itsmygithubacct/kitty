@@ -1355,8 +1355,10 @@ class Boss:
     @ac('cp', '''
         Show a clickable right-click context menu (copy, paste, select all, clear selection)
 
-        kilix fork: bound by default to :code:`mouse_map right press ungrabbed show_context_menu`.
-        Remove or re-map that line in kitty.conf to disable it.
+        kilix fork: bound by default to :code:`mouse_map right press ungrabbed show_context_menu`,
+        with :code:`mouse_map ctrl+shift+right press grabbed show_context_menu` keeping it
+        reachable inside mouse-grabbing TUIs. Remove or re-map those lines in kitty.conf to
+        disable it.
         ''')
     def show_context_menu(self) -> None:
         # kilix fork: right-click context menu, reusing the mouse-clickable ask-choices overlay.
