@@ -1943,6 +1943,7 @@ class TabManager:  # {{{
                     THERMAL_WIDGET_ACTION,
                     VOLUME_WIDGET_ACTION,
                     kilix_temps_target,
+                    kilix_volume_target,
                     toggle_battery_percent,
                 )
                 from .kilix_voice import (
@@ -1982,16 +1983,16 @@ class TabManager:  # {{{
                 elif tab_action == VOLUME_WIDGET_ACTION:
                     target = self.active_tab.active_window if self.active_tab else None
                     if target is not None:
-                        executable = which('pulsemixer') or which('alsamixer')
-                        if executable is None:
+                        cmd = kilix_volume_target()
+                        if cmd is None:
                             get_boss().show_error(
                                 'Volume control unavailable',
-                                'Neither pulsemixer nor alsamixer was found. '
-                                'Install pulsemixer to use this widget.')
+                                'Kilix Volume could not be resolved, and '
+                                'neither pulsemixer nor alsamixer was found.')
                         elif (tab := target.tabref()) is not None:
                             tab.new_window(
                                 use_shell=False,
-                                cmd=[executable],
+                                cmd=cmd,
                                 override_title='Volume Control',
                                 overlay_for=target.id,
                             )

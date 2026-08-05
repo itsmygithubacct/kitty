@@ -144,6 +144,29 @@ def kilix_temps_target() -> tuple[list[str], str | None] | None:
     return None
 
 
+def kilix_volume_target() -> list[str] | None:
+    """Resolve Kilix Volume, the stack's own mixer.
+
+    The widget used to reach for pulsemixer or alsamixer and tell the user to
+    install one when neither was present — on a system that ships a volume TUI
+    of its own, in the shared shell, wired to the same sink Kilix uses. The
+    external mixers remain the fallback for a bare checkout that has not
+    installed the utilities yet.
+
+    Resolution matches the thermal dashboard's: an installed command wins, then
+    the Kilix launcher, and a development checkout never shadows either.
+    """
+    if executable := which('kilix-volume'):
+        return [executable]
+    if kilix_home := os.environ.get('KILIX_HOME'):
+        kilix = os.path.join(kilix_home, 'kilix')
+        if os.path.isfile(kilix) and os.access(kilix, os.X_OK):
+            return [kilix, 'volume']
+    if fallback := (which('pulsemixer') or which('alsamixer')):
+        return [fallback]
+    return None
+
+
 def _thermal_sys_root() -> str:
     value = os.environ.get('KILIX_THERMAL_SYS_ROOT') or '/sys'
     return os.path.abspath(os.path.expanduser(value))
