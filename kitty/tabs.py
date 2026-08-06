@@ -1952,7 +1952,7 @@ class TabManager:  # {{{
                     begin_dictation,
                     end_dictation,
                     is_pixel_pane,
-                    pane_echo_disabled,
+                    pane_at_hidden_prompt,
                     read_extent,
                     speak,
                     stop_speech,
@@ -2030,7 +2030,7 @@ class TabManager:  # {{{
                                 'This pane is drawing pixels rather than terminal text, so '
                                 'dictated text has nowhere visible to go. Voice input works '
                                 'in terminal panes.')
-                        elif pane_echo_disabled(target):
+                        elif pane_at_hidden_prompt(target):
                             get_boss().show_error(
                                 'Dictation refused',
                                 'This pane is at a hidden prompt. Kilix does not dictate '

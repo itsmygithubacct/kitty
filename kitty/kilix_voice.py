@@ -577,20 +577,29 @@ def is_pixel_pane(window: Window) -> bool:
     return not window.as_text().strip()
 
 
-def pane_echo_disabled(window: Window) -> bool:
-    """True when the pane's tty has echo off, which means a password prompt.
+def pane_at_hidden_prompt(window: Window) -> bool:
+    """True when the pane's tty reads a line it will never show: a password.
 
     Kilix already refuses to record hidden prompts in session transcripts.
     Speaking a password at a recogniser and typing it into the pane would defeat
     that from the other direction.
+
+    "Echo is off" alone is not the test. Every readline-style prompt (bash, zsh,
+    a REPL) turns ECHO off while the line editor draws keystrokes itself, so
+    that reading would refuse dictation at every ordinary shell prompt. What
+    marks a hidden prompt — getpass, `read -s`, sudo, an ssh passphrase — is
+    that the tty stays in canonical mode while echo is off: the kernel collects
+    a whole line and shows none of it. Raw mode with echo off is an application
+    doing its own visible echoing, which is exactly where dictation belongs.
     """
     fd = getattr(getattr(window, 'child', None), 'child_fd', None)
     if fd is None:
         return False
     try:
-        return not (termios.tcgetattr(fd)[3] & termios.ECHO)
+        lflag = termios.tcgetattr(fd)[3]
     except (OSError, termios.error):
         return False
+    return bool(lflag & termios.ICANON) and not lflag & termios.ECHO
 
 
 def sanitize_for_injection(text: str) -> str:
@@ -633,7 +642,7 @@ def deliver_dictation(text: str) -> None:
             'The pane switched to pixel output while Kilix was listening; the '
             'transcript was discarded. Voice input works in terminal panes.')
         return
-    if pane_echo_disabled(window):
+    if pane_at_hidden_prompt(window):
         # Checked again here and not only at click time: a password prompt can
         # appear while the user is still speaking.
         report_async_error(
