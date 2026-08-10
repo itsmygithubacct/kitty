@@ -1950,8 +1950,10 @@ class TabManager:  # {{{
                     DICTATE_ACTION,
                     SPEAK_ACTION,
                     begin_dictation,
+                    dictation_install_offer,
                     end_dictation,
                     is_pixel_pane,
+                    launch_model_install,
                     pane_at_hidden_prompt,
                     read_extent,
                     speak,
@@ -2035,6 +2037,16 @@ class TabManager:  # {{{
                                 'Dictation refused',
                                 'This pane is at a hidden prompt. Kilix does not dictate '
                                 'into a password prompt.')
+                        elif (offer := dictation_install_offer()) is not None:
+                            get_boss().confirm(
+                                offer.message,
+                                launch_model_install,
+                                target.id,
+                                offer.argv,
+                                offer.model,
+                                window=target,
+                                title='Install speech model?',
+                            )
                         elif (error := begin_dictation(target.id)) is not None:
                             get_boss().show_error('Dictation unavailable', error)
                 elif tab_action == NETWORK_WIDGET_ACTION:

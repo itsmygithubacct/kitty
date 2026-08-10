@@ -61,6 +61,24 @@ TTS_RATES = ('120', '150', '170', '200', '240')
 TTS_EXTENTS = ('screen', 'scrollback', 'selection')
 STT_ENGINES = ('vosk', 'vibevoice', 'off')
 STT_MODELS = ('small-en-us', 'lgraph-en-us', 'vibevoice-asr-bitnet')
+STT_MODEL_ENGINES = {
+    'small-en-us': 'vosk',
+    'lgraph-en-us': 'vosk',
+    'vibevoice-asr-bitnet': 'vibevoice',
+}
+STT_MODEL_BYTES = {
+    'small-en-us': 41205931,
+    'lgraph-en-us': 130557655,
+    'vibevoice-asr-bitnet': 1705771590,
+}
+STT_MODEL_REQUIRED_FILES = {
+    'small-en-us': ('conf/model.conf', 'am/final.mdl'),
+    'lgraph-en-us': ('conf/model.conf', 'am/final.mdl'),
+    'vibevoice-asr-bitnet': (
+        'vibeasr-lm-i2_s-embed-q6_k.gguf',
+        'vibeasr-vae-encoder-i8_s.gguf',
+    ),
+}
 STT_MAX_SECONDS = ('15', '30', '60', '120')
 _VOICE_TOKEN = re.compile(r'[A-Za-z0-9_+-]{1,32}')
 
@@ -119,6 +137,16 @@ class VoiceState:
 
 
 voice_state = VoiceState()
+
+
+@dataclass(frozen=True)
+class ModelInstallOffer:
+    """The explicit transfer a disabled microphone can offer."""
+
+    model: str
+    size: int
+    argv: tuple[str, ...]
+    message: str
 
 
 def _choice(name: str, default: str, choices: tuple[str, ...]) -> str:
@@ -240,6 +268,15 @@ def voice_daemon_target() -> tuple[list[str], str | None] | None:
     return None
 
 
+def kilix_launcher() -> str | None:
+    """Resolve the host launcher that owns verified model installation."""
+    if kilix_home := os.environ.get('KILIX_HOME'):
+        candidate = os.path.join(kilix_home, 'kilix')
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return which('kilix')
+
+
 def _tts_available(engine: str) -> bool:
     if engine == 'off':
         return False
@@ -250,17 +287,105 @@ def _tts_available(engine: str) -> bool:
     return bool(which('pacat') or which('paplay') or which('aplay'))
 
 
+def _model_payload_present(model: str) -> bool:
+    """Whether the selected catalog model has each required non-empty file."""
+    directory = os.path.join(data_voice_dir(), 'models', model)
+    required = STT_MODEL_REQUIRED_FILES.get(model, ())
+    try:
+        return bool(required) and os.path.isdir(directory) and all(
+            os.path.isfile(os.path.join(directory, relative))
+            and os.path.getsize(os.path.join(directory, relative)) > 0
+            for relative in required
+        )
+    except OSError:
+        return False
+
+
 def _stt_available(engine: str, model: str) -> bool:
     if engine == 'off':
         return False
     if not (which('parec') or which('arecord')):
         return False
     data = data_voice_dir()
-    if not os.path.isdir(os.path.join(data, 'models', model)):
+    if not _model_payload_present(model):
         return False
     if engine == 'vosk':
         return os.path.isfile(os.path.join(data, 'lib', 'current', 'libvosk.so'))
-    return True
+    # The weights are shared with Bonsai and are selectable here, but this
+    # voice runtime does not yet have a VibeVoice streaming recogniser.
+    return False
+
+
+def _human_bytes(count: int) -> str:
+    size = float(count)
+    for unit in ('B', 'KiB', 'MiB'):
+        if size < 1024.0:
+            return f'{size:.0f} {unit}' if unit == 'B' else f'{size:.1f} {unit}'
+        size /= 1024.0
+    return f'{size:.1f} GiB'
+
+
+def dictation_install_offer() -> ModelInstallOffer | None:
+    """Return a confirmed lazy-install action when selected assets are absent."""
+    global _AVAILABILITY_UNTIL
+    engine, model = stt_engine(), stt_model()
+    if engine == 'off' or STT_MODEL_ENGINES.get(model) != engine:
+        return None
+    data = data_voice_dir()
+    model_missing = not _model_payload_present(model)
+    library_missing = (
+        engine == 'vosk'
+        and not os.path.isfile(os.path.join(data, 'lib', 'current', 'libvosk.so'))
+    )
+    if not model_missing and not library_missing:
+        # A model installer may have completed while the five-second chrome
+        # cache still says unavailable. The same click proceeds to
+        # begin_dictation(), so make that check observe the new payload now.
+        _AVAILABILITY_UNTIL = 0.0
+        return None
+    kilix = kilix_launcher()
+    if not kilix:
+        return None
+    size = STT_MODEL_BYTES[model]
+    if model_missing and library_missing:
+        missing = 'model and Vosk library'
+    elif library_missing:
+        missing = 'Vosk library'
+    else:
+        missing = 'model'
+    return ModelInstallOffer(
+        model=model,
+        size=size,
+        argv=(kilix, 'stt', '--install', model, '--default', model),
+        message=(
+            f'Dictation is set to {model}, but its {missing} is not installed.\n\n'
+            f'Install the {_human_bytes(size)} model now and keep it as the '
+            'default? Nothing is downloaded unless you choose Yes.'),
+    )
+
+
+def launch_model_install(confirmed: bool, window_id: int,
+                         argv: tuple[str, ...], model: str) -> None:
+    """Open a visible, held installer after the mic prompt is accepted."""
+    if not confirmed:
+        return
+    from .fast_data_types import get_boss
+    boss = get_boss()
+    window = boss.window_id_map.get(window_id)
+    tab = window.tabref() if window is not None and not window.destroyed else None
+    if tab is None:
+        boss.show_error(
+            'Could not install speech model',
+            'The pane that requested dictation is no longer available.')
+        return
+    tab.new_window(
+        use_shell=False,
+        cmd=list(argv),
+        override_title=f'Install speech model · {model}',
+        overlay_for=window.id,
+        copy_colors_from=window,
+        hold=True,
+    )
 
 
 def _availability() -> dict[str, bool]:
@@ -695,9 +820,29 @@ def begin_dictation(window_id: int) -> str | None:
     if voice_state.listening:
         return None
     if not _availability()['dictate']:
+        engine, model = stt_engine(), stt_model()
+        if engine == 'off':
+            detail = 'Dictation is turned off. Choose a speech model in `kilix stt`.'
+        elif engine == 'vibevoice':
+            detail = (
+                'The VibeVoice weights can be installed and selected, but this '
+                'voice runtime cannot dictate with them yet. Choose small-en-us '
+                'or lgraph-en-us in `kilix stt`.')
+        elif STT_MODEL_ENGINES.get(model) != engine:
+            detail = (
+                f'{model} needs the {STT_MODEL_ENGINES.get(model, "matching")} '
+                f'engine, but dictation is set to {engine}. Run `kilix stt`.')
+        elif not (which('parec') or which('arecord')):
+            detail = (
+                'No microphone recorder is available. Install PipeWire or '
+                'PulseAudio tools (parec), or ALSA utilities (arecord), then '
+                'run `kilix voice doctor`.')
+        else:
+            detail = (
+                f'No speech recogniser is available. Run `kilix stt --install '
+                f'{model} --default {model}`, or inspect `kilix stt --models`.')
         return flag_error(
-            'No speech recogniser is available. Run `kilix voice install`, '
-            'then `kilix voice doctor`.')
+            detail)
     try:
         directory = _ensure_session_voice_dir()
     except OSError as e:
