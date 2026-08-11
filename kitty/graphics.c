@@ -8,6 +8,7 @@
 #define GRAPHICS_INTERNAL_APIS
 #include "graphics.h"
 #include "state.h"
+#include "gl.h"
 #include "disk-cache.h"
 #include "iqsort.h"
 #include "safe-wrappers.h"
@@ -17,6 +18,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <stdlib.h>
+#include <strings.h>
 
 #include <zlib.h>
 #include <structmember.h>
@@ -172,6 +174,7 @@ free_all_images(GraphicsManager *self) {
 static void
 dealloc(GraphicsManager* self) {
     free_all_images(self);
+    if (self->compose_scratch_texture) free_texture(&self->compose_scratch_texture);
     free(self->render_data.item);
     Py_CLEAR(self->disk_cache);
     Py_TYPE(self)->tp_free((PyObject*)self);
@@ -724,6 +727,124 @@ upload_region_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque,
         send_image_region_to_gpu(img->texture->id, data, img->width,
                                  x, y, width, height, is_opaque);
     }
+}
+
+static bool
+renderer_is_software(const char *renderer) {
+    static const char *software_renderers[] = {
+        "llvmpipe", "softpipe", "swrast", "software rasterizer"
+    };
+    if (!renderer) return true;
+    const size_t renderer_length = strlen(renderer);
+    for (size_t i = 0; i < arraysz(software_renderers); i++) {
+        const char *needle = software_renderers[i];
+        const size_t needle_length = strlen(needle);
+        if (needle_length > renderer_length) continue;
+        for (size_t offset = 0; offset <= renderer_length - needle_length; offset++) {
+            if (strncasecmp(renderer + offset, needle, needle_length) == 0) return true;
+        }
+    }
+    return false;
+}
+
+static bool
+gpu_compose_context_is_available(GraphicsManager *self) {
+    if (self->gpu_compose_disabled) return false;
+    if (!self->context_made_current_for_this_command) {
+        if (!self->window_id || !make_window_context_current(self->window_id)) return false;
+        self->context_made_current_for_this_command = true;
+    }
+    if (!self->gpu_compose_checked) {
+        const char *renderer = (const char*)glad_glGetString(GL_RENDERER);
+        self->gpu_compose_available = GLAD_GL_ARB_copy_image &&
+            !renderer_is_software(renderer);
+        self->gpu_compose_checked = true;
+        if (global_state.debug_rendering) {
+            timed_debug_print("Kilix GPU compose: %s (%s)",
+                self->gpu_compose_available ? "enabled" : "CPU fallback",
+                renderer ? renderer : "renderer unavailable");
+        }
+    }
+    return self->gpu_compose_available;
+}
+
+static bool
+allocate_compose_scratch(GraphicsManager *self, const GLuint source_texture,
+                         const uint32_t width, const uint32_t height) {
+    GLint source_format = 0, previous_texture = 0;
+    glad_glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous_texture);
+    glad_glBindTexture(GL_TEXTURE_2D, source_texture);
+    glad_glGetTexLevelParameteriv(
+        GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &source_format);
+    if (self->compose_scratch_texture &&
+            self->compose_scratch_width >= width &&
+            self->compose_scratch_height >= height &&
+            self->compose_scratch_internal_format == (uint32_t)source_format) {
+        glad_glBindTexture(GL_TEXTURE_2D, (GLuint)previous_texture);
+        return true;
+    }
+
+    GLuint scratch = 0;
+    const uint32_t scratch_width = MAX(width, self->compose_scratch_width);
+    const uint32_t scratch_height = MAX(height, self->compose_scratch_height);
+    while (glad_glGetError() != GL_NO_ERROR) {}
+    glad_glGenTextures(1, &scratch);
+    glad_glBindTexture(GL_TEXTURE_2D, scratch);
+    glad_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glad_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glad_glTexImage2D(GL_TEXTURE_2D, 0, source_format,
+        scratch_width, scratch_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    const GLenum error = glad_glGetError();
+    glad_glBindTexture(GL_TEXTURE_2D, (GLuint)previous_texture);
+    if (error != GL_NO_ERROR || !scratch) {
+        if (scratch) glad_glDeleteTextures(1, &scratch);
+        return false;
+    }
+    if (self->compose_scratch_texture) {
+        glad_glDeleteTextures(1, &self->compose_scratch_texture);
+    }
+    self->compose_scratch_texture = scratch;
+    self->compose_scratch_width = scratch_width;
+    self->compose_scratch_height = scratch_height;
+    self->compose_scratch_internal_format = (uint32_t)source_format;
+    return true;
+}
+
+static bool
+gpu_replace_same_frame_region(GraphicsManager *self, Image *img,
+                              const uint32_t src_x, const uint32_t src_y,
+                              const uint32_t dest_x, const uint32_t dest_y,
+                              const uint32_t width, const uint32_t height) {
+    if (!img->texture || !img->texture->id ||
+            !gpu_compose_context_is_available(self)) return false;
+    const GLuint texture = img->texture->id;
+    if (!allocate_compose_scratch(self, texture, width, height)) {
+        self->gpu_compose_disabled = true;
+        log_error("Kilix GPU compose scratch allocation failed; using CPU uploads");
+        return false;
+    }
+
+    while (glad_glGetError() != GL_NO_ERROR) {}
+    glad_glCopyImageSubData(
+        texture, GL_TEXTURE_2D, 0, src_x, src_y, 0,
+        self->compose_scratch_texture, GL_TEXTURE_2D, 0, 0, 0, 0,
+        width, height, 1);
+    GLenum error = glad_glGetError();
+    if (error == GL_NO_ERROR) {
+        glad_glCopyImageSubData(
+            self->compose_scratch_texture, GL_TEXTURE_2D, 0, 0, 0, 0,
+            texture, GL_TEXTURE_2D, 0, dest_x, dest_y, 0,
+            width, height, 1);
+        error = glad_glGetError();
+    }
+    if (error != GL_NO_ERROR) {
+        self->gpu_compose_disabled = true;
+        log_error("Kilix GPU compose failed with OpenGL error %u; using CPU uploads",
+                  (unsigned)error);
+        return false;
+    }
+    img->current_frame_shown_at = monotonic();
+    return true;
 }
 
 static Image*
@@ -1943,9 +2064,16 @@ handle_compose_command(GraphicsManager *self, bool *is_dirty, const GraphicsComm
     dest_frame->x = 0; dest_frame->y = 0; dest_frame->width = img->width; dest_frame->height = img->height;
     dest_frame->base_frame_id = 0; dest_frame->bgcolor = 0;
     *is_dirty = (g->other_frame_number - 1) == img->current_frame_index;
-    if (*is_dirty) update_current_frame_region(
-        self, img, &dest_data, (uint32_t)dest_x, (uint32_t)dest_y,
-        (uint32_t)width, (uint32_t)height);
+    if (*is_dirty) {
+        const bool composed_on_gpu = src_frame == dest_frame &&
+            g->compose_mode == 1 && gpu_replace_same_frame_region(
+                self, img, (uint32_t)src_x, (uint32_t)src_y,
+                (uint32_t)dest_x, (uint32_t)dest_y,
+                (uint32_t)width, (uint32_t)height);
+        if (!composed_on_gpu) update_current_frame_region(
+            self, img, &dest_data, (uint32_t)dest_x, (uint32_t)dest_y,
+            (uint32_t)width, (uint32_t)height);
+    }
 }
 // }}}
 

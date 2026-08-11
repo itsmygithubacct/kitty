@@ -156,6 +156,9 @@ typedef struct {
     PyObject *disk_cache;
     bool has_images_needing_animation, context_made_current_for_this_command;
     id_type window_id;
+    uint32_t compose_scratch_texture, compose_scratch_width;
+    uint32_t compose_scratch_height, compose_scratch_internal_format;
+    bool gpu_compose_checked, gpu_compose_available, gpu_compose_disabled;
     image_map images_by_internal_id;
 } GraphicsManager;
 #else

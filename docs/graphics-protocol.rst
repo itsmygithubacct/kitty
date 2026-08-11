@@ -843,7 +843,7 @@ Clients can specify *usage hints* when creating images using the ``N`` key.
 These hints allow the terminal to optimise resource consumption such as caching
 strategies. The value of ``N`` is a bitmask.
 
-Currently the only usage hint defined is ``transient (N == 1)``.
+The standard protocol defines the ``transient (N == 1)`` usage hint.
 The terminal is free to assume that an image with this hint
 will be used for only a short time, and so may, for example, evict its
 data before other images when the image is soft deleted, has no visible
@@ -860,7 +860,11 @@ and ``C=1`` to move a rectangle within the current frame, including when the
 source and destination overlap. This is intended for scroll-aware presenters.
 The fork exports ``KITTY_KILIX_RENDERING=1`` to child processes that may use
 the extension. Without bit ``2``, overlapping same-frame rectangles retain the
-standard ``EINVAL`` behavior.
+standard ``EINVAL`` behavior. The extension specifies snapshot/memmove
+semantics, not a required implementation mechanism: this fork uses a GPU copy
+when a hardware renderer and the required OpenGL operation are available, and
+otherwise performs the same operation through its CPU backing store. The CPU
+backing store remains authoritative in both cases.
 
 
 .. _animation_protocol:
