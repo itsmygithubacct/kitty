@@ -81,7 +81,8 @@ distribute_dots(unsigned available_space, unsigned num_of_dots, unsigned *summed
     unsigned dot_size = max(1u, available_space / (2u * num_of_dots));
     unsigned extra = 2 * num_of_dots * dot_size;
     extra = available_space > extra ? available_space - extra : 0;
-    for (unsigned i = 0; i < num_of_dots; i++) gaps[i] = dot_size;
+    gaps[0] = dot_size;
+    for (unsigned i = 1; i < num_of_dots; i++) gaps[i] = dot_size;
     if (extra > 0) {
         unsigned idx = 0;
         while (extra > 0) {

@@ -752,6 +752,7 @@ is_color_dark(color_type c) {
     return rgb_luminance(bg) / 255.0 < 0.5;
 }
 
+#ifdef HAS_OPTIONAL_CAIRO_COLOR_PALETTE
 static unsigned short
 get_preferred_palette_index(Face *self) {
     if (!self->palettes_scanned) {
@@ -770,6 +771,7 @@ get_preferred_palette_index(Face *self) {
     }
     return is_color_dark(OPT(background)) ? self->dark_palette_index : self->light_palette_index;
 }
+#endif
 
 static char*
 get_variation_as_string(Face *self) {
