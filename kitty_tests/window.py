@@ -2,15 +2,15 @@
 # License: GPL v3
 
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from kitty import kilix_memory, kilix_telemetry
 from kitty.fast_data_types import GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, GLFW_RELEASE
 from kitty.kilix_cpu import (
     CPU_LOAD_THRESHOLD,
-    cpu_load_average,
     format_pane_cpu_load,
     pane_cpu_label,
 )
@@ -19,11 +19,11 @@ from kitty.kilix_memory import (
     MEMORY_GLYPH,
     MEMORY_WIDGET_ACTION,
     format_pane_memory,
+    pane_cpu_cores,
     pane_memory_bytes,
     pane_memory_label,
     pane_memory_segment,
 )
-from kitty import kilix_cpu, kilix_memory
 from kitty.tabs import MouseEvents, Tab, TabManager
 from kitty.types import WindowGeometry
 from kitty.window import Window
@@ -70,27 +70,86 @@ class TestWindowChrome(BaseTest):
         )
         self.assertEqual(pane_resource_text('', memory_text), memory_text)
 
-    def test_cpu_load_policy_and_proc_reader(self) -> None:
+    def test_cpu_policy_uses_each_pane_process_tree(self) -> None:
         self.assertEqual(format_pane_cpu_load(CPU_LOAD_THRESHOLD, 'auto'), '')
         self.assertEqual(format_pane_cpu_load(1.14, 'auto'), '1.1')
         self.assertEqual(format_pane_cpu_load(0.0, 'always'), '0.0')
         self.assertEqual(format_pane_cpu_load(20.0, 'off'), '')
 
+        metrics = {
+            100: SimpleNamespace(process_count=2, cpu_cores=1.75),
+            200: SimpleNamespace(process_count=1, cpu_cores=0.25),
+        }
+        with (
+            patch('kitty.kilix_cpu.chrome_value', return_value='always'),
+            patch(
+                'kitty.kilix_memory._telemetry_pane',
+                side_effect=lambda pid: metrics.get(pid),
+            ),
+        ):
+            self.assertEqual(pane_cpu_label(100), '1.8')
+            self.assertEqual(pane_cpu_label(200), '0.2')
+
+    def test_shared_snapshot_is_read_once_for_all_panes(self) -> None:
+        metrics = {
+            100: SimpleNamespace(process_count=2, cpu_cores=1.5),
+            200: SimpleNamespace(process_count=1, cpu_cores=0.5),
+        }
+        snapshot = SimpleNamespace(
+            hottest_celsius=72.5,
+            pane=lambda pid: metrics[pid],
+        )
+        client = Mock()
+        client.snapshot.return_value = snapshot
+        with (
+            patch.object(kilix_telemetry, '_CLIENT', client),
+            patch.object(kilix_telemetry, '_PANE_METRICS', {}),
+            patch.object(kilix_telemetry, '_SNAPSHOT', None),
+        ):
+            self.assertTrue(kilix_telemetry.refresh_panes([200, 100, 100]))
+            self.assertIs(kilix_telemetry.pane_metrics(100), metrics[100])
+            self.assertEqual(kilix_telemetry.hottest_celsius(), 72.5)
+        client.register_panes.assert_called_once_with((100, 200))
+        client.snapshot.assert_called_once_with(
+            start=False, fallback=False, force=True)
+
+    def test_pane_cpu_local_fallback_uses_tick_deltas(self) -> None:
+        def write_process(
+            proc: Path, pid: int, ppid: int, ticks: int, start: int
+        ) -> None:
+            directory = proc / str(pid)
+            directory.mkdir(exist_ok=True)
+            fields = ['S', str(ppid), str(pid), str(pid), *(['0'] * 18)]
+            fields[11] = str(ticks)
+            fields[12] = '0'
+            fields[19] = str(start)
+            fields[21] = '100'
+            directory.joinpath('stat').write_text(
+                f"{pid} (pane worker) {' '.join(fields)}\n")
+
         with tempfile.TemporaryDirectory() as temporary:
             proc = Path(temporary)
-            proc.joinpath('loadavg').write_text(
-                '1.75 1.25 0.75 2/100 1234\n')
+            write_process(proc, 100, 1, 100, 10)
+            write_process(proc, 101, 100, 50, 11)
+            write_process(proc, 200, 1, 25, 12)
             with (
-                patch.dict(os.environ, {'KILIX_CPU_PROC_ROOT': str(proc)}),
+                patch.dict(os.environ, {'KILIX_MEMORY_PROC_ROOT': str(proc)}),
+                patch('kitty.kilix_memory._telemetry_pane', return_value=None),
                 patch(
-                    'kitty.kilix_cpu.chrome_value',
-                    return_value='always',
+                    'kitty.kilix_memory.time.monotonic',
+                    side_effect=(1.0, 3.0, 3.1),
                 ),
             ):
-                kilix_cpu._LOAD_CACHE_UNTIL = 0
-                kilix_cpu._LOAD_CACHE_ROOT = ''
-                self.assertEqual(cpu_load_average(force=True), 1.75)
-                self.assertEqual(pane_cpu_label(), '1.8')
+                kilix_memory._PROCESS_CACHE_UNTIL = 0
+                kilix_memory._PROCESS_CACHE_ROOT = ''
+                kilix_memory._PROCESS_PREVIOUS = {}
+                kilix_memory._PROCESS_PREVIOUS_WHEN = 0.0
+                self.assertEqual(pane_cpu_cores(100, force=True), 0.0)
+                write_process(proc, 100, 1, 200, 10)
+                write_process(proc, 101, 100, 150, 11)
+                write_process(proc, 200, 1, 75, 12)
+                self.assertAlmostEqual(pane_cpu_cores(100, force=True) or 0.0, 1.0)
+                self.assertAlmostEqual(pane_cpu_cores(200) or 0.0, 0.25)
 
     def test_auto_memory_chip_skips_pss_below_rss_threshold(self) -> None:
         with (

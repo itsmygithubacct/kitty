@@ -102,7 +102,7 @@ class WindowTitleData(NamedTuple):
     is_overlay: bool = False     # kilix fork: an app overlay (browse/run/screensaver)
     is_synchronized_input: bool = False  # kilix fork: pane receives broadcast keys
     pane_memory_text: str = ''  # kilix fork: dynamic process-tree memory chip
-    pane_cpu_text: str = ''  # kilix fork: system load left of the RAM chip
+    pane_cpu_text: str = ''  # kilix fork: pane CPU cores left of the RAM chip
 
 
 @run_once

@@ -1126,7 +1126,8 @@ class Window:
         memory_segment = (
             None if is_overlay else pane_memory_segment(
                 self.child.process_tree_root_pid))
-        cpu_label = '' if is_overlay else pane_cpu_label()
+        cpu_label = '' if is_overlay else pane_cpu_label(
+            self.child.process_tree_root_pid)
 
         data = WindowTitleData(
             title=self.title or '',

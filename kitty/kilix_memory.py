@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
 import os
 import time
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any
 
 from .kilix_battery import chrome_value
 from .utils import log_error, which
-
 
 PANE_MEMORY_MODE_KEY = 'KILIX_CHROME_PANE_MEMORY_MODE'
 PANE_MEMORY_MODE_DEFAULT = 'auto'
@@ -29,6 +29,9 @@ _PROCESS_CHILDREN: dict[int, tuple[int, ...]] = {}
 _PROCESS_TREES: dict[int, tuple[int, ...]] = {}
 _PROCESS_PROPORTIONAL: dict[int, int] = {}
 _PROCESS_TOTALS: dict[int, int] = {}
+_PROCESS_CPU_CORES: dict[int, float] = {}
+_PROCESS_PREVIOUS: dict[int, tuple[int, int]] = {}
+_PROCESS_PREVIOUS_WHEN = 0.0
 _LAST_LABELS: dict[int, tuple[str, str]] = {}
 _TIMER_STARTED = False
 
@@ -37,6 +40,8 @@ _TIMER_STARTED = False
 class ProcessSample:
     ppid: int
     rss_bytes: int
+    start_ticks: int
+    cpu_ticks: int
 
 
 def pane_memory_mode() -> str:
@@ -75,6 +80,13 @@ def _page_size() -> int:
         return 4096
 
 
+def _clock_ticks() -> int:
+    try:
+        return max(1, int(os.sysconf('SC_CLK_TCK')))
+    except (OSError, ValueError):
+        return 100
+
+
 def _read_process_stat(path: str, page_size: int) -> ProcessSample | None:
     try:
         with open(path, encoding='utf-8', errors='replace') as stream:
@@ -94,6 +106,8 @@ def _read_process_stat(path: str, page_size: int) -> ProcessSample | None:
         return ProcessSample(
             ppid=max(0, int(fields[1])),
             rss_bytes=max(0, int(fields[21])) * page_size,
+            start_ticks=max(0, int(fields[19])),
+            cpu_ticks=max(0, int(fields[11]) + int(fields[12])),
         )
     except ValueError:
         return None
@@ -101,6 +115,7 @@ def _read_process_stat(path: str, page_size: int) -> ProcessSample | None:
 
 def _refresh_process_cache(force: bool = False) -> dict[int, ProcessSample]:
     global _PROCESS_CACHE, _PROCESS_CACHE_ROOT, _PROCESS_CACHE_UNTIL
+    global _PROCESS_CPU_CORES, _PROCESS_PREVIOUS, _PROCESS_PREVIOUS_WHEN
     global _PROCESS_CHILDREN, _PROCESS_PROPORTIONAL, _PROCESS_TOTALS
     global _PROCESS_TREES
     root = _proc_root()
@@ -124,6 +139,22 @@ def _refresh_process_cache(force: bool = False) -> dict[int, ProcessSample]:
             os.path.join(root, name, 'stat'), page_size)
         if sample is not None:
             samples[int(name)] = sample
+    if root != _PROCESS_CACHE_ROOT:
+        _PROCESS_PREVIOUS = {}
+        _PROCESS_PREVIOUS_WHEN = 0.0
+    elapsed = max(0.0, now - _PROCESS_PREVIOUS_WHEN)
+    denominator = _clock_ticks() * elapsed
+    cpu_cores: dict[int, float] = {}
+    for pid, sample in samples.items():
+        previous = _PROCESS_PREVIOUS.get(pid)
+        value = 0.0
+        if (
+            previous is not None
+            and previous[0] == sample.start_ticks
+            and denominator > 0.0
+        ):
+            value = max(0, sample.cpu_ticks - previous[1]) / denominator
+        cpu_cores[pid] = value
     child_lists: dict[int, list[int]] = defaultdict(list)
     for pid, sample in samples.items():
         child_lists[sample.ppid].append(pid)
@@ -134,9 +165,24 @@ def _refresh_process_cache(force: bool = False) -> dict[int, ProcessSample]:
     _PROCESS_TREES = {}
     _PROCESS_PROPORTIONAL = {}
     _PROCESS_TOTALS = {}
+    _PROCESS_CPU_CORES = cpu_cores
+    _PROCESS_PREVIOUS = {
+        pid: (sample.start_ticks, sample.cpu_ticks)
+        for pid, sample in samples.items()
+    }
+    _PROCESS_PREVIOUS_WHEN = now
     _PROCESS_CACHE_ROOT = root
     _PROCESS_CACHE_UNTIL = now + _CACHE_SECONDS
     return samples
+
+
+def _telemetry_pane(root_pid: int) -> Any | None:
+    try:
+        from .kilix_telemetry import pane_metrics
+        metrics = pane_metrics(root_pid)
+    except Exception:
+        return None
+    return metrics if getattr(metrics, 'process_count', 0) > 0 else None
 
 
 def _proportional_bytes(pid: int, fallback: int) -> int:
@@ -192,6 +238,8 @@ def pane_memory_rss_bytes(root_pid: int) -> int:
         return 0
     if root_pid <= 0:
         return 0
+    if (metrics := _telemetry_pane(root_pid)) is not None:
+        return max(0, int(metrics.rss_bytes))
     samples = _refresh_process_cache()
     return sum(
         samples[pid].rss_bytes
@@ -207,6 +255,8 @@ def pane_memory_bytes(root_pid: int) -> int:
         return 0
     if root_pid <= 0:
         return 0
+    if (metrics := _telemetry_pane(root_pid)) is not None:
+        return max(0, int(metrics.proportional_bytes))
     samples = _refresh_process_cache()
     if root_pid in _PROCESS_TOTALS:
         return _PROCESS_TOTALS[root_pid]
@@ -218,6 +268,25 @@ def pane_memory_bytes(root_pid: int) -> int:
     )
     _PROCESS_TOTALS[root_pid] = total
     return total
+
+
+def pane_cpu_cores(root_pid: int, *, force: bool = False) -> float | None:
+    """Return process-tree CPU in logical cores from telemetry or local fallback."""
+    try:
+        root_pid = int(root_pid)
+    except (TypeError, ValueError):
+        return None
+    if root_pid <= 0:
+        return None
+    if (metrics := _telemetry_pane(root_pid)) is not None:
+        return max(0.0, float(metrics.cpu_cores))
+    samples = _refresh_process_cache(force=force)
+    if root_pid not in samples:
+        return None
+    return sum(
+        _PROCESS_CPU_CORES.get(pid, 0.0)
+        for pid in _pane_processes(root_pid, samples)
+    )
 
 
 def pane_memory_label(root_pid: int) -> str:
@@ -260,16 +329,29 @@ def kilix_memory_target() -> tuple[list[str], str | None] | None:
 def _memory_timer(timer_id: int | None = None) -> None:
     del timer_id
     global _LAST_LABELS
-    if pane_memory_mode() != 'off':
-        _refresh_process_cache(force=True)
-    from .kilix_cpu import pane_cpu_label
     from .fast_data_types import get_boss, mark_os_window_dirty
-    cpu_label = pane_cpu_label(force=True)
+    from .kilix_cpu import pane_cpu_label, pane_cpu_mode
     current: dict[int, tuple[str, str]] = {}
     try:
         boss = get_boss()
     except Exception:
         return
+    roots: set[int] = set()
+    for manager in boss.all_tab_managers:
+        for tab in manager:
+            for window in tab:
+                child = getattr(window, 'child', None)
+                try:
+                    pid = int(getattr(child, 'process_tree_root_pid', 0))
+                except (TypeError, ValueError):
+                    pid = 0
+                if pid > 0:
+                    roots.add(pid)
+    from .kilix_telemetry import refresh_panes
+    memory_mode = pane_memory_mode()
+    shared = refresh_panes(tuple(roots), register=memory_mode != 'off')
+    if not shared and (memory_mode != 'off' or pane_cpu_mode() != 'off'):
+        _refresh_process_cache(force=True)
     for manager in boss.all_tab_managers:
         manager_changed = False
         for tab in manager:
@@ -278,6 +360,7 @@ def _memory_timer(timer_id: int | None = None) -> None:
                 child = getattr(window, 'child', None)
                 pid = getattr(child, 'process_tree_root_pid', 0)
                 label = pane_memory_label(pid) if pid else ''
+                cpu_label = pane_cpu_label(pid) if pid else ''
                 resource_labels = (cpu_label, label)
                 current[window.id] = resource_labels
                 if _LAST_LABELS.get(window.id) != resource_labels:

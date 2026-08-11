@@ -6,8 +6,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
 from kitty import kilix_battery
+from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
 from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION,
@@ -53,7 +53,9 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_CALENDAR': '1',
                 'KILIX_CHROME_CLOCK': '1',
                 'KILIX_CHROME_CLOCK_FORMAT': 'DATE',
+                'KILIX_CHROME_DICTATE': '0',
                 'KILIX_CHROME_NETWORK': '1',
+                'KILIX_CHROME_SPEAK': '0',
                 'KILIX_CHROME_TEMPERATURE': '0',
                 'KILIX_CHROME_VOLUME': '1',
             }),
@@ -173,6 +175,24 @@ class TestTabBar(BaseTest):
             for value in ('nan\n', 'inf\n', '-inf\n'):
                 path.write_text(value)
                 self.assertIsNone(kilix_battery._read_temperature(str(path)))
+
+    def test_thermal_status_prefers_shared_telemetry(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                'kitty.kilix_telemetry.hottest_celsius',
+                return_value=83.25,
+            ),
+            patch(
+                'kitty.kilix_battery._read_thermal_info_uncached',
+                side_effect=AssertionError('sysfs fallback should not run'),
+            ),
+        ):
+            kilix_battery._THERMAL_CACHE_UNTIL = 0.0
+            info = kilix_battery.thermal_info()
+        self.assertIsNotNone(info)
+        self.ae(info.celsius, 83.2)
+        self.ae(info.level, 'yellow')
 
     def test_horizontal_multi_row_hit_testing_and_hidden_reset(self) -> None:
         self.set_options({

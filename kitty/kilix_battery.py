@@ -210,13 +210,29 @@ def _read_thermal_info_uncached() -> ThermalInfo | None:
     return ThermalInfo(celsius, _thermal_level(celsius))
 
 
+def _telemetry_thermal_info() -> ThermalInfo | None:
+    try:
+        from .kilix_telemetry import hottest_celsius
+        value = hottest_celsius(refresh=True)
+    except Exception:
+        return None
+    if value is None or not math.isfinite(value) or value <= 0.0 or value > 250.0:
+        return None
+    celsius = _display_temperature(value)
+    return ThermalInfo(celsius, _thermal_level(celsius))
+
+
 def thermal_info() -> ThermalInfo | None:
     global _THERMAL_CACHE, _THERMAL_CACHE_ROOT, _THERMAL_CACHE_UNTIL
     root = _thermal_sys_root()
+    use_telemetry = 'KILIX_THERMAL_SYS_ROOT' not in os.environ
+    cache_root = 'kilix-telemetry' if use_telemetry else root
     now = time.monotonic()
-    if root != _THERMAL_CACHE_ROOT or now >= _THERMAL_CACHE_UNTIL:
-        _THERMAL_CACHE = _read_thermal_info_uncached()
-        _THERMAL_CACHE_ROOT = root
+    if cache_root != _THERMAL_CACHE_ROOT or now >= _THERMAL_CACHE_UNTIL:
+        _THERMAL_CACHE = _telemetry_thermal_info() if use_telemetry else None
+        if _THERMAL_CACHE is None:
+            _THERMAL_CACHE = _read_thermal_info_uncached()
+        _THERMAL_CACHE_ROOT = cache_root
         _THERMAL_CACHE_UNTIL = now + _THERMAL_CACHE_SECONDS
     return _THERMAL_CACHE
 
