@@ -8,6 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from kitty.fast_data_types import GLFW_MOUSE_BUTTON_LEFT, GLFW_PRESS, GLFW_RELEASE
+from kitty.kilix_cpu import (
+    CPU_LOAD_THRESHOLD,
+    cpu_load_average,
+    format_pane_cpu_load,
+    pane_cpu_label,
+)
 from kitty.kilix_memory import (
     GIB,
     MEMORY_GLYPH,
@@ -17,13 +23,14 @@ from kitty.kilix_memory import (
     pane_memory_label,
     pane_memory_segment,
 )
-from kitty import kilix_memory
+from kitty import kilix_cpu, kilix_memory
 from kitty.tabs import MouseEvents, Tab, TabManager
 from kitty.types import WindowGeometry
 from kitty.window import Window
 from kitty.window_title_bar import (
     WindowTitleBarScreen,
     WindowTitleData,
+    pane_resource_text,
 )
 
 from . import BaseTest
@@ -42,8 +49,11 @@ class TestWindowChrome(BaseTest):
         title_bar = WindowTitleBarScreen(1, 10, 20)
         title_bar.layout(WindowGeometry(0, 0, 1200, 20, 120, 1))
         memory_text = f' {MEMORY_GLYPH} 100.0 '
+        cpu_text = '2.4'
+        resource_text = f' {cpu_text} {MEMORY_GLYPH} 100.0 '
         data = WindowTitleData(
-            'pane', True, 1, 1, pane_memory_text=memory_text)
+            'pane', True, 1, 1, pane_memory_text=memory_text,
+            pane_cpu_text=cpu_text)
         with patch('kitty.window_title_bar.chrome_enabled', return_value=True):
             title_bar.render(data, '')
         columns = [
@@ -51,7 +61,36 @@ class TestWindowChrome(BaseTest):
             for column, action in title_bar.button_cols.items()
             if action == MEMORY_WIDGET_ACTION
         ]
-        self.assertEqual(len(columns), len(memory_text))
+        self.assertEqual(len(columns), len(resource_text))
+        self.assertEqual(
+            pane_resource_text(cpu_text, memory_text), resource_text)
+        self.assertEqual(
+            pane_resource_text(cpu_text, ''),
+            f' {cpu_text} {MEMORY_GLYPH} ',
+        )
+        self.assertEqual(pane_resource_text('', memory_text), memory_text)
+
+    def test_cpu_load_policy_and_proc_reader(self) -> None:
+        self.assertEqual(format_pane_cpu_load(CPU_LOAD_THRESHOLD, 'auto'), '')
+        self.assertEqual(format_pane_cpu_load(1.14, 'auto'), '1.1')
+        self.assertEqual(format_pane_cpu_load(0.0, 'always'), '0.0')
+        self.assertEqual(format_pane_cpu_load(20.0, 'off'), '')
+
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            proc.joinpath('loadavg').write_text(
+                '1.75 1.25 0.75 2/100 1234\n')
+            with (
+                patch.dict(os.environ, {'KILIX_CPU_PROC_ROOT': str(proc)}),
+                patch(
+                    'kitty.kilix_cpu.chrome_value',
+                    return_value='always',
+                ),
+            ):
+                kilix_cpu._LOAD_CACHE_UNTIL = 0
+                kilix_cpu._LOAD_CACHE_ROOT = ''
+                self.assertEqual(cpu_load_average(force=True), 1.75)
+                self.assertEqual(pane_cpu_label(), '1.8')
 
     def test_auto_memory_chip_skips_pss_below_rss_threshold(self) -> None:
         with (

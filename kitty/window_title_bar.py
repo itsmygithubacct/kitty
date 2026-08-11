@@ -13,13 +13,20 @@ from .fast_data_types import (
 )
 from .rgb import color_as_sgr, color_from_int, to_color
 from .kilix_battery import chrome_enabled
-from .kilix_memory import MEMORY_WIDGET_ACTION
+from .kilix_memory import MEMORY_GLYPH, MEMORY_WIDGET_ACTION
 from .tab_bar import draw_attributed_string, safe_builtins
 from .types import WindowGeometry, run_once
 from .utils import color_as_int, log_error
 
 
 _MEMORY_CHIP_COLOR = (color_as_int(to_color('#8ae234')) << 8) | 2
+
+
+def pane_resource_text(cpu_text: str, memory_text: str) -> str:
+    """Put CPU load left of the chip and pane RAM right of it."""
+    if memory_text:
+        return f' {cpu_text}{memory_text}' if cpu_text else memory_text
+    return f' {cpu_text} {MEMORY_GLYPH} ' if cpu_text else ''
 
 
 @lru_cache
@@ -95,6 +102,7 @@ class WindowTitleData(NamedTuple):
     is_overlay: bool = False     # kilix fork: an app overlay (browse/run/screensaver)
     is_synchronized_input: bool = False  # kilix fork: pane receives broadcast keys
     pane_memory_text: str = ''  # kilix fork: dynamic process-tree memory chip
+    pane_cpu_text: str = ''  # kilix fork: system load left of the RAM chip
 
 
 @run_once
@@ -228,8 +236,10 @@ class WindowTitleBarScreen:
             # The splits layout always supported them, so the fork added
             # vsplit-before and hsplit-before rather than keeping a workaround
             # that only a keybinding could perform.
+            resource_text = pane_resource_text(
+                data.pane_cpu_text, data.pane_memory_text)
             candidates = (
-                (None, data.pane_memory_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # dynamic process-tree memory chip
+                (None, resource_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # CPU load · shared chip · pane RAM
                 ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ', 'kilix_toggle_synchronized_input', None),  # join/leave synchronized keyboard input
                 ('KILIX_CHROME_BUTTON_FONT_INCREASE', ' + ', 'change_font_size current +2.0', None),  # increase font size for this kilix window
                 ('KILIX_CHROME_BUTTON_FONT_DECREASE', ' - ', 'change_font_size current -2.0', None),  # decrease font size for this kilix window

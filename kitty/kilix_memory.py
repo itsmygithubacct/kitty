@@ -29,7 +29,7 @@ _PROCESS_CHILDREN: dict[int, tuple[int, ...]] = {}
 _PROCESS_TREES: dict[int, tuple[int, ...]] = {}
 _PROCESS_PROPORTIONAL: dict[int, int] = {}
 _PROCESS_TOTALS: dict[int, int] = {}
-_LAST_LABELS: dict[int, str] = {}
+_LAST_LABELS: dict[int, tuple[str, str]] = {}
 _TIMER_STARTED = False
 
 
@@ -262,8 +262,10 @@ def _memory_timer(timer_id: int | None = None) -> None:
     global _LAST_LABELS
     if pane_memory_mode() != 'off':
         _refresh_process_cache(force=True)
+    from .kilix_cpu import pane_cpu_label
     from .fast_data_types import get_boss, mark_os_window_dirty
-    current: dict[int, str] = {}
+    cpu_label = pane_cpu_label(force=True)
+    current: dict[int, tuple[str, str]] = {}
     try:
         boss = get_boss()
     except Exception:
@@ -276,8 +278,9 @@ def _memory_timer(timer_id: int | None = None) -> None:
                 child = getattr(window, 'child', None)
                 pid = getattr(child, 'process_tree_root_pid', 0)
                 label = pane_memory_label(pid) if pid else ''
-                current[window.id] = label
-                if _LAST_LABELS.get(window.id) != label:
+                resource_labels = (cpu_label, label)
+                current[window.id] = resource_labels
+                if _LAST_LABELS.get(window.id) != resource_labels:
                     tab_changed = True
             if tab_changed:
                 tab.update_window_title_bars()
