@@ -938,6 +938,12 @@ background canvas is the existing frame itself. ``r`` is a 1-based index, so
 ``r=1`` is the root frame (base image data), ``r=2`` is the second frame and so
 on.
 
+When frame data spans multiple payload chunks, all frame and rectangle metadata
+belongs in the first packet. Continuation packets use ``a=f``, ``m`` and,
+optionally, ``q``; they retain the first packet's image, frame and rectangle
+metadata. In particular, clients must not repeat the image identifier on a
+continuation packet.
+
 Finally, while transferring frame data, the frame *gap* can also be specified
 using the ``z`` key. The gap is the number of milliseconds to wait before
 displaying the next frame when the animation is running. A value of ``z=0`` is

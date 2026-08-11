@@ -1730,14 +1730,27 @@ frame_chain_is_transient(Image *img, const Frame *frame) {
 
 static Image*
 handle_animation_frame_load_command(GraphicsManager *self, GraphicsCommand *g, Image *img, const uint8_t *payload, bool *is_dirty) {
-    uint32_t frame_number = g->frame_number, fmt = g->format ? g->format : RGBA;
-    if (!frame_number || frame_number > img->extra_framecnt + 2) frame_number = img->extra_framecnt + 2;
+    GraphicsCommand *const response_command = g;
+    unsigned char tt = g->transmission_type ? g->transmission_type : 'd';
+    uint32_t fmt = g->format ? g->format : RGBA;
+    const bool is_continuation = tt == 'd' &&
+        self->currently_loading.loading_for.image_id == img->internal_id;
+    if (is_continuation) {
+        /* Continuation packets intentionally carry only a=f, m and optional
+         * q. Restore the first packet before deciding which frame is being
+         * edited; otherwise a multi-chunk r=1 edit is misclassified as a new
+         * frame and its exposed scroll strip is never shown. */
+        INIT_CHUNKED_LOAD;
+    }
+    uint32_t frame_number = g->frame_number;
+    if (!frame_number || frame_number > img->extra_framecnt + 2)
+        frame_number = img->extra_framecnt + 2;
     bool is_new_frame = frame_number == img->extra_framecnt + 2;
     g->frame_number = frame_number;
-    unsigned char tt = g->transmission_type ? g->transmission_type : 'd';
-    if (tt == 'd' && self->currently_loading.loading_for.image_id == img->internal_id) {
-        INIT_CHUNKED_LOAD;
-    } else {
+    response_command->id = g->id;
+    response_command->image_number = g->image_number;
+    response_command->frame_number = frame_number;
+    if (!is_continuation) {
         self->currently_loading.loading_for = (const ImageAndFrame){0};
         if (g->data_width > MAX_IMAGE_DIMENSION || g->data_height > MAX_IMAGE_DIMENSION) ABRT("EINVAL", "Image too large, width or height greater than %u", MAX_IMAGE_DIMENSION);
         if (!initialize_load_data(self, g, img, tt, fmt, frame_number - 1)) return NULL;

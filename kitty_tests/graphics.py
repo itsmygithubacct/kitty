@@ -1304,6 +1304,19 @@ class TestGraphics(BaseTest):
         self.assertEqual(li(**overlap, N=2).code, 'OK')
         self.assertEqual(g.image_for_client_id(1)['data'],
                          expand(1111, 1111, 2222))
+        # A protocol continuation carries only a=f, m and optional q. Keep
+        # the first packet's r=1 edit metadata instead of treating the final
+        # chunk as a request to create a new, non-visible animation frame.
+        first = send_command(
+            s,
+            'a=f,i=1,r=1,X=1,q=2,f=24,x=0,y=2,s=4,v=1,m=1',
+            b'4' * 6,
+        )
+        self.assertFalse(first)
+        send_command(s, 'a=f,q=2,m=0', b'4' * 6)
+        img = g.image_for_client_id(1)
+        self.assertEqual(img['data'], expand(1111, 1111, 4444))
+        self.assertEqual(len(img['extra_frames']), 2)
         # Test that compose commands with offset values that would overflow a 32-bit
         # unsigned integer are correctly rejected with EINVAL instead of crashing.
         # In the old code, UINT32_MAX + img->width wrapped around as uint32_t to a
