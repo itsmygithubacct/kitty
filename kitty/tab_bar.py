@@ -38,6 +38,7 @@ from .kilix_battery import (
     clock_segments,
     ensure_chrome_timers,
     network_segment,
+    start_menu_segment,
     thermal_segment,
     volume_segment,
 )
@@ -659,8 +660,10 @@ class TabBar:
         self.blank_rects: tuple[Border, ...] = ()
         self.tab_extents: Sequence[TabExtent] = ()
         self.action_extents: Sequence[ActionExtent] = ()
+        self.left_action_extents: Sequence[ActionExtent] = ()
         self.window_extents: Sequence[ActionExtent] = ()
         self.window_reserve = 0
+        self.left_status_end = 0
         self.right_status_start = 0
         self.laid_out_once = False
         self.left_edge_is_default = True
@@ -898,12 +901,17 @@ class TabBar:
             return False
         if self.is_vertical:
             self.action_extents = ()
+            self.left_action_extents = ()
+            self.left_status_end = 0
             return self.update_vertical(data)
         ensure_chrome_timers()
         s = self.screen
         right_segments = self.right_status_segments()
         right_status_width = self.right_status_width(right_segments)
         self.right_status_start = max(1, s.columns - right_status_width)
+        left_segments = self.left_status_segments()
+        left_width = self.status_width(left_segments)
+        self.left_status_end = left_width if s.columns > left_width + 1 else 0
         rows = split_tab_bar_rows(data)[:s.lines]
         ed = ExtraData()
         self.last_laid_out_tabs = data
@@ -916,7 +924,11 @@ class TabBar:
         if not self.is_vertical:
             wanted = sum(max(0, wcswidth(t)) + 1 for t, _ in window_entries())
             if wanted:
-                self.window_reserve = min(wanted, max(0, self.right_status_start // 2))
+                usable = max(0, self.right_status_start - self.left_status_end)
+                self.window_reserve = min(wanted, usable // 2)
+
+        def row_start(line: int) -> int:
+            return self.left_status_end if line == 0 else 0
 
         def row_limit(line: int) -> int:
             return self.tab_limit if line == 0 else s.columns
@@ -952,17 +964,19 @@ class TabBar:
         ed.for_layout = True
         for line, row_data in enumerate(rows):
             limit = row_limit(line)
-            unconstrained_tab_length = max(1, limit - 2)
+            start = row_start(line)
+            unconstrained_tab_length = max(1, limit - start - 2)
             ideal_tab_lengths = [i for i in range(len(row_data))]
-            default_max_tab_length = max(1, (limit // max(1, len(row_data))) - 1)
+            default_max_tab_length = max(
+                1, ((limit - start) // max(1, len(row_data))) - 1)
             max_tab_lengths = [default_max_tab_length for _ in range(len(row_data))]
             active_idx = 0
             extra = 0
             for i, tab in enumerate(row_data):
-                s.cursor.x = 0
+                s.cursor.x = row_start(line)
                 s.cursor.y = line
                 draw_tab(line, row_data, i, tab, [], unconstrained_tab_length, max_tab_lengths)
-                ideal_tab_lengths[i] = tl = max(1, s.cursor.x)
+                ideal_tab_lengths[i] = tl = max(1, s.cursor.x - start)
                 if tab.is_active:
                     active_idx = i
                 # Deliberately not shrinking a short tab to its content: every
@@ -984,14 +998,14 @@ class TabBar:
             row_lengths.append(max_tab_lengths)
 
         for line in range(s.lines):
-            s.cursor.x = 0
+            s.cursor.x = row_start(line)
             s.cursor.y = line
             s.erase_in_line(2, False)
 
         cr: list[TabExtent] = []
         ed.for_layout = False
         for line, row_data in enumerate(rows):
-            s.cursor.x = 0
+            s.cursor.x = row_start(line)
             s.cursor.y = line
             for i, tab in enumerate(row_data):
                 try:
@@ -1003,6 +1017,7 @@ class TabBar:
         self.align()
         # after align(): align() inserts characters to shift the tabs, which
         # would displace anything already drawn beside them.
+        self.draw_left_status_segments(left_segments)
         self.draw_native_window_entries()
         self.draw_right_status_segments(right_segments)
         return self._update_edge_defaults(False)
@@ -1012,6 +1027,8 @@ class TabBar:
         self.last_laid_out_tabs = data
         self.tab_extents = ()
         self.window_extents = ()
+        self.left_action_extents = ()
+        self.left_status_end = 0
         self.window_reserve = 0
         s.cursor.x = s.cursor.y = 0
         s.erase_in_display(2, False)
@@ -1081,13 +1098,46 @@ class TabBar:
             ans.append((text, action, fg))
         return tuple(ans)
 
-    def right_status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
+    def left_status_segments(self) -> tuple[tuple[str, str | None, int], ...]:
+        segment = start_menu_segment()
+        if segment is None:
+            return ()
+        text, action = segment
+        fg = as_rgb(color_as_int(get_options().foreground))
+        return ((text, action, fg),)
+
+    def status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
         return sum(max(0, wcswidth(text)) for text, _, _ in segments)
+
+    def right_status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
+        return self.status_width(segments)
 
     @property
     def tab_limit(self) -> int:
         """Columns the pages may use: the status area and the taskbar are theirs."""
-        return max(1, self.right_status_start - self.window_reserve)
+        return max(self.left_status_end + 1,
+                   self.right_status_start - self.window_reserve)
+
+    def draw_left_status_segments(self, segments: Sequence[tuple[str, str | None, int]]) -> None:
+        self.left_action_extents = ()
+        if self.left_status_end <= 0:
+            return
+        s = self.screen
+        bg = as_rgb(color_as_int(self.draw_data.default_bg))
+        s.cursor.x = s.cursor.y = 0
+        extents: list[ActionExtent] = []
+        for text, action, fg in segments:
+            before = s.cursor.x
+            s.cursor.bold = bool(action)
+            s.cursor.italic = False
+            s.cursor.fg, s.cursor.bg = fg, bg
+            draw_attributed_string(text, s)
+            if action:
+                extents.append(ActionExtent(
+                    action, CellRange(before, s.cursor.x), CellRange(0, 0)))
+        s.cursor.bold = s.cursor.italic = False
+        s.cursor.fg = s.cursor.bg = 0
+        self.left_action_extents = tuple(extents)
 
     def draw_native_window_entries(self) -> None:
         """Continue the tab row with the native X11 windows Openbox manages.
@@ -1108,7 +1158,7 @@ class TabBar:
             last = self.tab_extents[-1]
             line, x = last.y.end, last.x.end
         else:
-            line, x = 0, 0
+            line, x = 0, self.left_status_end
         if line >= s.lines:
             return
         limit = self.right_status_start if line == 0 else s.columns
@@ -1181,7 +1231,7 @@ class TabBar:
     def draw_right_status_segments(self, segments: Sequence[tuple[str, str | None, int]]) -> None:
         # Window entries were laid out first and share the action mechanism, so
         # they must survive this pass rather than be cleared by it.
-        self.action_extents = tuple(self.window_extents)
+        self.action_extents = tuple(self.left_action_extents) + tuple(self.window_extents)
         width = self.right_status_width(segments)
         if width <= 0 or self.screen.columns <= width:
             return
@@ -1202,7 +1252,9 @@ class TabBar:
                 extents.append(ActionExtent(action, CellRange(before, end), CellRange(0, 0)))
         s.cursor.bold = s.cursor.italic = False
         s.cursor.fg = s.cursor.bg = 0
-        self.action_extents = tuple(self.window_extents) + tuple(extents)
+        self.action_extents = (
+            tuple(self.left_action_extents) + tuple(self.window_extents)
+            + tuple(extents))
 
     def align_with_factor(self, factor: int = 1) -> None:
         if not self.tab_extents:
@@ -1216,7 +1268,7 @@ class TabBar:
             limit = self.tab_limit if line == 0 else self.screen.columns
             if end < limit - 1:
                 shift = (limit - end) // factor
-                self.screen.cursor.x = 0
+                self.screen.cursor.x = self.left_status_end if line == 0 else 0
                 self.screen.cursor.y = line
                 self.screen.insert_characters(shift)
                 shifted.extend(te.shifted(x=shift) for te in extents)

@@ -1352,6 +1352,38 @@ class Boss:
             window=window, title='Pane actions',
         )
 
+    @ac('misc', 'Show the Kilix Start menu')
+    def kilix_show_start_menu(self) -> None:
+        """Open the release-safe, clickable Start launch surface."""
+        window = self.window_for_dispatch or self.active_window
+        if window is None:
+            return
+        wid = window.id
+        actions = {
+            'n': 'launch --type=tab --cwd=current',
+            's': 'launch --type=tab --title "Kilix Settings" kilix settings',
+            'p': 'launch --type=tab --title "PTY Sessions" kilix pty',
+            't': 'launch --type=tab --title "Tmux Manager" kilix tmux',
+            'm': 'launch --type=tab --title "Kilix Memory" kilix memory',
+            'h': 'launch --type=tab --title "Kilix Temps" kilix temps',
+            'd': 'launch --type=tab --title "Kilix 95" kilix desktop',
+            'b': 'launch --type=tab --title "Kilix Browse" kilix browse',
+            'u': 'launch --type=tab --title "Update Kilix" kilix update',
+        }
+
+        def dispatch(choice: str) -> None:
+            target = self.window_id_map.get(wid)
+            if choice and target is not None and (definition := actions.get(choice)):
+                self.combine(definition, window_for_dispatch=target)
+
+        self.choose(
+            'Kilix Start', dispatch,
+            'n:New page', 's:Settings', 'p:PTY sessions', 't:Tmux manager',
+            'm:Memory', 'h:Thermal status', 'd:Desktop', 'b:Browse web',
+            'u:Update Kilix',
+            window=window, title='Kilix Start',
+        )
+
     @ac('cp', '''
         Show a clickable right-click context menu (copy, paste, select all, clear selection)
 

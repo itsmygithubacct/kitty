@@ -12,6 +12,7 @@ from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION,
     NETWORK_WIDGET_ACTION,
+    START_MENU_ACTION,
     THERMAL_WIDGET_ACTION,
     VOLUME_WIDGET_ACTION,
 )
@@ -35,6 +36,39 @@ class DummyBoss:
 
 class TestTabBar(BaseTest):
 
+    def test_left_start_segment_reserves_tabs_and_is_clickable(self) -> None:
+        self.set_options({
+            'tab_bar_align': 'center',
+            'tab_bar_edge': BOTTOM_EDGE,
+            'tab_bar_style': 'separator',
+            'tab_title_template': '{title}',
+        })
+        central = region(0, 0, 1000, 160)
+        tab_bar = region(0, 160, 1000, 180)
+        boss = DummyBoss()
+        with (
+            patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
+            patch('kitty.tab_bar.viewport_for_window', return_value=(
+                central, tab_bar, 1000, 180, 10, 20)),
+            patch('kitty.tab_bar.set_tab_bar_render_data'),
+            patch('kitty.tab_bar.get_boss', return_value=boss),
+            patch('kitty.tab_bar.ensure_chrome_timers'),
+            patch('kitty.tab_bar.start_menu_segment', return_value=(
+                ' S ', START_MENU_ACTION)),
+            patch('kitty.tab_bar.window_entries', return_value=()),
+            patch.object(TabBar, 'right_status_segments', return_value=()),
+        ):
+            tb = TabBar(1)
+            tb.layout()
+            tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
+
+        self.ae(tb.left_status_end, 3)
+        self.assertGreaterEqual(tb.tab_extents[0].x.start, 3)
+        self.ae(tuple(a.action for a in tb.action_extents), (
+            START_MENU_ACTION,))
+        self.ae(tb.action_at(5, 165), START_MENU_ACTION)
+        self.assertNotEqual(tb.tab_id_at(5, 165), 1)
+
     def test_clock_status_is_bright_and_clickable(self) -> None:
         opts = self.set_options({
             'foreground': Color(0xd3, 0xd7, 0xcf),
@@ -56,6 +90,7 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_DICTATE': '0',
                 'KILIX_CHROME_NETWORK': '1',
                 'KILIX_CHROME_SPEAK': '0',
+                'KILIX_CHROME_START_MENU': '0',
                 'KILIX_CHROME_TEMPERATURE': '0',
                 'KILIX_CHROME_VOLUME': '1',
             }),
@@ -66,6 +101,7 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.ensure_chrome_timers'),
             patch('kitty.tab_bar.thermal_segment', return_value=(
                 ' thermal ', THERMAL_WIDGET_ACTION, 42)),
+            patch('kitty.tab_bar.window_entries', return_value=()),
         ):
             tb = TabBar(1)
             tb.layout()

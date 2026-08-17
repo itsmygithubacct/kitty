@@ -1940,6 +1940,7 @@ class TabManager:  # {{{
                     CALENDAR_WIDGET_ACTION,
                     DATE_WIDGET_ACTION,
                     NETWORK_WIDGET_ACTION,
+                    START_MENU_ACTION,
                     THERMAL_WIDGET_ACTION,
                     VOLUME_WIDGET_ACTION,
                     kilix_temps_target,
@@ -1969,6 +1970,8 @@ class TabManager:  # {{{
                     # Restores it first if it was minimised, so a tab-bar entry
                     # is a complete route back to a hidden window.
                     activate_window(native_window)
+                elif tab_action == START_MENU_ACTION:
+                    get_boss().kilix_show_start_menu()
                 elif tab_action == BATTERY_TOGGLE_ACTION:
                     toggle_battery_percent()
                 elif tab_action == THERMAL_WIDGET_ACTION:

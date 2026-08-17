@@ -26,6 +26,7 @@ VOLUME_WIDGET_ACTION = 'kilix_show_volume_widget'
 NETWORK_WIDGET_ACTION = 'kilix_show_network_widget'
 CALENDAR_WIDGET_ACTION = 'kilix_show_calendar_widget'
 DATE_WIDGET_ACTION = 'kilix_show_date_widget'
+START_MENU_ACTION = 'kilix_show_start_menu'
 THERMOMETER_GLYPH = chr(0xf2c9)
 VOLUME_GLYPH = chr(0xf028)
 NETWORK_GLYPH = chr(0xf1eb)
@@ -119,6 +120,17 @@ def chrome_value(name: str, default: str = '1') -> str:
 def chrome_enabled(name: str, default: str = '1') -> bool:
     return chrome_value(name, default).lower() not in (
         '', '0', 'no', 'false', 'off', 'disabled')
+
+
+def start_menu_segment() -> tuple[str, str] | None:
+    """Return the compact text-tier Start badge and its chrome action."""
+    from .kilix_windows import in_pleb_session
+    default = '1' if in_pleb_session() else '0'
+    if not chrome_enabled('KILIX_CHROME_START_MENU', default):
+        return None
+    # The paw is the existing Nerd Font cat mark used by Kilix chrome. The
+    # surrounding half blocks make a stable three-cell badge at any font size.
+    return f'▐{chr(0xf1b0)}▌', START_MENU_ACTION
 
 
 def kilix_temps_target() -> tuple[list[str], str | None] | None:
