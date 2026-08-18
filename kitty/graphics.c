@@ -12,6 +12,7 @@
 #include "disk-cache.h"
 #include "iqsort.h"
 #include "safe-wrappers.h"
+#include "kilix-dmabuf-transport.h"
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -795,18 +796,28 @@ upload_region_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque,
 static bool
 path_is_private_session_socket(const char *path) {
     const char *root = getenv("KILIX_SESSION_HOME");
-    if (!root || !*root || !path || path[0] != '/') return false;
+    if (!root || !*root || !path || path[0] != '/') {
+        errno = EINVAL; return false;
+    }
     size_t root_length = strlen(root);
-    if (strncmp(path, root, root_length) != 0 || path[root_length] != '/') return false;
+    while (root_length > 1 && root[root_length - 1] == '/') root_length--;
+    if (strncmp(path, root, root_length) != 0 || path[root_length] != '/') {
+        errno = EXDEV; return false;
+    }
     struct stat info;
-    return lstat(path, &info) == 0 && S_ISSOCK(info.st_mode) &&
-           info.st_uid == geteuid() && !(info.st_mode & 0077);
+    if (lstat(path, &info) < 0) return false;
+    if (!S_ISSOCK(info.st_mode)) { errno = ENOTSOCK; return false; }
+    if (info.st_uid != geteuid()) { errno = EPERM; return false; }
+    if (info.st_mode & 0077) { errno = EACCES; return false; }
+    return true;
 }
 
 static int
 receive_dmabuf(const char *path, KilixDmaBufFrame *frame, int *socket_out) {
-    if (!path_is_private_session_socket(path) || strlen(path) >=
-            sizeof(((struct sockaddr_un*)0)->sun_path)) return -1;
+    if (!path_is_private_session_socket(path)) return -1;
+    if (strlen(path) >= sizeof(((struct sockaddr_un*)0)->sun_path)) {
+        errno = ENAMETOOLONG; return -1;
+    }
     int sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
     if (sock < 0) return -1;
     struct sockaddr_un address = {.sun_family = AF_UNIX};
@@ -817,26 +828,14 @@ receive_dmabuf(const char *path, KilixDmaBufFrame *frame, int *socket_out) {
     struct ucred credentials = {0};
     socklen_t credentials_size = sizeof(credentials);
     if (getsockopt(sock, SOL_SOCKET, SO_PEERCRED, &credentials,
-                   &credentials_size) < 0 || credentials_size != sizeof(credentials)
-            || credentials.uid != geteuid()) {
+                   &credentials_size) < 0) {
         safe_close(sock, __FILE__, __LINE__); return -1;
     }
-    char control[CMSG_SPACE(sizeof(int))] = {0};
-    struct iovec iov = {.iov_base = frame, .iov_len = sizeof(*frame)};
-    struct msghdr message = {
-        .msg_iov = &iov, .msg_iovlen = 1,
-        .msg_control = control, .msg_controllen = sizeof(control),
-    };
-    ssize_t received;
-    do received = recvmsg(sock, &message, MSG_CMSG_CLOEXEC);
-    while (received < 0 && errno == EINTR);
-    int fd = -1;
-    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
-    if (received == (ssize_t)sizeof(*frame) && !(message.msg_flags & MSG_CTRUNC)
-            && header && header->cmsg_level == SOL_SOCKET
-            && header->cmsg_type == SCM_RIGHTS
-            && header->cmsg_len == CMSG_LEN(sizeof(int)))
-        memcpy(&fd, CMSG_DATA(header), sizeof(fd));
+    if (credentials_size != sizeof(credentials) ||
+            credentials.uid != geteuid()) {
+        errno = EACCES; safe_close(sock, __FILE__, __LINE__); return -1;
+    }
+    int fd = kilix_dmabuf_receive_bounded(sock, frame, sizeof(*frame), 100);
     if (fd >= 0) *socket_out = sock;
     else safe_close(sock, __FILE__, __LINE__);
     return fd;
