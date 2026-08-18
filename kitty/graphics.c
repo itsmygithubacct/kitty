@@ -41,6 +41,11 @@ PyTypeObject GraphicsManager_Type;
 #define KILIX_DMABUF_MAGIC 0x4b444d41u
 #define KILIX_DMABUF_VERSION 1u
 
+static bool
+kilix_telemetry_sample(uint64_t count) {
+    return count <= 8u || (count & (count - 1u)) == 0u;
+}
+
 typedef struct {
     uint32_t magic, version, width, height, stride, offset, fourcc;
     uint32_t modifier_hi, modifier_lo;
@@ -124,36 +129,10 @@ free_load_data(LoadData *ld) {
     ld->loading_for = (const ImageAndFrame){0};
 }
 
-static EGLDisplay kilix_egl_display = EGL_NO_DISPLAY;
-
-static void
-release_kilix_dmabuf(TextureRef *texture) {
-    if (!texture->kilix_egl_image && texture->kilix_transfer_socket < 0 &&
-            texture->kilix_dmabuf_fd < 0) return;
-    // The external texture may still be referenced by queued draw commands.
-    // Explicitly finish before returning its PipeWire lease for recycling.
-    if (texture->kilix_rendered) glFinish();
-    if (texture->kilix_egl_image && kilix_egl_display != EGL_NO_DISPLAY)
-        eglDestroyImage(kilix_egl_display, (EGLImage)texture->kilix_egl_image);
-    texture->kilix_egl_image = NULL;
-    if (texture->kilix_transfer_socket >= 0) {
-        const uint8_t ack = texture->kilix_rendered ? 1 : 0;
-        while (write(texture->kilix_transfer_socket, &ack, 1) < 0 &&
-                errno == EINTR) {}
-        safe_close(texture->kilix_transfer_socket, __FILE__, __LINE__);
-        texture->kilix_transfer_socket = -1;
-    }
-    if (texture->kilix_dmabuf_fd >= 0) {
-        safe_close(texture->kilix_dmabuf_fd, __FILE__, __LINE__);
-        texture->kilix_dmabuf_fd = -1;
-    }
-}
-
 static void*
 clear_texture_ref(TextureRef **x) {
     if (*x) {
         if ((*x)->refcnt < 2) {
-            release_kilix_dmabuf(*x);
             if ((*x)->id) free_texture(&(*x)->id);
             free(*x); *x = NULL;
         } else (*x)->refcnt--;
@@ -172,7 +151,6 @@ new_texture_ref(void) {
     TextureRef *ans = calloc(1, sizeof(TextureRef));
     if (!ans) fatal("Out of memory allocating a TextureRef");
     ans->refcnt = 1;
-    ans->kilix_transfer_socket = ans->kilix_dmabuf_fd = -1;
     return ans;
 }
 
@@ -835,17 +813,17 @@ receive_dmabuf(const char *path, KilixDmaBufFrame *frame, int *socket_out) {
 }
 
 static bool
-import_dmabuf_texture(uint32_t *texture_out, void **image_out,
-                      const KilixDmaBufFrame *frame, int fd) {
+import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
+                      int fd) {
+    static EGLDisplay display = EGL_NO_DISPLAY;
     typedef void (*image_target_function)(GLenum, GLeglImageOES);
     static image_target_function image_target = NULL;
-    if (kilix_egl_display == EGL_NO_DISPLAY) {
-        kilix_egl_display = eglGetCurrentDisplay();
-        if (kilix_egl_display == EGL_NO_DISPLAY ||
-                eglGetCurrentContext() == EGL_NO_CONTEXT) {
-            kilix_egl_display = EGL_NO_DISPLAY; return false;
+    if (display == EGL_NO_DISPLAY) {
+        display = eglGetCurrentDisplay();
+        if (display == EGL_NO_DISPLAY || eglGetCurrentContext() == EGL_NO_CONTEXT) {
+            display = EGL_NO_DISPLAY; return false;
         }
-        const char *extensions = eglQueryString(kilix_egl_display, EGL_EXTENSIONS);
+        const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
         if (!extensions || !strstr(extensions, "EGL_EXT_image_dma_buf_import"))
             return false;
         union {
@@ -868,22 +846,44 @@ import_dmabuf_texture(uint32_t *texture_out, void **image_out,
         EGL_NONE,
     };
     EGLImage image = eglCreateImage(
-        kilix_egl_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attributes);
+        display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attributes);
     if (image == EGL_NO_IMAGE) return false;
-    GLuint source = 0;
+    GLuint source = 0, framebuffers[2] = {0};
     glGenTextures(1, &source);
     glBindTexture(GL_TEXTURE_2D, source);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     image_target(GL_TEXTURE_2D, image);
-    if (glGetError() != GL_NO_ERROR) {
-        glDeleteTextures(1, &source);
-        eglDestroyImage(kilix_egl_display, image);
-        return false;
+    glGenFramebuffers(2, framebuffers);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffers[0]);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, source, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[1]);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, destination, 0);
+    bool complete = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) ==
+                    GL_FRAMEBUFFER_COMPLETE &&
+                    glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) ==
+                    GL_FRAMEBUFFER_COMPLETE;
+    if (complete) {
+        glBlitFramebuffer(0, frame->height, frame->width, 0,
+                          0, 0, frame->width, frame->height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        complete = glGetError() == GL_NO_ERROR;
+        // PipeWire may recycle the producer buffer as soon as it receives the
+        // ACK below. Complete the device-local copy before destroying the
+        // EGLImage and returning that lease; retaining it until a later frame
+        // can exhaust Weston's finite pool when content becomes static.
+        if (complete) {
+            glFinish();
+            complete = glGetError() == GL_NO_ERROR;
+        }
     }
-    *texture_out = source;
-    *image_out = image;
-    return true;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(2, framebuffers);
+    glDeleteTextures(1, &source);
+    eglDestroyImage(display, image);
+    return complete;
 }
 
 static bool
@@ -906,24 +906,20 @@ import_gpu_frame(GraphicsManager *self, Image *img, const GraphicsCommand *g,
         valid = self->window_id && make_window_context_current(self->window_id);
         self->context_made_current_for_this_command = valid;
     }
-    uint32_t texture = 0; void *egl_image = NULL;
-    if (valid) valid = import_dmabuf_texture(&texture, &egl_image, &frame, fd);
-    if (valid) {
-        clear_texture_ref(&img->texture);
-        img->texture = new_texture_ref(); img->texture->id = texture;
-        img->texture->kilix_egl_image = egl_image;
-        img->texture->kilix_transfer_socket = transfer_socket;
-        img->texture->kilix_dmabuf_fd = fd;
-        img->texture->kilix_y_inverted = true;
+    if (valid && (!img->texture || !img->texture->id ||
+                  img->width != frame.width || img->height != frame.height)) {
+        if (!img->texture) img->texture = new_texture_ref();
+        send_image_to_gpu(&img->texture->id, NULL, frame.width, frame.height,
+                          true, true, true, REPEAT_CLAMP);
         img->width = frame.width; img->height = frame.height;
-    } else {
-        const uint8_t ack = 0;
-        if (transfer_socket >= 0) {
-            while (write(transfer_socket, &ack, 1) < 0 && errno == EINTR) {}
-            safe_close(transfer_socket, __FILE__, __LINE__);
-        }
-        safe_close(fd, __FILE__, __LINE__);
     }
+    if (valid) valid = import_dmabuf_texture(img->texture->id, &frame, fd);
+    const uint8_t ack = valid ? 1 : 0;
+    if (transfer_socket >= 0) {
+        while (write(transfer_socket, &ack, 1) < 0 && errno == EINTR) {}
+        safe_close(transfer_socket, __FILE__, __LINE__);
+    }
+    safe_close(fd, __FILE__, __LINE__);
     return valid;
 }
 
@@ -1613,15 +1609,9 @@ grman_update_layers(GraphicsManager *self, unsigned int scrolled_by, float scrol
             ImageRenderData *rd = self->render_data.item + self->render_data.count;
             zero_at_ptr(rd);
             rd->dest_rect = r; rd->src_rect = ref->src_rect;
-            if (img->texture->kilix_y_inverted) {
-                const float top = rd->src_rect.top;
-                rd->src_rect.top = 1.f - rd->src_rect.bottom;
-                rd->src_rect.bottom = 1.f - top;
-            }
             self->render_data.count++;
             rd->z_index = ref->z_index; rd->image_id = img->internal_id; rd->ref_id = ref->internal_id;
             rd->texture_id = texture_id_for_img(img);
-            img->texture->kilix_rendered = true;
             img->is_drawn = true;
             refitr = vt_next(refitr);
         }
@@ -2623,9 +2613,18 @@ grman_handle_command(GraphicsManager *self, const GraphicsCommand *g, const uint
                 ret = finish_command_response(g, false);
                 break;
             }
+            self->gpu_dmabuf_attempts++;
             bool existing = false;
             Image *img = find_or_create_image(self, g->id, &existing);
             if (!import_gpu_frame(self, img, g, payload)) {
+                self->gpu_dmabuf_failures++;
+                if (global_state.debug_rendering &&
+                        kilix_telemetry_sample(self->gpu_dmabuf_failures))
+                    fprintf(stderr,
+                        "kilix-dmabuf: import-failed attempts=%llu"
+                        " failures=%llu\n",
+                        (unsigned long long)self->gpu_dmabuf_attempts,
+                        (unsigned long long)self->gpu_dmabuf_failures);
                 if (!existing) remove_image(self, img);
                 set_command_failed_response("EIO", "DMA-BUF import failed");
                 ret = finish_command_response(g, false);
@@ -2845,13 +2844,15 @@ get_image_count(GraphicsManager *self, void* closure UNUSED) {
 
 static PyObject*
 get_gpu_upload_stats(GraphicsManager *self, void* closure UNUSED) {
-    return Py_BuildValue("{sK sK sK sK sK sK}",
+    return Py_BuildValue("{sK sK sK sK sK sK sK sK}",
         "bytes", self->gpu_upload_bytes,
         "full", self->gpu_full_uploads,
         "region", self->gpu_region_uploads,
         "pbo_bytes", self->gpu_pbo_bytes,
         "pbo", self->gpu_pbo_uploads,
-        "dmabuf", self->gpu_dmabuf_imports);
+        "dmabuf_attempts", self->gpu_dmabuf_attempts,
+        "dmabuf", self->gpu_dmabuf_imports,
+        "dmabuf_failures", self->gpu_dmabuf_failures);
 }
 
 static PyGetSetDef getsets[] = {

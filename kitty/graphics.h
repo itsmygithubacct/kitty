@@ -84,9 +84,6 @@ typedef enum { ANIMATION_STOPPED = 0, ANIMATION_LOADING = 1, ANIMATION_RUNNING =
 
 typedef struct TextureRef {
     uint32_t id, refcnt;
-    void *kilix_egl_image;
-    int kilix_transfer_socket, kilix_dmabuf_fd;
-    bool kilix_y_inverted, kilix_rendered;
 } TextureRef;
 
 #define NAME ref_map
@@ -164,7 +161,7 @@ typedef struct {
     bool gpu_compose_checked, gpu_compose_available, gpu_compose_disabled;
     uint64_t gpu_upload_bytes, gpu_full_uploads, gpu_region_uploads;
     uint64_t gpu_pbo_bytes, gpu_pbo_uploads;
-    uint64_t gpu_dmabuf_imports;
+    uint64_t gpu_dmabuf_attempts, gpu_dmabuf_imports, gpu_dmabuf_failures;
     uint32_t gpu_upload_pbos[2], gpu_upload_pbo_index;
     image_map images_by_internal_id;
 } GraphicsManager;

@@ -186,7 +186,8 @@ class TestGraphics(BaseTest):
         stats = self.create_screen().grman.gpu_upload_stats
         self.assertEqual(stats, {
             'bytes': 0, 'full': 0, 'region': 0,
-            'pbo_bytes': 0, 'pbo': 0, 'dmabuf': 0,
+            'pbo_bytes': 0, 'pbo': 0, 'dmabuf_attempts': 0,
+            'dmabuf': 0, 'dmabuf_failures': 0,
         })
 
 
