@@ -293,15 +293,50 @@ send_image_to_gpu(GLuint *tex_id, const void* data, GLsizei width, GLsizei heigh
     glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB_ALPHA, width, height, 0, is_opaque ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, data);
 }
 
-void
+bool
 send_image_region_to_gpu(GLuint tex_id, const void *data, GLsizei image_width,
                          GLint x, GLint y, GLsizei width, GLsizei height,
-                         bool is_opaque) {
-    if (!tex_id || !data || image_width <= 0 || width <= 0 || height <= 0) return;
+                         bool is_opaque, GLuint *pbos, uint32_t *pbo_index) {
+    if (!tex_id || !data || image_width <= 0 || width <= 0 || height <= 0) return false;
     const unsigned bytes_per_pixel = is_opaque ? 3u : 4u;
     const uint8_t *region = (const uint8_t*)data +
         ((size_t)y * (size_t)image_width + (size_t)x) * bytes_per_pixel;
     glBindTexture(GL_TEXTURE_2D, tex_id);
+    const size_t row_bytes = (size_t)width * bytes_per_pixel;
+    const size_t upload_bytes = row_bytes * (size_t)height;
+    // Large edits use a two-buffer orphaning ring. This keeps the driver's
+    // texture DMA from serializing the next CPU write; tiny edits stay direct
+    // because mapping and copying would cost more than the upload itself.
+    bool used_pbo = false;
+    if (pbos && pbo_index && upload_bytes >= 256u * 1024u) {
+        if (!pbos[0]) glGenBuffers(2, pbos);
+        GLuint pbo = pbos[*pbo_index & 1u];
+        *pbo_index = (*pbo_index + 1u) & 1u;
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+        glBufferData(GL_PIXEL_UNPACK_BUFFER, upload_bytes, NULL, GL_STREAM_DRAW);
+        uint8_t *mapped = glMapBufferRange(
+            GL_PIXEL_UNPACK_BUFFER, 0, upload_bytes,
+            GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+        if (mapped) {
+            for (GLsizei row = 0; row < height; row++)
+                memcpy(mapped + (size_t)row * row_bytes,
+                       region + (size_t)row * image_width * bytes_per_pixel,
+                       row_bytes);
+            if (glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER)) {
+                glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+                glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height,
+                                is_opaque ? GL_RGB : GL_RGBA,
+                                GL_UNSIGNED_BYTE, NULL);
+                used_pbo = true;
+            }
+        }
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
+    if (used_pbo) {
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        return true;
+    }
     // A damage rectangle usually begins at an arbitrary RGB pixel, so use
     // byte alignment. GL_UNPACK_ROW_LENGTH lets the driver walk the complete
     // coalesced frame without first copying the rectangle into a tight buffer.
@@ -311,6 +346,7 @@ send_image_region_to_gpu(GLuint tex_id, const void *data, GLsizei image_width,
                     is_opaque ? GL_RGB : GL_RGBA, GL_UNSIGNED_BYTE, region);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    return false;
 }
 
 // }}}

@@ -175,6 +175,7 @@ static void
 dealloc(GraphicsManager* self) {
     free_all_images(self);
     if (self->compose_scratch_texture) free_texture(&self->compose_scratch_texture);
+    if (self->gpu_upload_pbos[0]) glDeleteBuffers(2, self->gpu_upload_pbos);
     free(self->render_data.item);
     Py_CLEAR(self->disk_cache);
     Py_TYPE(self)->tp_free((PyObject*)self);
@@ -711,6 +712,9 @@ upload_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque, const boo
     }
     if (img->texture) {
         send_image_to_gpu(&img->texture->id, data, img->width, img->height, is_opaque, is_4byte_aligned, true, REPEAT_CLAMP);
+        self->gpu_full_uploads++;
+        self->gpu_upload_bytes += (uint64_t)img->width * img->height *
+                                  (is_opaque ? 3u : 4u);
     }
 }
 
@@ -724,8 +728,16 @@ upload_region_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque,
         self->context_made_current_for_this_command = true;
     }
     if (img->texture) {
-        send_image_region_to_gpu(img->texture->id, data, img->width,
-                                 x, y, width, height, is_opaque);
+        bool used_pbo = send_image_region_to_gpu(
+            img->texture->id, data, img->width, x, y, width, height,
+            is_opaque, self->gpu_upload_pbos, &self->gpu_upload_pbo_index);
+        self->gpu_region_uploads++;
+        uint64_t bytes = (uint64_t)width * height * (is_opaque ? 3u : 4u);
+        self->gpu_upload_bytes += bytes;
+        if (used_pbo) {
+            self->gpu_pbo_uploads++;
+            self->gpu_pbo_bytes += bytes;
+        }
     }
 }
 
@@ -2610,8 +2622,19 @@ get_image_count(GraphicsManager *self, void* closure UNUSED) {
     return PyLong_FromSize_t(vt_size(&self->images_by_internal_id));
 }
 
+static PyObject*
+get_gpu_upload_stats(GraphicsManager *self, void* closure UNUSED) {
+    return Py_BuildValue("{sK sK sK sK sK}",
+        "bytes", self->gpu_upload_bytes,
+        "full", self->gpu_full_uploads,
+        "region", self->gpu_region_uploads,
+        "pbo_bytes", self->gpu_pbo_bytes,
+        "pbo", self->gpu_pbo_uploads);
+}
+
 static PyGetSetDef getsets[] = {
     {"image_count", (getter)get_image_count, NULL, NULL, NULL},
+    {"gpu_upload_stats", (getter)get_gpu_upload_stats, NULL, NULL, NULL},
     {NULL},
 };
 

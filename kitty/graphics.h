@@ -159,6 +159,9 @@ typedef struct {
     uint32_t compose_scratch_texture, compose_scratch_width;
     uint32_t compose_scratch_height, compose_scratch_internal_format;
     bool gpu_compose_checked, gpu_compose_available, gpu_compose_disabled;
+    uint64_t gpu_upload_bytes, gpu_full_uploads, gpu_region_uploads;
+    uint64_t gpu_pbo_bytes, gpu_pbo_uploads;
+    uint32_t gpu_upload_pbos[2], gpu_upload_pbo_index;
     image_map images_by_internal_id;
 } GraphicsManager;
 #else

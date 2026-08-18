@@ -182,6 +182,13 @@ def make_send_command(screen):
 
 
 class TestGraphics(BaseTest):
+    def test_gpu_upload_counters_are_exposed(self):
+        stats = self.create_screen().grman.gpu_upload_stats
+        self.assertEqual(stats, {
+            'bytes': 0, 'full': 0, 'region': 0,
+            'pbo_bytes': 0, 'pbo': 0,
+        })
+
 
     def test_xor_data(self):
         base_data = b'\x01' * 64
