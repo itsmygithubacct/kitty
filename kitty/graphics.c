@@ -13,6 +13,7 @@
 #include "iqsort.h"
 #include "safe-wrappers.h"
 #include "kilix-dmabuf-transport.h"
+#include "kilix-dmabuf-orientation.h"
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -40,7 +41,7 @@ PyTypeObject GraphicsManager_Type;
 #define RAII_CoalescedFrameData(name, initializer) __attribute__((cleanup(cfd_free))) CoalescedFrameData name = initializer
 
 #define KILIX_DMABUF_MAGIC 0x4b444d41u
-#define KILIX_DMABUF_VERSION 1u
+#define KILIX_DMABUF_VERSION 2u
 
 static bool
 kilix_telemetry_sample(uint64_t count) {
@@ -49,7 +50,7 @@ kilix_telemetry_sample(uint64_t count) {
 
 typedef struct {
     uint32_t magic, version, width, height, stride, offset, fourcc;
-    uint32_t modifier_hi, modifier_lo;
+    uint32_t modifier_hi, modifier_lo, transform;
 } KilixDmaBufFrame;
 
 typedef enum {
@@ -914,14 +915,25 @@ import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
         failure->code = draw_status;
     }
     if (complete) {
-        glBlitFramebuffer(0, frame->height, frame->width, 0,
+        KilixDmaBufBlitRect rect;
+        complete = kilix_dmabuf_blit_rect(frame->width, frame->height,
+                                          frame->transform, &rect);
+        if (!complete) {
+            failure->stage = KILIX_IMPORT_FRAME;
+            failure->code = frame->transform;
+        }
+        if (complete) glBlitFramebuffer(rect.source_x0, rect.source_y0,
+                          rect.source_x1, rect.source_y1,
                           0, 0, frame->width, frame->height,
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        GLenum error = glGetError();
-        complete = error == GL_NO_ERROR;
-        if (!complete) {
-            failure->stage = KILIX_IMPORT_BLIT;
-            failure->code = error;
+        GLenum error = GL_NO_ERROR;
+        if (complete) {
+            error = glGetError();
+            complete = error == GL_NO_ERROR;
+            if (!complete) {
+                failure->stage = KILIX_IMPORT_BLIT;
+                failure->code = error;
+            }
         }
         // PipeWire may recycle the producer buffer as soon as it receives the
         // ACK below. Complete the device-local copy before destroying the
