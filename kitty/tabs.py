@@ -20,6 +20,7 @@ from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .constants import appname
 from .fast_data_types import (
     GLFW_MOUSE_BUTTON_LEFT,
+    GLFW_MOUSE_BUTTON_RIGHT,
     GLFW_PRESS,
     GLFW_RELEASE,
     add_tab,
@@ -1934,13 +1935,21 @@ class TabManager:  # {{{
             is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
             if is_left_release and not drag_started:
                 set_tab_being_dragged()
+            from .kilix_chrome.registry import GESTURE_ACTIONS
+            is_right_release = button == GLFW_MOUSE_BUTTON_RIGHT and action == GLFW_RELEASE
+            click_count = self.recent_tab_bar_mouse_events.click_count(button)
+            if tab_action in GESTURE_ACTIONS and click_count and (
+                    is_left_release or is_right_release):
+                from .kilix_chrome.registry import dispatch as dispatch_chrome_widget
+                gesture = ('right' if is_right_release else
+                           'double' if click_count == 2 else 'single')
+                dispatch_chrome_widget(self, tab_action, gesture)
+                # Preserve the first click long enough for a second release to
+                # be recognized; terminal overlays leave the tab bar live.
+                if gesture != 'single':
+                    self.recent_tab_bar_mouse_events.clear()
+                return
             if is_left_release and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
-                from .kilix_battery import (
-                    BATTERY_TOGGLE_ACTION,
-                    THERMAL_WIDGET_ACTION,
-                    kilix_temps_target,
-                    toggle_battery_percent,
-                )
                 from .kilix_chrome.registry import dispatch as dispatch_chrome_widget
                 from .kilix_voice import (
                     DICTATE_ACTION,
@@ -1967,19 +1976,6 @@ class TabManager:  # {{{
                     activate_window(native_window)
                 elif dispatch_chrome_widget(self, tab_action):
                     pass
-                elif tab_action == BATTERY_TOGGLE_ACTION:
-                    toggle_battery_percent()
-                elif tab_action == THERMAL_WIDGET_ACTION:
-                    target = kilix_temps_target()
-                    if target is None:
-                        get_boss().show_error(
-                            'Kilix Temps unavailable',
-                            'Neither an installed Kilix Temps dashboard nor a '
-                            'Kilix installer could be found.')
-                    else:
-                        cmd, cwd = target
-                        self.new_tab(SpecialWindow(
-                            cmd, override_title='Kilix Temps', cwd=cwd))
                 elif tab_action == SPEAK_ACTION:
                     if voice_state.speaking:
                         # Toggle: the button that started the read stops it.

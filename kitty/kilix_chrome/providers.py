@@ -45,13 +45,24 @@ def clock_segments() -> tuple[tuple[str, str], ...]:
     return tuple(ans)
 
 
-def volume_target() -> list[str] | None:
+def volume_target(mode: str = 'full') -> list[str] | None:
+    suffix = [] if mode == 'full' else [f'--{mode}']
     if executable := which('kilix-volume'):
-        return [executable]
+        return [executable, *suffix]
     if kilix_home := os.environ.get('KILIX_HOME'):
         kilix = os.path.join(kilix_home, 'kilix')
         if os.path.isfile(kilix) and os.access(kilix, os.X_OK):
-            return [kilix, 'volume']
-    if fallback := (which('pulsemixer') or which('alsamixer')):
+            return [kilix, 'volume', *suffix]
+    if mode == 'full' and (fallback := (which('pulsemixer') or which('alsamixer'))):
         return [fallback]
+    return None
+
+
+def settings_target() -> list[str] | None:
+    if executable := which('kilix'):
+        return [executable, 'settings']
+    if kilix_home := os.environ.get('KILIX_HOME'):
+        kilix = os.path.join(kilix_home, 'kilix')
+        if os.path.isfile(kilix) and os.access(kilix, os.X_OK):
+            return [kilix, 'settings']
     return None

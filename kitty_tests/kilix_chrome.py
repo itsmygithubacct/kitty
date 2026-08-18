@@ -67,12 +67,15 @@ class TestKilixChrome(BaseTest):
             active_tab = ActiveTab()
 
         with patch('kitty.kilix_chrome.registry.volume_target',
-                   return_value=['kilix-volume']):
-            self.assertTrue(dispatch(Manager(), VOLUME_WIDGET_ACTION))
-        self.ae(calls, [{
-            'use_shell': False,
-            'cmd': ['kilix-volume'],
-            'override_title': 'Volume Control',
-            'overlay_for': 17,
-        }])
+                   side_effect=lambda mode: ['kilix-volume', mode]):
+            for gesture in ('single', 'double', 'right'):
+                self.assertTrue(dispatch(Manager(), VOLUME_WIDGET_ACTION, gesture))
+        self.ae(calls, [
+            {'use_shell': False, 'cmd': ['kilix-volume', 'compact'],
+             'override_title': 'Volume', 'overlay_for': 17},
+            {'use_shell': False, 'cmd': ['kilix-volume', 'full'],
+             'override_title': 'Volume Control', 'overlay_for': 17},
+            {'use_shell': False, 'cmd': ['kilix-volume', 'settings'],
+             'override_title': 'Volume Settings', 'overlay_for': 17},
+        ])
         self.assertFalse(dispatch(Manager(), 'not-a-widget'))
