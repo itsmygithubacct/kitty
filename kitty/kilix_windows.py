@@ -35,7 +35,7 @@ WINDOW_ACTIVATE_ACTION_PREFIX = 'kilix_activate_window:'
 
 MINIMISED_GLYPH = '_'
 
-_REFRESH_SECONDS = 2.0
+_REFRESH_SECONDS = 5.0
 _TIMER_STARTED = False
 _LAST_SIGNATURE: tuple[object, ...] | None = None
 

@@ -149,6 +149,55 @@ func GetChoices(o *Options) (response string, err error) {
 	}
 
 	ctx := style.Context{AllowEscapeCodes: true}
+	is_kilix_menu := strings.HasPrefix(o.Name, "kilix-start-")
+	selected_choice := 0
+
+	draw_kilix_menu := func(y, screen_width, screen_height int) {
+		clickable_ranges = map[string][]Range{}
+		panel_width := 12
+		for _, choice := range choice_order {
+			// Two border cells and one padding cell on either side. The old
+			// +2 measurement reserved +4 while drawing, clipping the longest
+			// label by exactly two characters.
+			panel_width = max(panel_width, wcswidth.Stringwidth(choice.text)+4)
+		}
+		panel_width = min(panel_width, max(4, screen_width-1))
+		// Match the shipped clickable chrome: dark inactive-tab surface,
+		// Tango blue frame/selection, and high-contrast white labels.
+		border := "\x1b[38;2;52;101;164m\x1b[48;2;46;52;54m"
+		title := " " + o.Title + " "
+		if wcswidth.Stringwidth(title) > panel_width {
+			title, _ = wcswidth.TruncateToVisualLengthWithWidth(title, panel_width)
+		}
+		lp.MoveCursorTo(1, y+1)
+		lp.QueueWriteString("\x1b[48;2;52;101;164m\x1b[38;2;255;255;255m" +
+			title + strings.Repeat(" ", max(0, panel_width-wcswidth.Stringwidth(title))) + "\x1b[0m\r\n")
+		lp.QueueWriteString(border + "┌" + strings.Repeat("─", panel_width-2) + "┐\x1b[0m\r\n")
+		for i, choice := range choice_order {
+			selected := i == selected_choice
+			palette := "\x1b[38;2;255;255;255m\x1b[48;2;46;52;54m"
+			accelerator := "\x1b[38;2;114;159;207m\x1b[48;2;46;52;54m\x1b[1m"
+			if selected {
+				palette = "\x1b[38;2;255;255;255m\x1b[48;2;52;101;164m"
+				accelerator = "\x1b[38;2;255;255;255m\x1b[48;2;52;101;164m\x1b[1m"
+			}
+			label := choice.prefix() + accelerator + choice.display_letter()
+			label += "\x1b[22m" + palette + choice.suffix()
+			plain_width := wcswidth.Stringwidth(label)
+			if plain_width > panel_width-4 {
+				label, _ = wcswidth.TruncateToVisualLengthWithWidth(label, panel_width-4)
+				plain_width = wcswidth.Stringwidth(label)
+			}
+			row := border + "│" + palette + " " + label + strings.Repeat(" ", max(0, panel_width-3-plain_width)) + border + "│\x1b[0m"
+			lp.QueueWriteString(row)
+			row_y := y + i + 2
+			clickable_ranges[choice.letter] = []Range{{0, panel_width - 1, row_y}}
+			if row_y+1 < screen_height {
+				lp.QueueWriteString("\r\n")
+			}
+		}
+		lp.QueueWriteString(border + "└" + strings.Repeat("─", panel_width-2) + "┘\x1b[0m")
+	}
 
 	draw_choice_boxes := func(y, screen_width, _ int, choices ...Choice) {
 		clickable_ranges = map[string][]Range{}
@@ -331,6 +380,15 @@ func GetChoices(o *Options) (response string, err error) {
 		if err != nil {
 			return err
 		}
+		if is_kilix_menu {
+			height := len(choice_order) + 3
+			y := 0
+			if strings.HasSuffix(o.Name, "-up") {
+				y = max(0, int(sz.HeightCells)-height)
+			}
+			draw_kilix_menu(y, int(sz.WidthCells), int(sz.HeightCells))
+			return nil
+		}
 		if message != "" {
 			scanner := utils.NewLineScanner(message)
 			for scanner.Scan() {
@@ -402,7 +460,31 @@ func GetChoices(o *Options) (response string, err error) {
 		if ev.MatchesPressOrRepeat("esc") || ev.MatchesPressOrRepeat("ctrl+c") {
 			ev.Handled = true
 			lp.Quit(1)
-		} else if ev.MatchesPressOrRepeat("enter") || ev.MatchesPressOrRepeat("kp_enter") {
+		} else if is_kilix_menu && (ev.MatchesPressOrRepeat("up") || ev.MatchesPressOrRepeat("down") ||
+			ev.MatchesPressOrRepeat("home") || ev.MatchesPressOrRepeat("end")) {
+			ev.Handled = true
+			if ev.MatchesPressOrRepeat("up") {
+				selected_choice = (selected_choice + len(choice_order) - 1) % len(choice_order)
+			} else if ev.MatchesPressOrRepeat("down") {
+				selected_choice = (selected_choice + 1) % len(choice_order)
+			} else if ev.MatchesPressOrRepeat("home") {
+				selected_choice = 0
+			} else {
+				selected_choice = len(choice_order) - 1
+			}
+			response_on_accept = choice_order[selected_choice].letter
+			_ = draw_screen()
+		} else if is_kilix_menu && ev.MatchesPressOrRepeat("left") {
+			ev.Handled = true
+			for _, choice := range choice_order {
+				if strings.Contains(choice.text, "Back") {
+					response = choice.letter
+					lp.Quit(0)
+					break
+				}
+			}
+		} else if ev.MatchesPressOrRepeat("enter") || ev.MatchesPressOrRepeat("kp_enter") ||
+			(is_kilix_menu && ev.MatchesPressOrRepeat("right")) {
 			ev.Handled = true
 			response = response_on_accept
 			lp.Quit(0)

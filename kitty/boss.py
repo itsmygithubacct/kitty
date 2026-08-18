@@ -187,6 +187,19 @@ if TYPE_CHECKING:
 RCResponse = Union[dict[str, Any], None, AsyncResponse]
 
 
+def kilix_desktop_owns_start_menu(window: 'Window') -> bool:
+    """Return whether Super should be delivered to a desktop in this pane."""
+    child = window.child
+    cmdline = tuple(child.foreground_cmdline)
+    for arg in cmdline:
+        path = arg.replace('\\', '/').casefold()
+        if path.endswith(('/desktop/main.py', '/kilix-95/main.py')):
+            return True
+        if path.endswith(('/kilix-icewm', '/icewm', '/icewm-session')):
+            return True
+    return False
+
+
 class OSWindowDict(TypedDict):
     id: int
     platform_window_id: int | None
@@ -1288,7 +1301,8 @@ class Boss:
         hidden_text: str = '',  # text to hide in the message
         hidden_text_placeholder: str = 'HIDDEN_TEXT_PLACEHOLDER',  # placeholder text to insert in to message
         unhide_key: str = 'u',  # key to press to unhide hidden text
-        title: str = '' # window title
+        title: str = '', # window title
+        name: str = '',  # optional presentation/history identity
     ) -> Window | None:
         result: str = ''
 
@@ -1310,6 +1324,8 @@ class Boss:
             input_data = None
         if title:
             cmd += ['--title', title]
+        if name:
+            cmd += ['--name', name]
 
         def on_popup_overlay_removal(wid: int, boss: Boss) -> None:
             callback(result)
@@ -1354,35 +1370,193 @@ class Boss:
 
     @ac('misc', 'Show the Kilix Start menu')
     def kilix_show_start_menu(self) -> None:
-        """Open the release-safe, clickable Start launch surface."""
+        """Open the Tango-themed hierarchical Start launch surface."""
         window = self.window_for_dispatch or self.active_window
         if window is None:
             return
+        self._kilix_start_main(window)
+
+    @ac('misc', 'Open the Start menu owned by Kilix or the active desktop')
+    def kilix_windows_key(self) -> None:
+        """Route the Windows/Super key without stealing it from a desktop."""
+        window = self.window_for_dispatch or self.active_window
+        if window is None:
+            return
+        if kilix_desktop_owns_start_menu(window):
+            # Both Kilix 95 and IceWM define Ctrl+Escape as their portable
+            # Start-menu shortcut. Sending it through the pane also works for
+            # streamed X11 desktops, where a host-side synthetic Super would
+            # never reach the nested window manager.
+            window.send_key('ctrl+escape')
+        else:
+            self._kilix_start_main(window)
+
+    def _kilix_start_choose(
+        self, window: 'Window', title: str, choices: tuple[str, ...],
+        actions: dict[str, str | Callable[['Window'], None]],
+    ) -> None:
+        """Show one menu level and dispatch only against its originating pane."""
         wid = window.id
-        actions = {
-            'n': 'launch --type=tab --cwd=current',
-            's': 'launch --type=tab --title "Kilix Settings" kilix settings',
-            'p': 'launch --type=tab --title "PTY Sessions" kilix pty',
-            't': 'launch --type=tab --title "Tmux Manager" kilix tmux',
-            'm': 'launch --type=tab --title "Kilix Memory" kilix memory',
-            'h': 'launch --type=tab --title "Kilix Temps" kilix temps',
-            'd': 'launch --type=tab --title "Kilix 95" kilix desktop',
-            'b': 'launch --type=tab --title "Kilix Browse" kilix browse',
-            'u': 'launch --type=tab --title "Update Kilix" kilix update',
-        }
 
         def dispatch(choice: str) -> None:
             target = self.window_id_map.get(wid)
-            if choice and target is not None and (definition := actions.get(choice)):
-                self.combine(definition, window_for_dispatch=target)
+            if not choice or target is None or (action := actions.get(choice)) is None:
+                return
+            if callable(action):
+                action(target)
+            else:
+                self.combine(action, window_for_dispatch=target)
 
+        # Tango's dark blue title bar and warm-grey menu surface, expressed as
+        # terminal colours so the menu stays crisp at every scale.
+        banner = f'\x1b[48;2;52;101;164m\x1b[38;2;255;255;255m  {title}  \x1b[0m\n'
+        edge = 'down' if get_options().tab_bar_edge == TOP_EDGE else 'up'
         self.choose(
-            'Kilix Start', dispatch,
-            'n:New page', 's:Settings', 'p:PTY sessions', 't:Tmux manager',
-            'm:Memory', 'h:Thermal status', 'd:Desktop', 'b:Browse web',
-            'u:Update Kilix',
-            window=window, title='Kilix Start',
+            banner, dispatch, *choices, window=window, title=title,
+            name=f'kilix-start-{edge}',
         )
+
+    def _kilix_start_main(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start', (
+            't:▸ Tabs', 's:▸ Sessions', 'p:▸ Programs', 'o:▸ Options',
+            'w:▸ Software', 'k:▸ Tools [K]', 'l:▸ Places',
+            'n:New page                 Ctrl+Shift+T',
+            'r:Split pane right', 'd:Split pane down', 'u:Run command…',
+            'a:About / build status', 'q:▸ Power / Quit',
+        ), {
+            't': lambda _w: self.select_tab(),
+            's': self._kilix_start_sessions,
+            'p': self._kilix_start_programs,
+            'o': self._kilix_start_options,
+            'w': self._kilix_start_software,
+            'k': self._kilix_start_tools,
+            'l': self._kilix_start_places,
+            'n': 'launch --type=tab --cwd=current',
+            'r': 'launch --location=vsplit --cwd=current',
+            'd': 'launch --location=hsplit --cwd=current',
+            'u': 'show_kitty_command_shell',
+            'a': 'launch --type=tab --hold --title "Kilix Status" kilix status',
+            'q': self._kilix_start_power,
+        })
+
+    def _kilix_start_sessions(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start — Sessions', (
+            'p:Kilix persistent panes', 't:Tmux session manager',
+            'a:Attach Kilix text session…', 'v:View session read-only…',
+            'x:Session transcripts [X]', 'n:New named session…', 'z:◂ Back [Z]',
+        ), {
+            'p': 'launch --type=tab --title "PTY Sessions" kilix pty',
+            't': 'launch --type=tab --title "Tmux Manager" kilix tmux',
+            'a': 'launch --type=tab --hold kilix attach',
+            'v': 'launch --type=tab --hold kilix view',
+            'x': 'launch --type=tab --hold --title Transcripts kilix transcript list',
+            'n': 'launch --type=tab --hold kilix serve',
+            'z': self._kilix_start_main,
+        })
+
+    def _kilix_start_programs(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start — Programs', (
+            'd:Kilix 95 desktop', 'x:Kilix XP desktop', 'c:Kilix Cap desktop',
+            'i:Kilix IceWM desktop', 'l:Kilix Land desktop', 't:Kilix TUI desktop',
+            'b:Browse the web', 'g:Games catalogue', 'r:Run host application…',
+            'z:◂ Back [Z]',
+        ), {
+            'd': 'launch --type=tab --title "Kilix 95" kilix desktop',
+            'x': 'launch --type=tab --title "Kilix XP" kilix xp',
+            'c': 'launch --type=tab --title "Kilix Cap" kilix cap',
+            'i': 'launch --type=tab --title "Kilix IceWM" kilix icewm',
+            'l': 'launch --type=tab --title "Kilix Land" kilix land',
+            't': 'launch --type=tab --title "Kilix TUI" kilix tui',
+            'b': 'launch --type=tab --title "Kilix Browse" kilix browse',
+            'g': 'launch --type=tab --hold --title "Kilix Games" kilix games',
+            'r': 'launch --type=tab --hold kilix run',
+            'z': self._kilix_start_main,
+        })
+
+    def _kilix_start_options(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start — Options', (
+            'e:▸ Page strip position', 's:Kilix Settings (terminal)',
+            'd:Kilix Desktop Settings', 'c:Edit kitty.conf', 'r:Reload terminal config',
+            'z:◂ Back [Z]',
+        ), {
+            'e': self._kilix_start_tab_edge,
+            's': 'launch --type=tab --title "Kilix Settings" kilix settings',
+            'd': 'launch --type=tab --title "Kilix 95 Settings" kilix desktop settings',
+            'c': 'edit_config_file', 'r': 'load_config_file',
+            'z': self._kilix_start_main,
+        })
+
+    def _kilix_start_tab_edge(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Page strip position — next launch', (
+            't:Top of screen', 'b:Bottom of screen', 'z:◂ Back [Z]',
+        ), {
+            't': 'launch --type=tab --hold --title "Page strip: top" kilix settings --set tab_bar_edge=top',
+            'b': 'launch --type=tab --hold --title "Page strip: bottom" kilix settings --set tab_bar_edge=bottom',
+            'z': self._kilix_start_options,
+        })
+
+    def _kilix_start_software(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start — Software', (
+            'u:Update Kilix', 'c:▸ Kilix components', 's:System/build status',
+            'd:Reinstall build prerequisites', 'z:◂ Back [Z]',
+        ), {
+            'u': 'launch --type=tab --hold --title "Update Kilix" kilix update',
+            'c': self._kilix_start_components,
+            's': 'launch --type=tab --hold --title "Kilix Status" kilix status',
+            'd': 'launch --type=tab --hold --title "Kilix Prerequisites" kilix deps',
+            'z': self._kilix_start_main,
+        })
+
+    def _kilix_start_components(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Software — Kilix components', (
+            'v:Voice / dictation', 'm:Memory monitor', 't:Temperature dashboard',
+            'b:Bonsai / BitNet', 'c:Kilix Cap', 'x:Tmux Manager', 'z:◂ Back [Z]',
+        ), {
+            'v': 'launch --type=tab --hold kilix voice',
+            'm': 'launch --type=tab --title "Kilix Memory" kilix memory',
+            't': 'launch --type=tab --title "Kilix Temps" kilix temps',
+            'b': 'launch --type=tab --hold kilix bonsai',
+            'c': 'launch --type=tab --title "Kilix Cap" kilix cap',
+            'x': 'launch --type=tab --title "Tmux Manager" kilix tmux',
+            'z': self._kilix_start_software,
+        })
+
+    def _kilix_start_tools(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start — Tools', (
+            't:Thermal dashboard', 'm:Memory monitor', 'p:PTY manager',
+            'x:Transcripts [X]', 'n:Network control', 'v:Volume control',
+            'f:Font chooser', 'k:Kitty command shell', 'z:◂ Back [Z]',
+        ), {
+            't': 'launch --type=tab --title "Kilix Temps" kilix temps',
+            'm': 'launch --type=tab --title "Kilix Memory" kilix memory',
+            'p': 'launch --type=tab --title "PTY Sessions" kilix pty',
+            'x': 'launch --type=tab --hold kilix transcript list',
+            'n': 'launch --type=tab --hold nmtui',
+            'v': 'launch --type=tab --hold pulsemixer',
+            'f': 'choose_font', 'k': 'show_kitty_command_shell',
+            'z': self._kilix_start_main,
+        })
+
+    def _kilix_start_places(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start — Places', (
+            'h:Home folder', 'c:Current folder', 'k:Kilix storage',
+            'f:Find files…', 'z:◂ Back [Z]',
+        ), {
+            'h': 'launch --type=tab --cwd=~',
+            'c': 'launch --type=tab --cwd=current',
+            'k': 'launch --type=tab --cwd=~/.local/gpu_terminal/kilix',
+            'f': 'launch --type=tab --hold find . -maxdepth 2',
+            'z': self._kilix_start_main,
+        })
+
+    def _kilix_start_power(self, window: 'Window') -> None:
+        self._kilix_start_choose(window, 'Kilix Start — Power', (
+            'l:Lock / screensaver', 'c:Close this page', 'q:Quit Kilix…',
+            'z:◂ Back [Z]',
+        ), {
+            'l': 'launch --type=tab kilix screensaver',
+            'c': 'close_tab', 'q': 'quit', 'z': self._kilix_start_main,
+        })
 
     @ac('cp', '''
         Show a clickable right-click context menu (copy, paste, select all, clear selection)

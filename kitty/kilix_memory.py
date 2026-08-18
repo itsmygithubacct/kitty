@@ -21,7 +21,7 @@ KIB = 1024
 MIB = 1024 * KIB
 GIB = 1024 * MIB
 _CACHE_SECONDS = 1.5
-_REFRESH_SECONDS = 2.0
+_REFRESH_SECONDS = 4.0
 _PROCESS_CACHE_UNTIL = 0.0
 _PROCESS_CACHE_ROOT = ''
 _PROCESS_CACHE: dict[int, 'ProcessSample'] = {}
@@ -331,6 +331,11 @@ def _memory_timer(timer_id: int | None = None) -> None:
     global _LAST_LABELS
     from .fast_data_types import get_boss, mark_os_window_dirty
     from .kilix_cpu import pane_cpu_label, pane_cpu_mode
+    memory_mode = pane_memory_mode()
+    cpu_mode = pane_cpu_mode()
+    if memory_mode == 'off' and cpu_mode == 'off':
+        _LAST_LABELS = {}
+        return
     current: dict[int, tuple[str, str]] = {}
     try:
         boss = get_boss()
@@ -348,9 +353,8 @@ def _memory_timer(timer_id: int | None = None) -> None:
                 if pid > 0:
                     roots.add(pid)
     from .kilix_telemetry import refresh_panes
-    memory_mode = pane_memory_mode()
     shared = refresh_panes(tuple(roots), register=memory_mode != 'off')
-    if not shared and (memory_mode != 'off' or pane_cpu_mode() != 'off'):
+    if not shared:
         _refresh_process_cache(force=True)
     for manager in boss.all_tab_managers:
         manager_changed = False

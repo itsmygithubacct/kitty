@@ -6,7 +6,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from kitty import kilix_battery
+from kitty import kilix_battery, kilix_memory
+from kitty.boss import Boss, kilix_desktop_owns_start_menu
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
 from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
@@ -35,6 +36,109 @@ class DummyBoss:
 
 
 class TestTabBar(BaseTest):
+
+    def test_resource_timer_does_no_process_work_when_disabled(self) -> None:
+        kilix_memory._LAST_LABELS = {1: ('old', 'old')}
+        with (
+            patch('kitty.kilix_memory.pane_memory_mode', return_value='off'),
+            patch('kitty.kilix_cpu.pane_cpu_mode', return_value='off'),
+            patch('kitty.kilix_telemetry.refresh_panes') as refresh,
+            patch('kitty.kilix_memory._refresh_process_cache') as scan,
+        ):
+            kilix_memory._memory_timer()
+        refresh.assert_not_called()
+        scan.assert_not_called()
+        self.ae(kilix_memory._LAST_LABELS, {})
+
+    def test_windows_key_routes_to_desktop_owned_start_menus(self) -> None:
+        class Child:
+            foreground_cmdline = ['/usr/bin/python3', '/src/kilix-95/main.py']
+            foreground_environ = {'KILIX_DESKTOP_PROVIDER': 'external'}
+
+        class Window:
+            child = Child()
+
+            def send_key(self, key: str) -> None:
+                self.sent = key
+
+        window = Window()
+        self.assertTrue(kilix_desktop_owns_start_menu(window))
+        boss = object.__new__(Boss)
+        boss.window_for_dispatch = window  # type: ignore[assignment]
+        with patch.object(boss, '_kilix_start_main') as menu:
+            boss.kilix_windows_key()
+        self.ae(window.sent, 'ctrl+escape')
+        menu.assert_not_called()
+
+        Child.foreground_cmdline = ['/opt/kilix-icewm/prefix/bin/icewm-session']
+        Child.foreground_environ = {'KILIX_DESKTOP_PROVIDER': 'icewm'}
+        self.assertTrue(kilix_desktop_owns_start_menu(window))
+
+    def test_windows_key_opens_kilix_menu_in_terminal_pane(self) -> None:
+        class Child:
+            foreground_cmdline = ['/usr/bin/bash']
+            foreground_environ = {'KILIX_DESKTOP_PROVIDER': 'auto'}
+
+        class Window:
+            child = Child()
+
+        window = Window()
+        self.assertFalse(kilix_desktop_owns_start_menu(window))
+        boss = object.__new__(Boss)
+        boss.window_for_dispatch = window  # type: ignore[assignment]
+        with patch.object(boss, '_kilix_start_main') as menu:
+            boss.kilix_windows_key()
+        menu.assert_called_once_with(window)
+
+    def test_start_menu_exposes_full_hierarchy(self) -> None:
+        boss = object.__new__(Boss)
+        window = object()
+        with patch.object(boss, '_kilix_start_choose') as choose:
+            boss._kilix_start_main(window)  # type: ignore[arg-type]
+        title, choices, actions = choose.call_args.args[1:]
+        self.ae(title, 'Kilix Start')
+        for label in ('Tabs', 'Sessions', 'Programs', 'Options', 'Software',
+                      'Tools', 'Places', 'Power'):
+            self.assertTrue(any(label in choice for choice in choices), label)
+        self.assertEqual(set('tspowklnrduaq'), set(actions))
+
+    def test_start_menu_offers_both_tab_bar_edges(self) -> None:
+        boss = object.__new__(Boss)
+        window = object()
+        with patch.object(boss, '_kilix_start_choose') as choose:
+            boss._kilix_start_tab_edge(window)  # type: ignore[arg-type]
+        _title, choices, actions = choose.call_args.args[1:]
+        self.assertTrue(any('Top' in choice for choice in choices))
+        self.assertTrue(any('Bottom' in choice for choice in choices))
+        self.assertIn('tab_bar_edge=top', actions['t'])
+        self.assertIn('tab_bar_edge=bottom', actions['b'])
+
+    def test_every_start_menu_accelerator_occurs_in_its_label(self) -> None:
+        boss = object.__new__(Boss)
+        window = object()
+        methods = (
+            '_kilix_start_main', '_kilix_start_sessions',
+            '_kilix_start_programs', '_kilix_start_options',
+            '_kilix_start_tab_edge', '_kilix_start_software',
+            '_kilix_start_components', '_kilix_start_tools',
+            '_kilix_start_places', '_kilix_start_power',
+        )
+        for method in methods:
+            with patch.object(boss, '_kilix_start_choose') as choose:
+                getattr(boss, method)(window)
+            choices = choose.call_args.args[2]
+            for choice in choices:
+                key, label = choice.split(':', 1)
+                self.assertIn(key.casefold(), label.casefold(), choice)
+
+    def test_start_menu_uses_a_portable_menu_mark(self) -> None:
+        with (
+            patch.dict(os.environ, {'KILIX_CHROME_START_MENU': '1'}),
+            patch('kitty.kilix_windows.in_pleb_session', return_value=True),
+            patch('kitty.kilix_battery._shared_settings', return_value=({}, False)),
+        ):
+            self.ae(kilix_battery.start_menu_segment(), (
+                ' ☰ ', START_MENU_ACTION))
 
     def test_left_start_segment_reserves_tabs_and_is_clickable(self) -> None:
         self.set_options({

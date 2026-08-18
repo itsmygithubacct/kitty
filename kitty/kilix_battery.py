@@ -36,7 +36,7 @@ _CHROME_SETTINGS_LAST_SIGNATURE: tuple[object, ...] | None = None
 _CHROME_SETTINGS_CACHE_SIGNATURE: tuple[object, ...] | None = None
 _CHROME_SETTINGS_CACHE: dict[str, str] = {}
 _CHROME_SETTINGS_CACHE_EXISTS = False
-_CHROME_SETTINGS_REFRESH_SECONDS = 1.0
+_CHROME_SETTINGS_REFRESH_SECONDS = 2.0
 _CLOCK_TIMER_STARTED = False
 _CLOCK_LAST_TEXT = ''
 _CLOCK_REFRESH_SECONDS = 15.0
@@ -128,9 +128,9 @@ def start_menu_segment() -> tuple[str, str] | None:
     default = '1' if in_pleb_session() else '0'
     if not chrome_enabled('KILIX_CHROME_START_MENU', default):
         return None
-    # The paw is the existing Nerd Font cat mark used by Kilix chrome. The
-    # surrounding half blocks make a stable three-cell badge at any font size.
-    return f'▐{chr(0xf1b0)}▌', START_MENU_ACTION
+    # Use the conventional menu mark rather than a brand-specific private-use
+    # glyph: it remains recognizable with every configured terminal font.
+    return ' ☰ ', START_MENU_ACTION
 
 
 def kilix_temps_target() -> tuple[list[str], str | None] | None:
