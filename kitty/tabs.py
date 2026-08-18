@@ -212,7 +212,7 @@ class Tab:  # {{{
         # typed into any selected pane is copied to the other selected panes in
         # this tab. Overlays are deliberately never members.
         self.kilix_synchronized_input_ids: set[int] = set()
-        from .kilix_battery import chrome_enabled
+        from .kilix_chrome.settings import chrome_enabled
         self.kilix_synchronized_input_control_enabled = chrome_enabled(
             'KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT')
         self._last_used_layout: str | None = None
@@ -1937,15 +1937,11 @@ class TabManager:  # {{{
             if is_left_release and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
                 from .kilix_battery import (
                     BATTERY_TOGGLE_ACTION,
-                    CALENDAR_WIDGET_ACTION,
-                    DATE_WIDGET_ACTION,
-                    NETWORK_WIDGET_ACTION,
                     THERMAL_WIDGET_ACTION,
-                    VOLUME_WIDGET_ACTION,
                     kilix_temps_target,
-                    kilix_volume_target,
                     toggle_battery_percent,
                 )
+                from .kilix_chrome.registry import dispatch as dispatch_chrome_widget
                 from .kilix_voice import (
                     DICTATE_ACTION,
                     SPEAK_ACTION,
@@ -1969,6 +1965,8 @@ class TabManager:  # {{{
                     # Restores it first if it was minimised, so a tab-bar entry
                     # is a complete route back to a hidden window.
                     activate_window(native_window)
+                elif dispatch_chrome_widget(self, tab_action):
+                    pass
                 elif tab_action == BATTERY_TOGGLE_ACTION:
                     toggle_battery_percent()
                 elif tab_action == THERMAL_WIDGET_ACTION:
@@ -1982,22 +1980,6 @@ class TabManager:  # {{{
                         cmd, cwd = target
                         self.new_tab(SpecialWindow(
                             cmd, override_title='Kilix Temps', cwd=cwd))
-                elif tab_action == VOLUME_WIDGET_ACTION:
-                    target = self.active_tab.active_window if self.active_tab else None
-                    if target is not None:
-                        cmd = kilix_volume_target()
-                        if cmd is None:
-                            get_boss().show_error(
-                                'Volume control unavailable',
-                                'Kilix Volume could not be resolved, and '
-                                'neither pulsemixer nor alsamixer was found.')
-                        elif (tab := target.tabref()) is not None:
-                            tab.new_window(
-                                use_shell=False,
-                                cmd=cmd,
-                                override_title='Volume Control',
-                                overlay_for=target.id,
-                            )
                 elif tab_action == SPEAK_ACTION:
                     if voice_state.speaking:
                         # Toggle: the button that started the read stops it.
@@ -2049,26 +2031,6 @@ class TabManager:  # {{{
                             )
                         elif (error := begin_dictation(target.id)) is not None:
                             get_boss().show_error('Dictation unavailable', error)
-                elif tab_action == NETWORK_WIDGET_ACTION:
-                    target = self.active_tab.active_window if self.active_tab else None
-                    if target is not None:
-                        executable = which('nmtui')
-                        if executable is None:
-                            get_boss().show_error(
-                                'Network settings unavailable',
-                                'nmtui was not found. Install NetworkManager to use this widget.')
-                        elif (tab := target.tabref()) is not None:
-                            tab.new_window(
-                                use_shell=False,
-                                cmd=[executable],
-                                override_title='Network Connections',
-                                overlay_for=target.id,
-                            )
-                elif tab_action in (CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION):
-                    target = self.active_tab.active_window if self.active_tab else None
-                    if target is not None:
-                        mode = 'calendar' if tab_action == CALENDAR_WIDGET_ACTION else 'date'
-                        get_boss().run_kitten_with_metadata('kilix_clock', (mode,), window=target)
                 self.recent_tab_bar_mouse_events.clear()
             return
 

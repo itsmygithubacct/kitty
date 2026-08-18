@@ -34,13 +34,11 @@ from .fast_data_types import (
 )
 from .kilix_battery import (
     battery_segment,
-    chrome_value,
-    clock_segments,
-    ensure_chrome_timers,
-    network_segment,
     thermal_segment,
-    volume_segment,
 )
+from .kilix_chrome.lifecycle import ensure_chrome_timers
+from .kilix_chrome.registry import segments_for
+from .kilix_chrome.settings import chrome_value
 from .kilix_voice import dictate_segment, speak_segment
 from .kilix_windows import MINIMISED_GLYPH, window_entries
 from .progress import ProgressState
@@ -1060,21 +1058,14 @@ class TabBar:
         if thermal is not None:
             text, action, fg = thermal
             ans.append((text, action, fg))
-        volume = volume_segment()
-        if volume is not None:
-            text, action = volume
-            ans.append((text, action, clock_fg))
+        ans.extend(segments_for(('volume',), clock_fg))
         # Voice sits beside volume because both are audio, and ahead of network
         # so the clock and battery cluster on the right edge never moves when a
         # widget appears, disappears or changes colour.
         for voice in (speak_segment(), dictate_segment()):
             if voice is not None:
                 ans.append(voice)
-        network = network_segment()
-        if network is not None:
-            text, action = network
-            ans.append((text, action, clock_fg))
-        ans.extend((text, action, clock_fg) for text, action in clock_segments())
+        ans.extend(segments_for(('network', 'clock'), clock_fg))
         batt = battery_segment()
         if batt is not None:
             text, action, fg = batt

@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from .kilix_battery import chrome_value
+from .kilix_chrome.settings import chrome_value
 from .utils import log_error, which
 
 PANE_MEMORY_MODE_KEY = 'KILIX_CHROME_PANE_MEMORY_MODE'

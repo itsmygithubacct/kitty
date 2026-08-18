@@ -12,7 +12,7 @@ from .fast_data_types import (
     get_options,
 )
 from .rgb import color_as_sgr, color_from_int, to_color
-from .kilix_battery import chrome_enabled
+from .kilix_chrome.settings import chrome_enabled
 from .kilix_memory import MEMORY_GLYPH, MEMORY_WIDGET_ACTION
 from .tab_bar import draw_attributed_string, safe_builtins
 from .types import WindowGeometry, run_once

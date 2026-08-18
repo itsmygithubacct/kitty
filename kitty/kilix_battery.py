@@ -8,6 +8,15 @@ from typing import NamedTuple
 
 from .rgb import to_color
 from .utils import color_as_int, log_error, which
+from .kilix_chrome.providers import (
+    CALENDAR_GLYPH, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION, NETWORK_GLYPH,
+    NETWORK_WIDGET_ACTION, VOLUME_GLYPH, VOLUME_WIDGET_ACTION, clock_segment,
+    clock_segments, network_segment, volume_segment, volume_target,
+)
+from .kilix_chrome.settings import chrome_enabled, chrome_value, ensure_timer
+from .kilix_chrome.lifecycle import (
+    ensure_chrome_timers, ensure_clock_timer, invalidate_all,
+)
 
 
 class BatteryInfo(NamedTuple):
@@ -22,23 +31,7 @@ class ThermalInfo(NamedTuple):
 
 BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
 THERMAL_WIDGET_ACTION = 'kilix_show_thermal_widget'
-VOLUME_WIDGET_ACTION = 'kilix_show_volume_widget'
-NETWORK_WIDGET_ACTION = 'kilix_show_network_widget'
-CALENDAR_WIDGET_ACTION = 'kilix_show_calendar_widget'
-DATE_WIDGET_ACTION = 'kilix_show_date_widget'
 THERMOMETER_GLYPH = chr(0xf2c9)
-VOLUME_GLYPH = chr(0xf028)
-NETWORK_GLYPH = chr(0xf1eb)
-CALENDAR_GLYPH = chr(0xf073)
-_CHROME_SETTINGS_TIMER_STARTED = False
-_CHROME_SETTINGS_LAST_SIGNATURE: tuple[object, ...] | None = None
-_CHROME_SETTINGS_CACHE_SIGNATURE: tuple[object, ...] | None = None
-_CHROME_SETTINGS_CACHE: dict[str, str] = {}
-_CHROME_SETTINGS_CACHE_EXISTS = False
-_CHROME_SETTINGS_REFRESH_SECONDS = 1.0
-_CLOCK_TIMER_STARTED = False
-_CLOCK_LAST_TEXT = ''
-_CLOCK_REFRESH_SECONDS = 15.0
 _THERMAL_CACHE: ThermalInfo | None = None
 _THERMAL_CACHE_ROOT = ''
 _THERMAL_CACHE_UNTIL = 0.0
@@ -57,68 +50,6 @@ _BATTERY_LOW = (color_as_int(to_color('#ef2929')) << 8) | 2
 _BATTERY_MID = (color_as_int(to_color('#fce94f')) << 8) | 2
 _BATTERY_HIGH = (color_as_int(to_color('#8ae234')) << 8) | 2
 _THERMAL_UNKNOWN = (color_as_int(to_color('#888a85')) << 8) | 2
-
-
-def _shared_settings_path() -> str:
-    override = os.environ.get('GPU_TERMINAL_SETTINGS_FILE')
-    if override:
-        return os.path.abspath(os.path.expanduser(override))
-    root = os.environ.get('GPU_TERMINAL_HOME') or os.path.join(
-        os.path.expanduser('~'), '.local', 'gpu_terminal')
-    return os.path.join(os.path.abspath(os.path.expanduser(root)), 'settings.conf')
-
-
-def _shared_settings_signature() -> tuple[object, ...]:
-    path = _shared_settings_path()
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return (path, 'missing')
-    return (
-        path, stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns,
-        stat.st_mode, stat.st_size,
-    )
-
-
-def _shared_settings() -> tuple[dict[str, str], bool]:
-    global _CHROME_SETTINGS_CACHE, _CHROME_SETTINGS_CACHE_EXISTS
-    global _CHROME_SETTINGS_CACHE_SIGNATURE
-    signature = _shared_settings_signature()
-    if signature != _CHROME_SETTINGS_CACHE_SIGNATURE:
-        values: dict[str, str] = {}
-        exists = signature[-1] != 'missing'
-        if exists:
-            try:
-                with open(str(signature[0]), encoding='utf-8', errors='replace') as stream:
-                    for line in stream:
-                        line = line.strip()
-                        if not line or line.startswith('#') or '=' not in line:
-                            continue
-                        key, value = line.split('=', 1)
-                        key = key.strip()
-                        if key and key.replace('_', '').isalnum() and not key[0].isdigit():
-                            values[key] = value.strip()
-            except OSError:
-                exists = False
-                values = {}
-        _CHROME_SETTINGS_CACHE = values
-        _CHROME_SETTINGS_CACHE_EXISTS = exists
-        _CHROME_SETTINGS_CACHE_SIGNATURE = signature
-    return _CHROME_SETTINGS_CACHE, _CHROME_SETTINGS_CACHE_EXISTS
-
-
-def chrome_value(name: str, default: str = '1') -> str:
-    values, exists = _shared_settings()
-    if exists:
-        return values.get(name, default)
-    # Backward-compatible migration fallback for a fork launched without the
-    # Kilix wrapper. Normal Kilix launches create the shared file first.
-    return os.environ.get(name, default)
-
-
-def chrome_enabled(name: str, default: str = '1') -> bool:
-    return chrome_value(name, default).lower() not in (
-        '', '0', 'no', 'false', 'off', 'disabled')
 
 
 def kilix_temps_target() -> tuple[list[str], str | None] | None:
@@ -144,27 +75,7 @@ def kilix_temps_target() -> tuple[list[str], str | None] | None:
     return None
 
 
-def kilix_volume_target() -> list[str] | None:
-    """Resolve Kilix Volume, the stack's own mixer.
-
-    The widget used to reach for pulsemixer or alsamixer and tell the user to
-    install one when neither was present — on a system that ships a volume TUI
-    of its own, in the shared shell, wired to the same sink Kilix uses. The
-    external mixers remain the fallback for a bare checkout that has not
-    installed the utilities yet.
-
-    Resolution matches the thermal dashboard's: an installed command wins, then
-    the Kilix launcher, and a development checkout never shadows either.
-    """
-    if executable := which('kilix-volume'):
-        return [executable]
-    if kilix_home := os.environ.get('KILIX_HOME'):
-        kilix = os.path.join(kilix_home, 'kilix')
-        if os.path.isfile(kilix) and os.access(kilix, os.X_OK):
-            return [kilix, 'volume']
-    if fallback := (which('pulsemixer') or which('alsamixer')):
-        return [fallback]
-    return None
+kilix_volume_target = volume_target
 
 
 def _thermal_sys_root() -> str:
@@ -265,40 +176,6 @@ def thermal_segment() -> tuple[str, str, int] | None:
         THERMAL_WIDGET_ACTION,
         _thermal_color(info),
     )
-
-
-def volume_segment() -> tuple[str, str] | None:
-    if not chrome_enabled('KILIX_CHROME_VOLUME'):
-        return None
-    return f' {VOLUME_GLYPH} ', VOLUME_WIDGET_ACTION
-
-
-def network_segment() -> tuple[str, str] | None:
-    if not chrome_enabled('KILIX_CHROME_NETWORK'):
-        return None
-    return f' {NETWORK_GLYPH} ', NETWORK_WIDGET_ACTION
-
-
-def clock_segment() -> str | None:
-    if not chrome_enabled('KILIX_CHROME_CLOCK'):
-        return None
-    fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%Y-%m-%d %H:%M') or '%Y-%m-%d %H:%M'
-    try:
-        text = time.strftime(fmt)
-    except Exception:
-        text = time.strftime('%Y-%m-%d %H:%M')
-    return f' {text} '
-
-
-def clock_segments() -> tuple[tuple[str, str], ...]:
-    """Clickable calendar button followed by the configured date/time text."""
-    ans: list[tuple[str, str]] = []
-    if chrome_enabled('KILIX_CHROME_CALENDAR'):
-        ans.append((f' {CALENDAR_GLYPH}', CALENDAR_WIDGET_ACTION))
-    clock = clock_segment()
-    if clock is not None:
-        ans.append((clock, DATE_WIDGET_ACTION))
-    return tuple(ans)
 
 
 def _read_text(path: str) -> str:
@@ -422,24 +299,8 @@ def battery_segment() -> tuple[str, str, int] | None:
 
 
 def _invalidate_all_chrome() -> None:
-    from .fast_data_types import get_boss, mark_os_window_dirty
-    synchronized_input_enabled = chrome_enabled(
-        'KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT')
-    for tm in get_boss().all_tab_managers:
-        tm.mark_tab_bar_dirty()
-        for tab in tm:
-            tab.kilix_apply_synchronized_input_setting(
-                synchronized_input_enabled)
-            tab.update_window_title_bars()
-        mark_os_window_dirty(tm.os_window_id)
-
-
-def _clock_timer(timer_id: int | None = None) -> None:
-    global _CLOCK_LAST_TEXT
-    text = clock_segment() or ''
-    if text != _CLOCK_LAST_TEXT:
-        _CLOCK_LAST_TEXT = text
-        _invalidate_all_chrome()
+    """Compatibility alias for extensions importing the pre-0.2 helper."""
+    invalidate_all()
 
 
 def toggle_battery_percent() -> None:
@@ -468,26 +329,8 @@ def _thermal_timer(timer_id: int | None = None) -> None:
         _invalidate_all_chrome()
 
 
-def _chrome_settings_timer(timer_id: int | None = None) -> None:
-    global _CHROME_SETTINGS_LAST_SIGNATURE
-    signature = _shared_settings_signature()
-    if signature != _CHROME_SETTINGS_LAST_SIGNATURE:
-        _CHROME_SETTINGS_LAST_SIGNATURE = signature
-        _shared_settings()
-        _invalidate_all_chrome()
-
-
 def ensure_chrome_settings_timer() -> None:
-    global _CHROME_SETTINGS_LAST_SIGNATURE, _CHROME_SETTINGS_TIMER_STARTED
-    if _CHROME_SETTINGS_TIMER_STARTED:
-        return
-    _CHROME_SETTINGS_TIMER_STARTED = True
-    _CHROME_SETTINGS_LAST_SIGNATURE = _shared_settings_signature()
-    try:
-        from .fast_data_types import add_timer
-        add_timer(_chrome_settings_timer, _CHROME_SETTINGS_REFRESH_SECONDS, True)
-    except Exception as e:
-        log_error(f'Failed to start kilix chrome settings timer: {e}')
+    ensure_timer(_invalidate_all_chrome)
 
 
 def ensure_battery_timer() -> None:
@@ -513,27 +356,3 @@ def ensure_thermal_timer() -> None:
         add_timer(_thermal_timer, _THERMAL_REFRESH_SECONDS, True)
     except Exception as e:
         log_error(f'Failed to start kilix thermal chrome timer: {e}')
-
-
-def ensure_clock_timer() -> None:
-    global _CLOCK_LAST_TEXT, _CLOCK_TIMER_STARTED
-    if _CLOCK_TIMER_STARTED or not chrome_enabled('KILIX_CHROME_CLOCK'):
-        return
-    _CLOCK_TIMER_STARTED = True
-    _CLOCK_LAST_TEXT = clock_segment() or ''
-    try:
-        from .fast_data_types import add_timer
-        add_timer(_clock_timer, _CLOCK_REFRESH_SECONDS, True)
-    except Exception as e:
-        log_error(f'Failed to start kilix clock chrome timer: {e}')
-
-
-def ensure_chrome_timers() -> None:
-    from .kilix_memory import ensure_pane_memory_timer
-    from .kilix_windows import ensure_windows_timer
-    ensure_chrome_settings_timer()
-    ensure_thermal_timer()
-    ensure_clock_timer()
-    ensure_battery_timer()
-    ensure_pane_memory_timer()
-    ensure_windows_timer()

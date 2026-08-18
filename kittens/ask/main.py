@@ -11,9 +11,10 @@ from ..tui.handler import result_handler
 def option_text() -> str:
     return '''\
 --type -t
-choices=line,yesno,choices,password,file
+choices=line,yesno,choices,password,file,calculator
 default=line
-Type of input. Defaults to asking for a line of text.
+Type of input. Defaults to asking for a line of text. The calculator type
+opens an interactive mouse-and-keyboard calculator.
 
 
 --message -m

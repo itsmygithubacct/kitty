@@ -36,7 +36,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .kilix_battery import chrome_enabled, chrome_value
+from .kilix_chrome.settings import chrome_enabled, chrome_value
 from .rgb import to_color
 from .utils import color_as_int, log_error, which
 
@@ -443,9 +443,9 @@ def dictate_segment() -> tuple[str, str, int] | None:
 
 
 def _invalidate() -> None:
-    from .kilix_battery import _invalidate_all_chrome
+    from .kilix_chrome.lifecycle import invalidate_all
     with suppress(Exception):
-        _invalidate_all_chrome()
+        invalidate_all()
 
 
 def flag_error(message: str) -> str:

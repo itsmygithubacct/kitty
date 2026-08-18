@@ -41,6 +41,11 @@ func main(_ *cli.Command, o *Options, args []string) (rc int, err error) {
 		if err != nil {
 			return 1, err
 		}
+	case "calculator":
+		result.Response, err = GetCalculator(o)
+		if err != nil {
+			return 1, err
+		}
 	case "password":
 		show_message(o.Message, o.Title)
 		pw, err := tui.ReadPassword(o.Prompt, false)
