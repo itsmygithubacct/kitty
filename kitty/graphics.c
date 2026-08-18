@@ -19,9 +19,17 @@
 #include <sys/mman.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include <zlib.h>
 #include <structmember.h>
+#include <drm_fourcc.h>
+#ifndef KHRONOS_APIENTRY
+#define KHRONOS_APIENTRY KHRONOS_GLAD_API_PTR
+#endif
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include "png-reader.h"
 PyTypeObject GraphicsManager_Type;
 
@@ -29,6 +37,14 @@ PyTypeObject GraphicsManager_Type;
 #define DEFAULT_STORAGE_LIMIT 320u * (1024u * 1024u)
 #define REPORT_ERROR(...) { log_error(__VA_ARGS__); }
 #define RAII_CoalescedFrameData(name, initializer) __attribute__((cleanup(cfd_free))) CoalescedFrameData name = initializer
+
+#define KILIX_DMABUF_MAGIC 0x4b444d41u
+#define KILIX_DMABUF_VERSION 1u
+
+typedef struct {
+    uint32_t magic, version, width, height, stride, offset, fourcc;
+    uint32_t modifier_hi, modifier_lo;
+} KilixDmaBufFrame;
 
 // caching {{{
 #define member_size(type, member) sizeof(((type *)0)->member)
@@ -739,6 +755,160 @@ upload_region_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque,
             self->gpu_pbo_bytes += bytes;
         }
     }
+}
+
+static bool
+path_is_private_session_socket(const char *path) {
+    const char *root = getenv("KILIX_SESSION_HOME");
+    if (!root || !*root || !path || path[0] != '/') return false;
+    size_t root_length = strlen(root);
+    if (strncmp(path, root, root_length) != 0 || path[root_length] != '/') return false;
+    struct stat info;
+    return lstat(path, &info) == 0 && S_ISSOCK(info.st_mode) &&
+           info.st_uid == geteuid() && !(info.st_mode & 0077);
+}
+
+static int
+receive_dmabuf(const char *path, KilixDmaBufFrame *frame, int *socket_out) {
+    if (!path_is_private_session_socket(path) || strlen(path) >=
+            sizeof(((struct sockaddr_un*)0)->sun_path)) return -1;
+    int sock = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    if (sock < 0) return -1;
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    memcpy(address.sun_path, path, strlen(path) + 1u);
+    if (connect(sock, (struct sockaddr*)&address, sizeof(address)) < 0) {
+        safe_close(sock, __FILE__, __LINE__); return -1;
+    }
+    struct ucred credentials = {0};
+    socklen_t credentials_size = sizeof(credentials);
+    if (getsockopt(sock, SOL_SOCKET, SO_PEERCRED, &credentials,
+                   &credentials_size) < 0 || credentials_size != sizeof(credentials)
+            || credentials.uid != geteuid()) {
+        safe_close(sock, __FILE__, __LINE__); return -1;
+    }
+    char control[CMSG_SPACE(sizeof(int))] = {0};
+    struct iovec iov = {.iov_base = frame, .iov_len = sizeof(*frame)};
+    struct msghdr message = {
+        .msg_iov = &iov, .msg_iovlen = 1,
+        .msg_control = control, .msg_controllen = sizeof(control),
+    };
+    ssize_t received;
+    do received = recvmsg(sock, &message, MSG_CMSG_CLOEXEC);
+    while (received < 0 && errno == EINTR);
+    int fd = -1;
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    if (received == (ssize_t)sizeof(*frame) && !(message.msg_flags & MSG_CTRUNC)
+            && header && header->cmsg_level == SOL_SOCKET
+            && header->cmsg_type == SCM_RIGHTS
+            && header->cmsg_len == CMSG_LEN(sizeof(int)))
+        memcpy(&fd, CMSG_DATA(header), sizeof(fd));
+    if (fd >= 0) *socket_out = sock;
+    else safe_close(sock, __FILE__, __LINE__);
+    return fd;
+}
+
+static bool
+import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
+                      int fd) {
+    static EGLDisplay display = EGL_NO_DISPLAY;
+    typedef void (*image_target_function)(GLenum, GLeglImageOES);
+    static image_target_function image_target = NULL;
+    if (display == EGL_NO_DISPLAY) {
+        display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        EGLint major = 0, minor = 0;
+        if (display == EGL_NO_DISPLAY || !eglInitialize(display, &major, &minor)) {
+            display = EGL_NO_DISPLAY; return false;
+        }
+        const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
+        if (!extensions || !strstr(extensions, "EGL_EXT_image_dma_buf_import"))
+            return false;
+        union {
+            __eglMustCastToProperFunctionPointerType generic;
+            image_target_function typed;
+        } loader = { .generic = eglGetProcAddress(
+            "glEGLImageTargetTexture2DOES") };
+        image_target = loader.typed;
+        if (!image_target) return false;
+    }
+    EGLAttrib attributes[] = {
+        EGL_WIDTH, (EGLAttrib)frame->width,
+        EGL_HEIGHT, (EGLAttrib)frame->height,
+        EGL_LINUX_DRM_FOURCC_EXT, (EGLAttrib)frame->fourcc,
+        EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLAttrib)frame->offset,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLAttrib)frame->stride,
+        EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLAttrib)frame->modifier_lo,
+        EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLAttrib)frame->modifier_hi,
+        EGL_NONE,
+    };
+    EGLImage image = eglCreateImage(
+        display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attributes);
+    if (image == EGL_NO_IMAGE) return false;
+    GLuint source = 0, framebuffers[2] = {0};
+    glGenTextures(1, &source);
+    glBindTexture(GL_TEXTURE_2D, source);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    image_target(GL_TEXTURE_2D, image);
+    glGenFramebuffers(2, framebuffers);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffers[0]);
+    glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, source, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[1]);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, destination, 0);
+    bool complete = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) ==
+                    GL_FRAMEBUFFER_COMPLETE &&
+                    glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) ==
+                    GL_FRAMEBUFFER_COMPLETE;
+    if (complete) {
+        glBlitFramebuffer(0, frame->height, frame->width, 0,
+                          0, 0, frame->width, frame->height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        complete = glGetError() == GL_NO_ERROR;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(2, framebuffers);
+    glDeleteTextures(1, &source);
+    eglDestroyImage(display, image);
+    return complete;
+}
+
+static bool
+import_gpu_frame(GraphicsManager *self, Image *img, const GraphicsCommand *g,
+                 const uint8_t *payload) {
+    if (!g->payload_sz || g->payload_sz >= sizeof(((struct sockaddr_un*)0)->sun_path))
+        return false;
+    char path[sizeof(((struct sockaddr_un*)0)->sun_path)];
+    memcpy(path, payload, g->payload_sz); path[g->payload_sz] = '\0';
+    KilixDmaBufFrame frame = {0};
+    int transfer_socket = -1;
+    int fd = receive_dmabuf(path, &frame, &transfer_socket);
+    if (fd < 0) return false;
+    bool valid = frame.magic == KILIX_DMABUF_MAGIC &&
+        frame.version == KILIX_DMABUF_VERSION && frame.width > 0 &&
+        frame.height > 0 && frame.width <= MAX_IMAGE_DIMENSION &&
+        frame.height <= MAX_IMAGE_DIMENSION && frame.fourcc == DRM_FORMAT_XRGB8888 &&
+        frame.stride >= frame.width * 4u;
+    if (valid && !self->context_made_current_for_this_command) {
+        valid = self->window_id && make_window_context_current(self->window_id);
+        self->context_made_current_for_this_command = valid;
+    }
+    if (valid && (!img->texture || !img->texture->id ||
+                  img->width != frame.width || img->height != frame.height)) {
+        if (!img->texture) img->texture = new_texture_ref();
+        send_image_to_gpu(&img->texture->id, NULL, frame.width, frame.height,
+                          true, true, true, REPEAT_CLAMP);
+        img->width = frame.width; img->height = frame.height;
+    }
+    if (valid) valid = import_dmabuf_texture(img->texture->id, &frame, fd);
+    uint8_t ack = valid ? 1 : 0;
+    if (transfer_socket >= 0) {
+        while (write(transfer_socket, &ack, 1) < 0 && errno == EINTR) {}
+        safe_close(transfer_socket, __FILE__, __LINE__);
+    }
+    safe_close(fd, __FILE__, __LINE__);
+    return valid;
 }
 
 static bool
@@ -2425,6 +2595,36 @@ grman_handle_command(GraphicsManager *self, const GraphicsCommand *g, const uint
     }
 
     switch(g->action) {
+        case 'g': {
+            if (g->transmission_type != 'g' || !g->id || g->image_number) {
+                set_command_failed_response("EINVAL", "GPU import requires a single image id and t=g");
+                ret = finish_command_response(g, false);
+                break;
+            }
+            bool existing = false;
+            Image *img = find_or_create_image(self, g->id, &existing);
+            if (!import_gpu_frame(self, img, g, payload)) {
+                if (!existing) remove_image(self, img);
+                set_command_failed_response("EIO", "DMA-BUF import failed");
+                ret = finish_command_response(g, false);
+                break;
+            }
+            img->client_id = g->id;
+            img->atime = monotonic();
+            img->root_frame_data_loaded = true;
+            img->root_frame = (const Frame){
+                .id = img->root_frame.id ? img->root_frame.id : ++img->frame_id_counter,
+                .is_opaque = true, .is_4byte_aligned = true,
+                .width = img->width, .height = img->height, .transient = true,
+            };
+            img->is_drawn = false;
+            self->gpu_region_uploads++;
+            self->gpu_upload_bytes += (uint64_t)img->width * img->height * 4u;
+            *is_dirty = true;
+            set_layers_dirty(self);
+            ret = finish_command_response(g, true);
+            break;
+        }
         case 0:
         case 't':
         case 'T':

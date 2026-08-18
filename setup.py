@@ -670,8 +670,12 @@ def kitty_env(args: Options) -> Env:
         cppflags.append('-DGL_SILENCE_DEPRECATION')
     else:
         cflags.extend(pkg_config('cairo-fc', '--cflags-only-I'))
+        cflags.extend(pkg_config('egl', '--cflags-only-I'))
+        cflags.extend(pkg_config('libdrm', '--cflags-only-I'))
         platform_libs = []
         platform_libs.extend(pkg_config('cairo-fc', '--libs'))
+        platform_libs.extend(pkg_config('egl', '--libs'))
+        platform_libs.extend(pkg_config('libdrm', '--libs'))
     cflags.extend(pkg_config('harfbuzz', '--cflags-only-I'))
     platform_libs.extend(pkg_config('harfbuzz', '--libs'))
     pylib = get_python_flags(args, cflags)
