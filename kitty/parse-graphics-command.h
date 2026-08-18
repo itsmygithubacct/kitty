@@ -176,7 +176,7 @@ static inline void parse_graphics_code(PS *self, uint8_t *parser_buf,
         g.action = parser_buf[pos++];
         if (g.action != 'T' && g.action != 'a' && g.action != 'c' &&
             g.action != 'd' && g.action != 'f' && g.action != 'p' &&
-            g.action != 'q' && g.action != 't') {
+            g.action != 'g' && g.action != 'q' && g.action != 't') {
           REPORT_ERROR("Malformed GraphicsCommand control block, unknown flag "
                        "value for action: 0x%x",
                        g.action);
@@ -207,6 +207,7 @@ static inline void parse_graphics_code(PS *self, uint8_t *parser_buf,
       case transmission_type: {
         g.transmission_type = parser_buf[pos++];
         if (g.transmission_type != 'd' && g.transmission_type != 'f' &&
+            g.transmission_type != 'g' &&
             g.transmission_type != 's' && g.transmission_type != 't') {
           REPORT_ERROR("Malformed GraphicsCommand control block, unknown flag "
                        "value for transmission_type: 0x%x",

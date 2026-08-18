@@ -814,18 +814,17 @@ import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
     typedef void (*image_target_function)(GLenum, GLeglImageOES);
     static image_target_function image_target = NULL;
     if (display == EGL_NO_DISPLAY) {
-        display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        EGLint major = 0, minor = 0;
-        if (display == EGL_NO_DISPLAY || !eglInitialize(display, &major, &minor)) {
+        display = eglGetCurrentDisplay();
+        if (display == EGL_NO_DISPLAY || eglGetCurrentContext() == EGL_NO_CONTEXT) {
             display = EGL_NO_DISPLAY; return false;
         }
         const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
         if (!extensions || !strstr(extensions, "EGL_EXT_image_dma_buf_import"))
             return false;
         union {
-            __eglMustCastToProperFunctionPointerType generic;
+            GLFWglproc generic;
             image_target_function typed;
-        } loader = { .generic = eglGetProcAddress(
+        } loader = { .generic = glfwGetProcAddress(
             "glEGLImageTargetTexture2DOES") };
         image_target = loader.typed;
         if (!image_target) return false;

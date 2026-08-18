@@ -1744,6 +1744,13 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, OPENGL_REQUIRED_VERSION_MAJOR);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, OPENGL_REQUIRED_VERSION_MINOR);
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, true);
+#ifdef __linux__
+        // Kilix's DMA-BUF graphics transport imports EGLImages. Use an EGL
+        // context for the paired fork so the image-target call shares the
+        // same GL dispatch and context instead of crossing from GLX.
+        if (getenv("KILIX_GPU_DMABUF_IMPORT"))
+            glfwWindowHint(GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
+#endif
         // We don't use depth and stencil buffers
         glfwWindowHint(GLFW_DEPTH_BITS, 0);
         glfwWindowHint(GLFW_STENCIL_BITS, 0);
