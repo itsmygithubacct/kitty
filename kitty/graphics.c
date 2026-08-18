@@ -51,6 +51,36 @@ typedef struct {
     uint32_t modifier_hi, modifier_lo;
 } KilixDmaBufFrame;
 
+typedef enum {
+    KILIX_IMPORT_OK,
+    KILIX_IMPORT_RECEIVE,
+    KILIX_IMPORT_FRAME,
+    KILIX_IMPORT_CONTEXT,
+    KILIX_IMPORT_EGL_CONTEXT,
+    KILIX_IMPORT_EGL_EXTENSION,
+    KILIX_IMPORT_EGL_ENTRYPOINT,
+    KILIX_IMPORT_EGL_IMAGE,
+    KILIX_IMPORT_READ_FRAMEBUFFER,
+    KILIX_IMPORT_DRAW_FRAMEBUFFER,
+    KILIX_IMPORT_BLIT,
+    KILIX_IMPORT_FINISH,
+} KilixImportStage;
+
+typedef struct {
+    KilixImportStage stage;
+    uint32_t code;
+} KilixImportFailure;
+
+static const char*
+kilix_import_stage_name(KilixImportStage stage) {
+    static const char *names[] = {
+        "ok", "receive", "frame", "context", "egl-context",
+        "egl-extension", "egl-entrypoint", "egl-image",
+        "read-framebuffer", "draw-framebuffer", "blit", "finish",
+    };
+    return stage < arraysz(names) ? names[stage] : "unknown";
+}
+
 // caching {{{
 #define member_size(type, member) sizeof(((type *)0)->member)
 #define CACHE_KEY_BUFFER_SIZE (member_size(ImageAndFrame, image_id) + member_size(ImageAndFrame, frame_id))
@@ -814,25 +844,32 @@ receive_dmabuf(const char *path, KilixDmaBufFrame *frame, int *socket_out) {
 
 static bool
 import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
-                      int fd) {
+                      int fd, KilixImportFailure *failure) {
     static EGLDisplay display = EGL_NO_DISPLAY;
     typedef void (*image_target_function)(GLenum, GLeglImageOES);
     static image_target_function image_target = NULL;
     if (display == EGL_NO_DISPLAY) {
         display = eglGetCurrentDisplay();
         if (display == EGL_NO_DISPLAY || eglGetCurrentContext() == EGL_NO_CONTEXT) {
+            failure->stage = KILIX_IMPORT_EGL_CONTEXT;
+            failure->code = (uint32_t)eglGetError();
             display = EGL_NO_DISPLAY; return false;
         }
         const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
-        if (!extensions || !strstr(extensions, "EGL_EXT_image_dma_buf_import"))
+        if (!extensions || !strstr(extensions, "EGL_EXT_image_dma_buf_import")) {
+            failure->stage = KILIX_IMPORT_EGL_EXTENSION;
             return false;
+        }
         union {
             GLFWglproc generic;
             image_target_function typed;
         } loader = { .generic = glfwGetProcAddress(
             "glEGLImageTargetTexture2DOES") };
         image_target = loader.typed;
-        if (!image_target) return false;
+        if (!image_target) {
+            failure->stage = KILIX_IMPORT_EGL_ENTRYPOINT;
+            return false;
+        }
     }
     EGLAttrib attributes[] = {
         EGL_WIDTH, (EGLAttrib)frame->width,
@@ -847,7 +884,12 @@ import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
     };
     EGLImage image = eglCreateImage(
         display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attributes);
-    if (image == EGL_NO_IMAGE) return false;
+    if (image == EGL_NO_IMAGE) {
+        failure->stage = KILIX_IMPORT_EGL_IMAGE;
+        failure->code = (uint32_t)eglGetError();
+        return false;
+    }
+    while (glGetError() != GL_NO_ERROR) {}
     GLuint source = 0, framebuffers[2] = {0};
     glGenTextures(1, &source);
     glBindTexture(GL_TEXTURE_2D, source);
@@ -861,22 +903,39 @@ import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffers[1]);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                            GL_TEXTURE_2D, destination, 0);
-    bool complete = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) ==
-                    GL_FRAMEBUFFER_COMPLETE &&
-                    glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) ==
-                    GL_FRAMEBUFFER_COMPLETE;
+    GLenum read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+    GLenum draw_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+    bool complete = read_status == GL_FRAMEBUFFER_COMPLETE &&
+                    draw_status == GL_FRAMEBUFFER_COMPLETE;
+    if (read_status != GL_FRAMEBUFFER_COMPLETE) {
+        failure->stage = KILIX_IMPORT_READ_FRAMEBUFFER;
+        failure->code = read_status;
+    } else if (draw_status != GL_FRAMEBUFFER_COMPLETE) {
+        failure->stage = KILIX_IMPORT_DRAW_FRAMEBUFFER;
+        failure->code = draw_status;
+    }
     if (complete) {
         glBlitFramebuffer(0, frame->height, frame->width, 0,
                           0, 0, frame->width, frame->height,
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        complete = glGetError() == GL_NO_ERROR;
+        GLenum error = glGetError();
+        complete = error == GL_NO_ERROR;
+        if (!complete) {
+            failure->stage = KILIX_IMPORT_BLIT;
+            failure->code = error;
+        }
         // PipeWire may recycle the producer buffer as soon as it receives the
         // ACK below. Complete the device-local copy before destroying the
         // EGLImage and returning that lease; retaining it until a later frame
         // can exhaust Weston's finite pool when content becomes static.
         if (complete) {
             glFinish();
-            complete = glGetError() == GL_NO_ERROR;
+            error = glGetError();
+            complete = error == GL_NO_ERROR;
+            if (!complete) {
+                failure->stage = KILIX_IMPORT_FINISH;
+                failure->code = error;
+            }
         }
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -888,7 +947,8 @@ import_dmabuf_texture(uint32_t destination, const KilixDmaBufFrame *frame,
 
 static bool
 import_gpu_frame(GraphicsManager *self, Image *img, const GraphicsCommand *g,
-                 const uint8_t *payload) {
+                 const uint8_t *payload, KilixImportFailure *failure) {
+    *failure = (KilixImportFailure){.stage = KILIX_IMPORT_FRAME};
     if (!g->payload_sz || g->payload_sz >= sizeof(((struct sockaddr_un*)0)->sun_path))
         return false;
     char path[sizeof(((struct sockaddr_un*)0)->sun_path)];
@@ -896,7 +956,11 @@ import_gpu_frame(GraphicsManager *self, Image *img, const GraphicsCommand *g,
     KilixDmaBufFrame frame = {0};
     int transfer_socket = -1;
     int fd = receive_dmabuf(path, &frame, &transfer_socket);
-    if (fd < 0) return false;
+    if (fd < 0) {
+        failure->stage = KILIX_IMPORT_RECEIVE;
+        failure->code = (uint32_t)errno;
+        return false;
+    }
     bool valid = frame.magic == KILIX_DMABUF_MAGIC &&
         frame.version == KILIX_DMABUF_VERSION && frame.width > 0 &&
         frame.height > 0 && frame.width <= MAX_IMAGE_DIMENSION &&
@@ -905,6 +969,7 @@ import_gpu_frame(GraphicsManager *self, Image *img, const GraphicsCommand *g,
     if (valid && !self->context_made_current_for_this_command) {
         valid = self->window_id && make_window_context_current(self->window_id);
         self->context_made_current_for_this_command = valid;
+        if (!valid) failure->stage = KILIX_IMPORT_CONTEXT;
     }
     if (valid && (!img->texture || !img->texture->id ||
                   img->width != frame.width || img->height != frame.height)) {
@@ -913,7 +978,9 @@ import_gpu_frame(GraphicsManager *self, Image *img, const GraphicsCommand *g,
                           true, true, true, REPEAT_CLAMP);
         img->width = frame.width; img->height = frame.height;
     }
-    if (valid) valid = import_dmabuf_texture(img->texture->id, &frame, fd);
+    if (valid) valid = import_dmabuf_texture(
+        img->texture->id, &frame, fd, failure);
+    if (valid) *failure = (KilixImportFailure){.stage = KILIX_IMPORT_OK};
     const uint8_t ack = valid ? 1 : 0;
     if (transfer_socket >= 0) {
         while (write(transfer_socket, &ack, 1) < 0 && errno == EINTR) {}
@@ -2616,15 +2683,16 @@ grman_handle_command(GraphicsManager *self, const GraphicsCommand *g, const uint
             self->gpu_dmabuf_attempts++;
             bool existing = false;
             Image *img = find_or_create_image(self, g->id, &existing);
-            if (!import_gpu_frame(self, img, g, payload)) {
+            KilixImportFailure failure = {0};
+            if (!import_gpu_frame(self, img, g, payload, &failure)) {
                 self->gpu_dmabuf_failures++;
-                if (global_state.debug_rendering &&
-                        kilix_telemetry_sample(self->gpu_dmabuf_failures))
+                if (kilix_telemetry_sample(self->gpu_dmabuf_failures))
                     fprintf(stderr,
                         "kilix-dmabuf: import-failed attempts=%llu"
-                        " failures=%llu\n",
+                        " failures=%llu stage=%s code=0x%x\n",
                         (unsigned long long)self->gpu_dmabuf_attempts,
-                        (unsigned long long)self->gpu_dmabuf_failures);
+                        (unsigned long long)self->gpu_dmabuf_failures,
+                        kilix_import_stage_name(failure.stage), failure.code);
                 if (!existing) remove_image(self, img);
                 set_command_failed_response("EIO", "DMA-BUF import failed");
                 ret = finish_command_response(g, false);
