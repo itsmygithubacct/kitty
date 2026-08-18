@@ -7,6 +7,7 @@ import stat
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from kitty.boss import Boss
 from kitty.child import Child
 from kitty.pty_broker import (
     configuration,
@@ -22,6 +23,32 @@ from . import BaseTest
 
 
 class TestPtyBrokerIntegration(BaseTest):
+
+    def test_explicit_close_terminates_broker_before_frontend(self) -> None:
+        boss = object.__new__(Boss)
+        brokered = type('Child', (), {
+            'is_pty_brokered': True,
+            'terminate_pty_broker': lambda self: True,
+        })()
+        window = type('Window', (), {'id': 42, 'child': brokered})()
+        with patch.object(boss, 'mark_window_for_close') as mark:
+            self.assertTrue(boss.close_window_explicitly(window))
+            mark.assert_called_once_with(window)
+
+        refusing = type('Child', (), {
+            'is_pty_brokered': True,
+            'terminate_pty_broker': lambda self: False,
+        })()
+        window.child = refusing
+        with patch.object(boss, 'mark_window_for_close') as mark:
+            self.assertFalse(boss.close_window_explicitly(window))
+            mark.assert_not_called()
+
+        ordinary = type('Child', (), {'is_pty_brokered': False})()
+        window.child = ordinary
+        with patch.object(boss, 'mark_window_for_close') as mark:
+            self.assertTrue(boss.close_window_explicitly(window))
+            mark.assert_called_once_with(window)
 
     def test_configuration_requires_explicit_absolute_paths(self) -> None:
         self.ae(configuration({}), ('', ''))

@@ -48,7 +48,10 @@ Do not return an error if no windows are matched to be closed.
             raise
         for window in tuple(windows):
             if window:
-                boss.mark_window_for_close(window)
+                if not boss.close_window_explicitly(window):
+                    raise RuntimeError(
+                        'The PTY broker did not acknowledge termination; '
+                        'the pane was left attached')
         return None
 
 

@@ -1103,6 +1103,19 @@ class Boss:
         if window:
             self.child_monitor.mark_for_close(window.id)
 
+    def close_window_explicitly(self, window: Window) -> bool:
+        """Close a pane because the user explicitly asked to destroy it.
+
+        Losing a frontend leaves a broker-backed child detached so it can be
+        recovered after a frontend crash.  An explicit close is different: it
+        must terminate the broker session before removing its last frontend.
+        """
+        if (window.child.is_pty_brokered
+                and not window.child.terminate_pty_broker()):
+            return False
+        self.mark_window_for_close(window)
+        return True
+
     def recover_pty_broker_sessions(self) -> None:
         if getattr(self, '_pty_broker_recovery_done', False):
             return
@@ -1170,13 +1183,12 @@ class Boss:
         window = self.window_id_map.get(window_id)
         if window is None:
             return
-        if not window.child.terminate_pty_broker():
+        if not self.close_window_explicitly(window):
             self.show_error(
                 _('Could not close persistent pane'),
                 _('The PTY broker did not acknowledge termination. The pane '
                   'was left attached so its processes are not lost.'))
             return
-        self.mark_window_for_close(window)
 
     def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None = None) -> tuple[str, int]:
         num_running_programs = 0
