@@ -25,7 +25,7 @@ import re
 import subprocess
 import time
 
-from .kilix_battery import chrome_enabled, chrome_value
+from .kilix_chrome.settings import chrome_enabled, chrome_value
 from .utils import log_error, which
 
 # Clicking an entry activates that window. The window id is appended, so the
@@ -273,8 +273,8 @@ def _windows_timer(timer_id: int | None = None) -> None:
     sig = _signature()
     if sig != _LAST_SIGNATURE:
         _LAST_SIGNATURE = sig
-        from .kilix_battery import _invalidate_all_chrome
-        _invalidate_all_chrome()
+        from .kilix_chrome.lifecycle import invalidate_all
+        invalidate_all()
 
 
 def ensure_windows_timer() -> None:

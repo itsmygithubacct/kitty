@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from kitty import kilix_battery, kilix_memory
 from kitty.boss import Boss, kilix_desktop_owns_start_menu
+from kitty.kilix_chrome import settings as chrome_settings
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
 from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
@@ -135,7 +136,7 @@ class TestTabBar(BaseTest):
         with (
             patch.dict(os.environ, {'KILIX_CHROME_START_MENU': '1'}),
             patch('kitty.kilix_windows.in_pleb_session', return_value=True),
-            patch('kitty.kilix_battery._shared_settings', return_value=({}, False)),
+            patch('kitty.kilix_chrome.settings.values', return_value=({}, False)),
         ):
             self.ae(kilix_battery.start_menu_segment(), (
                 ' ☰ ', START_MENU_ACTION))
@@ -202,6 +203,7 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 1000, 180, 10, 20)),
             patch('kitty.tab_bar.set_tab_bar_render_data'),
             patch('kitty.tab_bar.get_boss', return_value=boss),
+            patch('kitty.tab_bar.window_entries', return_value=()),
             patch('kitty.tab_bar.ensure_chrome_timers'),
             patch('kitty.tab_bar.thermal_segment', return_value=(
                 ' thermal ', THERMAL_WIDGET_ACTION, 42)),
@@ -246,8 +248,7 @@ class TestTabBar(BaseTest):
                     'KILIX_CHROME_TEMPERATURE': '1',
                     'KILIX_THERMAL_SYS_ROOT': str(root),
                 }),
-                patch.object(
-                    kilix_battery, '_CHROME_SETTINGS_CACHE_SIGNATURE', None),
+                patch.object(chrome_settings, '_cache_signature', None),
             ):
                 colors = []
                 for raw, shown in (('79940\n', '79.9°'),

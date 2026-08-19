@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 
-from .kilix_battery import chrome_value
+from .kilix_chrome.settings import chrome_value
 
 PANE_CPU_MODE_KEY = 'KILIX_CHROME_PANE_CPU_MODE'
 PANE_CPU_MODE_DEFAULT = 'auto'
