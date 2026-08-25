@@ -338,6 +338,7 @@ window_occlusion_callback(GLFWwindow *window, bool occluded) {
     if (!set_callback_window(window)) return;
     debug("OSWindow %llu occlusion state changed, occluded: %d\n", global_state.callback_os_window->id, occluded);
     if (!occluded) global_state.check_for_active_animated_images = true;
+    update_os_window_visibility_reports(global_state.callback_os_window);
     request_tick_callback();
     global_state.callback_os_window = NULL;
 }
@@ -346,6 +347,7 @@ static void
 window_iconify_callback(GLFWwindow *window, int iconified) {
     if (!set_callback_window(window)) return;
     if (!iconified) global_state.check_for_active_animated_images = true;
+    update_os_window_visibility_reports(global_state.callback_os_window);
     request_tick_callback();
     global_state.callback_os_window = NULL;
 }
@@ -637,6 +639,7 @@ set_os_window_visibility(OSWindow *w, int set_visible, bool move_to_active_scree
         w->keep_rendering_till_swap = 256;  // try this many times
         request_tick_callback();
     } else glfwHideWindow(w->handle);
+    update_os_window_visibility_reports(w);
 }
 
 static void
@@ -1460,6 +1463,7 @@ change_state_for_os_window(OSWindow *w, int state) {
         case WINDOW_HIDDEN:
             glfwHideWindow(w->handle); break;
     }
+    update_os_window_visibility_reports(w);
 }
 
 #ifdef __APPLE__
@@ -1709,6 +1713,32 @@ os_window_update_size_increments(OSWindow *window) {
 }
 
 
+// Borrowed reference to the get_window_size callable, valid only for the
+// duration of a create_os_window() call. Used by the Wayland initial-size hook
+// below, which fires synchronously from inside glfwCreateWindow().
+static PyObject *initial_window_size_py_callback = NULL;
+
+static void
+wayland_initial_size_callback(GLFWwindow *window UNUSED, float xscale, float yscale, int *width, int *height) {
+    // The compositor has told us the real scale before the window is mapped;
+    // recompute the cell-based logical size for that scale so the window is
+    // mapped at the correct size in the first place.
+    if (!initial_window_size_py_callback) return;
+    double xdpi, ydpi;
+    dpi_from_scale(xscale, yscale, &xdpi, &ydpi);
+    FONTS_DATA_HANDLE fonts_data = load_fonts_data(OPT(font_size), xdpi, ydpi);
+    if (!fonts_data) return;
+    PyObject *ret = PyObject_CallFunction(initial_window_size_py_callback, "IIddff",
+            fonts_data->fcm.cell_width, fonts_data->fcm.cell_height,
+            fonts_data->logical_dpi_x, fonts_data->logical_dpi_y, xscale, yscale);
+    if (ret) {
+        int w = PyLong_AsLong(PyTuple_GET_ITEM(ret, 0)), h = PyLong_AsLong(PyTuple_GET_ITEM(ret, 1));
+        if (!PyErr_Occurred() && w > 0 && h > 0) { *width = w; *height = h; }
+        else PyErr_Clear();
+        Py_DECREF(ret);
+    } else PyErr_Clear();
+}
+
 static PyObject*
 create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     int x = INT_MIN, y = INT_MIN, window_state = WINDOW_NORMAL, disallow_override_title = 0;
@@ -1806,14 +1836,35 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     float xscale, yscale;
     double xdpi, ydpi;
     if (global_state.is_wayland) {
-        // Cannot use temp window on Wayland as scale is only sent by compositor after window is displayed
-        get_window_content_scale(NULL, &xscale, &yscale, &xdpi, &ydpi);
-        for (unsigned i = 0; i < global_state.num_os_windows; i++) {
-            OSWindow *osw = global_state.os_windows + i;
-            if (osw->handle && glfwGetWindowAttrib(osw->handle, GLFW_FOCUSED)) {
-                get_window_content_scale(osw->handle, &xscale, &yscale, &xdpi, &ydpi);
-                break;
+        // Cannot use temp window on Wayland as scale is only sent by compositor after window is displayed.
+        // For the first window, query the xdg-output fractional scale of the primary monitor directly;
+        // this blocks until the compositor has sent size information so we get the true fractional scale
+        // before creating any window.
+#define QUERY_MONITOR \
+            debug_rendering("Querying Wayland compositor for current monitor scale\n"); \
+            double fscale = glfwGetWaylandCurrentMonitorFractionalScale(); \
+            debug_rendering("Current monitor scale reported as: %.5f\n", fscale); \
+            xscale = yscale = (float)fscale; \
+            dpi_from_scale(xscale, yscale, &xdpi, &ydpi);
+
+        if (is_first_window && glfwGetWaylandCurrentMonitorFractionalScale) {
+            QUERY_MONITOR
+        } else {
+            bool found_window = false;
+            get_window_content_scale(NULL, &xscale, &yscale, &xdpi, &ydpi);
+            for (unsigned i = 0; i < global_state.num_os_windows; i++) {
+                OSWindow *osw = global_state.os_windows + i;
+                if (osw->handle && glfwGetWindowAttrib(osw->handle, GLFW_FOCUSED)) {
+                    get_window_content_scale(osw->handle, &xscale, &yscale, &xdpi, &ydpi);
+                    found_window = false;
+                    break;
+                }
             }
+            if (!found_window) {
+                // no focused window use monitor of last focused window
+                QUERY_MONITOR
+            }
+#undef QUERY_MONITOR
         }
     } else {
 #define glfw_failure { \
@@ -1833,7 +1884,16 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         if (!layer_shell_config_from_python(layer_shell_config, lsc)) return NULL;
         lsc->expected.xscale = xscale; lsc->expected.yscale = yscale;
     }
+    // On Wayland the true (fractional) scale is only known after the surface
+    // exists. Register a hook so the window is mapped at the correct cell-based
+    // size once the compositor reveals the scale, rather than being resized
+    // afterwards (which loses to the compositor's authoritative configure).
+    if (global_state.is_wayland && glfwWaylandSetInitialWindowSizeCallback) {
+        glfwWaylandSetInitialWindowSizeCallback(wayland_initial_size_callback);
+        initial_window_size_py_callback = get_window_size;
+    }
     GLFWwindow *glfw_window = glfwCreateWindow(width, height, title, NULL, temp_window ? temp_window : common_context, lsc);
+    initial_window_size_py_callback = NULL;
     if (temp_window) { glfwDestroyWindow(temp_window); temp_window = NULL; }
     if (glfw_window == NULL) glfw_failure;
 #undef glfw_failure
@@ -1864,21 +1924,8 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
             // this can happen if the window is moved by the OS to a different monitor when shown or with fractional scales on Wayland
             // it can also happen with layer shell windows if the callback is
             // called before the window is fully created
-            xdpi = n_xdpi; ydpi = n_ydpi; xscale = n_xscale; yscale = n_yscale;
+            xdpi = n_xdpi; ydpi = n_ydpi;
             fonts_data = load_fonts_data(OPT(font_size), xdpi, ydpi);
-            // Re-compute the window size with the updated scale/font metrics. This matters when
-            // the initial size is specified in cells: the first window on Wayland is created with
-            // scale=1 because fractional scale is only sent by the compositor after the surface
-            // exists, so the cell dimensions used for the initial size calculation were wrong.
-            PyObject *new_size = PyObject_CallFunction(get_window_size, "IIddff", fonts_data->fcm.cell_width, fonts_data->fcm.cell_height, fonts_data->logical_dpi_x, fonts_data->logical_dpi_y, xscale, yscale);
-            if (new_size != NULL) {
-                int new_width = PyLong_AsLong(PyTuple_GET_ITEM(new_size, 0)), new_height = PyLong_AsLong(PyTuple_GET_ITEM(new_size, 1));
-                Py_DECREF(new_size);
-                if (!PyErr_Occurred() && (new_width != width || new_height != height)) {
-                    glfwSetWindowSize(glfw_window, new_width, new_height);
-                    width = new_width; height = new_height;
-                } else PyErr_Clear();
-            } else PyErr_Clear();
         }
     }
     if (is_first_window) {
@@ -2537,13 +2584,17 @@ wakeup_main_loop(void) {
 }
 
 bool
-should_os_window_be_rendered(OSWindow* w) {
+is_os_window_potentially_visible(OSWindow* w) {
     return (
             glfwGetWindowAttrib(w->handle, GLFW_ICONIFIED)
             || !glfwGetWindowAttrib(w->handle, GLFW_VISIBLE)
             || glfwGetWindowAttrib(w->handle, GLFW_OCCLUDED)
-            || !glfwAreSwapsAllowed(w->handle)
        ) ? false : true;
+}
+
+bool
+should_os_window_be_rendered(OSWindow* w) {
+    return is_os_window_potentially_visible(w) && glfwAreSwapsAllowed(w->handle);
 }
 
 static PyObject*

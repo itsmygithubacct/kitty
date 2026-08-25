@@ -173,13 +173,13 @@ new_screen_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
 
 static Line* range_line_(Screen *self, int y);
 
-void
-screen_reset(Screen *self) {
+static void
+do_screen_reset(Screen *self, bool is_hard_reset) {
     screen_pause_rendering(self, false, 0);
     self->dnd_chunking.active = false;
     self->extra_cursors.count = 0; zero_at_ptr(&self->extra_cursors.color); self->extra_cursors.dirty = true;
     self->main_pointer_shape_stack.count = 0; self->alternate_pointer_shape_stack.count = 0;
-    if (self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self, true, true);
+    if (is_hard_reset && self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self, true, true);
     if (screen_is_overlay_active(self)) {
         deactivate_overlay_line(self);
         // Cancel IME composition
@@ -197,11 +197,13 @@ screen_reset(Screen *self) {
     self->last_graphic_char = 0;
     self->main_savepoint.is_valid = false;
     self->alt_savepoint.is_valid = false;
-    linebuf_clear(self->linebuf, BLANK_CHAR);
-    historybuf_clear(self->historybuf);
-    clear_hyperlink_pool(self->hyperlink_pool);
-    grman_clear(self->main_grman, false, self->cell_size);  // dont delete images in scrollback
-    grman_clear(self->alt_grman, true, self->cell_size);
+    if (is_hard_reset) {
+        linebuf_clear(self->linebuf, BLANK_CHAR);
+        historybuf_clear(self->historybuf);
+        clear_hyperlink_pool(self->hyperlink_pool);
+        grman_clear(self->main_grman, false, self->cell_size);  // dont delete images in scrollback
+        grman_clear(self->alt_grman, true, self->cell_size);
+    }
     self->modes = empty_modes;
     self->saved_modes = empty_modes;
     self->active_hyperlink_id = 0;
@@ -218,7 +220,17 @@ screen_reset(Screen *self) {
     screen_cursor_position(self, 1, 1);
     set_dynamic_color(self, 111, NULL);  // does default_bg_changed processing
     colorprofile_reset(self->color_profile);
-    CALLBACK("on_reset", NULL)
+    CALLBACK("on_reset", "O", is_hard_reset ? Py_True : Py_False);
+}
+
+void
+screen_reset(Screen *self) { do_screen_reset(self, true); }
+
+void
+screen_soft_reset(Screen *self) {
+    index_type x = self->cursor->x, y = self->cursor->y;
+    do_screen_reset(self, false);
+    self->cursor->x = x; self->cursor->y = y;
 }
 
 void
@@ -1209,6 +1221,7 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
 
         self->last_graphic_char = ch;
         if (UNLIKELY(self->columns < self->cursor->x + (unsigned int)char_width)) {
+            if ((unsigned)char_width > self->columns) continue;  // discard too wide character
             if (self->modes.mDECAWM) {
                 continue_to_next_line(self);
                 init_text_loop_line(self, s);
@@ -1512,6 +1525,20 @@ write_escape_code_to_child(Screen *self, unsigned char which, const char *data) 
     return written;
 }
 
+static void
+send_visibility_report(Screen *self) {
+    write_escape_code_to_child(self, ESC_CSI, self->visibility_state != 2 ? "?999;1n" : "?999;2n");
+}
+
+void
+screen_visibility_changed(Screen *self, bool potentially_visible) {
+    const uint8_t state = potentially_visible ? 1 : 2;
+    if (self->visibility_state != state) {
+        self->visibility_state = state;
+        if (self->modes.mVISIBILITY_REPORTS) send_visibility_report(self);
+    }
+}
+
 static bool
 write_escape_code_to_child_python(Screen *self, unsigned char which, PyObject *data) {
     bool written = false;
@@ -1786,6 +1813,10 @@ set_mode_from_const(Screen *self, unsigned int mode, bool val) {
         case INBAND_RESIZE_NOTIFICATION:
             self->modes.mINBAND_RESIZE_NOTIFICATION = val;
             if (val) CALLBACK("notify_child_of_resize", NULL);
+            break;
+        case VISIBILITY_REPORTS:
+            self->modes.mVISIBILITY_REPORTS = val;
+            if (val) send_visibility_report(self);
             break;
         default:
             private = mode >= 1 << 5;
@@ -2329,6 +2360,7 @@ copy_specific_mode(Screen *self, unsigned int mode, const ScreenModes *src, Scre
         SIMPLE_MODE(COLOR_PREFERENCE_NOTIFICATION)
         SIMPLE_MODE(PASTE_EVENTS)
         SIMPLE_MODE(INBAND_RESIZE_NOTIFICATION)
+        SIMPLE_MODE(VISIBILITY_REPORTS)
         SIMPLE_MODE(DECCKM)
         SIMPLE_MODE(DECTCEM)
         SIMPLE_MODE(DECAWM)
@@ -2371,6 +2403,7 @@ copy_specific_modes(Screen *self, const ScreenModes *src, ScreenModes *dest) {
     copy_specific_mode(self, FOCUS_TRACKING, src, dest);
     copy_specific_mode(self, COLOR_PREFERENCE_NOTIFICATION, src, dest);
     copy_specific_mode(self, INBAND_RESIZE_NOTIFICATION, src, dest);
+    copy_specific_mode(self, VISIBILITY_REPORTS, src, dest);
     copy_specific_mode(self, PASTE_EVENTS, src, dest);
     copy_specific_mode(self, DECCKM, src, dest);
     copy_specific_mode(self, DECTCEM, src, dest);
@@ -2925,6 +2958,9 @@ report_device_status(Screen *self, unsigned int which, bool private) {
             if (private) {
                 CALLBACK("report_color_scheme_preference", NULL);
             } break;
+        case 998: // https://rockorager.dev/misc/visibility-reports/
+            if (private) send_visibility_report(self);
+            break;
     }
 }
 
@@ -2949,6 +2985,7 @@ report_mode_status(Screen *self, unsigned int which, bool private) {
         KNOWN_MODE(BRACKETED_PASTE);
         KNOWN_MODE(FOCUS_TRACKING);
         KNOWN_MODE(COLOR_PREFERENCE_NOTIFICATION);
+        KNOWN_MODE(VISIBILITY_REPORTS);
         KNOWN_MODE(INBAND_RESIZE_NOTIFICATION);
         KNOWN_MODE(PASTE_EVENTS);
 #undef KNOWN_MODE
@@ -5057,7 +5094,7 @@ resize(Screen *self, PyObject *args) {
 
 WRAP0x(index)
 WRAP0(reverse_index)
-WRAP0(reset)
+static PyObject* reset(Screen *self, PyObject *args) { int hard = true; if (!PyArg_ParseTuple(args, "|p", &hard)) return NULL; if (hard) screen_reset(self); else screen_soft_reset(self); Py_RETURN_NONE; }
 WRAP0(set_tab_stop)
 WRAP1(clear_tab_stop, 0)
 WRAP0(reset_tab_stops)
@@ -6329,7 +6366,7 @@ static PyMethodDef methods[] = {
     MND(set_progress, METH_VARARGS)
     MND(set_mode, METH_VARARGS)
     MND(reset_mode, METH_VARARGS)
-    MND(reset, METH_NOARGS)
+    MND(reset, METH_VARARGS)
     MND(reset_dirty, METH_NOARGS)
     MND(is_using_alternate_linebuf, METH_NOARGS)
     MND(is_main_linebuf, METH_NOARGS)

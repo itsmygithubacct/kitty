@@ -179,7 +179,40 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.48.0 [future]
+
+0.48.2 [2026-07-30]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Wayland: Fix regression in previous release that broke drag and drop on Plasma (:iss:`10284`)
+
+- diff kitten: Fix a rare crash when showing a large diff due to incorrect locking when highlighting
+
+- Allow the private DCS kitty-echo escape code to only echo numbers
+
+- Linux: Fix an approx 1MB memory leak when reloading the config, introduced in version 0.40.0 (:iss:`10290`)
+
+- Desktop file chooser integration: when the specified directory does not exist, open file chooser at home directory (:iss:`10292`)
+
+- Add support for `terminal visibility reports <https://rockorager.dev/misc/visibility-reports/>`__
+
+- :opt:`tab_title_template`: Add a field that evaluates to the total memory used by all child processes in the tab (:iss:`10293`)
+
+
+0.48.1 [2026-07-24]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Wayland: fix a regression in the previous release that broke window sizing for on Hyprland/Sway with fractional scales and an initial specified size (:iss:`10268`)
+
+- Wayland: fix a regression in 0.47.3 that broke dragging on the Niri compositor (:iss:`10271`)
+
+- Wayland: get initial window size in cells working in most cases on Hyprland/Sway with fractional scaling by using the fractional scale of the primary monitor
+
+- Wayland: fix using remote control to resize OS windows on some tiling compositors leading to broken rendering
+
+- macOS: fix ``edge=none`` panel height shrinking when ``margin_top`` is non-zero in the panel/quick-access-terminal kittens (:iss:`10278`)
+
+
+0.48.0 [2026-07-18]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Kilix integration: Make temporary graphics frame paths one-shot and allow
@@ -237,6 +270,10 @@ Detailed list of changes
 - Graphics: Fix incorrect calculated cursor position when placing images with X/Y cell offsets (:pull:`10256`)
 
 - macOS: Disable macOS one time code autofill popups (:pull:`10250`)
+
+- Add support for DECSTR soft screen reset escape code (:iss:`10263`)
+
+- macOS: Fix quick-access-terminal appearing on the wrong space (the fullscreen app's space) when triggered from a different space on macOS Tahoe (:iss:`8740`)
 
 0.47.4 [2026-06-15]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

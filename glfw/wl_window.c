@@ -440,8 +440,41 @@ clipboard_mime(void) {
     return buf;
 }
 
+static GLFWwaylandinitialsizefun initial_window_size_callback = NULL;
+
+GLFWAPI void
+glfwWaylandSetInitialWindowSizeCallback(GLFWwaylandinitialsizefun callback) {
+    initial_window_size_callback = callback;
+}
+
+static void
+maybe_recompute_initial_window_size(_GLFWwindow *window) {
+    // Before the initial window is mapped, the compositor tells us the real
+    // (possibly fractional) scale. For sizes specified in cells this changes
+    // the correct logical window size, because cell metrics are not a linear
+    // function of scale (integer-pixel rounding). Ask the embedder to recompute
+    // the logical size now, while the window is still unmapped, so it is mapped
+    // at the right size and the compositor's authoritative configure agrees.
+    if (window->wl.window_fully_created) return;
+    if (!initial_window_size_callback) return;
+    if (!window->wl.xdg.toplevel) return;  // only ordinary toplevels have cell-based sizes
+    if (window->wl.layer_shell.zwlr_layer_surface_v1) return;  // layer-shell surfaces size themselves
+    double scale = _glfwWaylandWindowScale(window);
+    int w = window->wl.width, h = window->wl.height;
+    initial_window_size_callback((GLFWwindow*)window, (float)scale, (float)scale, &w, &h);
+    if (w > 0 && h > 0 && (w != window->wl.width || h != window->wl.height)) {
+        debug("Recomputed initial size of window %llu for scale %.3f: %dx%d -> %dx%d\n",
+              window->id, scale, window->wl.width, window->wl.height, w, h);
+        window->wl.width = w; window->wl.height = h;
+        window->wl.user_requested_content_size.width = w;
+        window->wl.user_requested_content_size.height = h;
+        update_regions(window);
+    }
+}
+
 static void
 apply_scale_changes(_GLFWwindow *window, bool resize_framebuffer, bool update_csd) {
+    maybe_recompute_initial_window_size(window);
     double scale = _glfwWaylandWindowScale(window);
     if (resize_framebuffer) resizeFramebuffer(window);
     _glfwInputWindowContentScale(window, (float)scale, (float)scale);
@@ -1683,6 +1716,11 @@ void _glfwPlatformSetWindowSize(_GLFWwindow* window, int width, int height)
         return;
     }
     if (width != window->wl.width || height != window->wl.height) {
+        if (window->wl.current.toplevel_states & TOPLEVEL_STATE_DOCKED) {
+            _glfwInputError(GLFW_FEATURE_UNAVAILABLE,
+                            "Wayland: Resizing of docked windows is not supported");
+            return;
+        }
         window->wl.user_requested_content_size.width = width;
         window->wl.user_requested_content_size.height = height;
         int32_t w = 0, h = 0;
@@ -3243,6 +3281,8 @@ _glfwWaylandConfirmDragSession(void) {
     }
 }
 
+static const struct wl_callback_listener drag_start_confirmation_listener;
+
 static void
 drag_start_confirmation_handle_done(void *data UNUSED, struct wl_callback *callback, uint32_t cb_data UNUSED) {
     if (callback != _glfw.wl.drag.start_confirmation) {
@@ -3252,22 +3292,63 @@ drag_start_confirmation_handle_done(void *data UNUSED, struct wl_callback *callb
     }
     _glfw.wl.drag.start_confirmation = NULL;
     wl_callback_destroy(callback);
-    if (!_glfw.wl.drag.session_confirmed) {
-        // The compositor processed start_drag before this sync callback, and
-        // an accepted start_drag synchronously produces events (pointer
-        // leave, data device enter, data source events) that are ordered
-        // before it. None arrived, so the compositor silently ignored
-        // start_drag (no active implicit grab matching the serial). Without
-        // this, the data source would never receive any event, leaking the
-        // drag state forever and orphaning the drag toplevel as a stray
-        // window.
-        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: start_drag was silently ignored by the compositor, cancelling drag");
-        cancel_drag(GLFW_DRAG_CANCELLED);
+    if (_glfw.wl.drag.session_confirmed) return;
+    // The compositor processed start_drag before this sync callback. An
+    // accepted start_drag should produce events that are ordered before this
+    // sync (pointer leave, data device enter, data source events, or drag icon
+    // wl_surface.enter). Some compositors (e.g. niri) send the confirmation
+    // event one roundtrip later than the sync. Use pointer_button_count to
+    // distinguish: if the button is still held the DND implicit grab (which
+    // sends pointer leave, resetting the count to 0) hasn't fired yet, so
+    // retry a few times. If the button has already been released (count == 0)
+    // there is no active grab and the compositor definitely ignored start_drag.
+    if (_glfw.wl.pointer_button_count > 0 && _glfw.wl.drag.sync_retries < 3) {
+        _glfw.wl.drag.sync_retries++;
+        debug_input("Drag session not yet confirmed, button still held; retrying sync (%u/3)\n",
+                    _glfw.wl.drag.sync_retries);
+        _glfw.wl.drag.start_confirmation = wl_display_sync(_glfw.wl.display);
+        if (_glfw.wl.drag.start_confirmation)
+            wl_callback_add_listener(_glfw.wl.drag.start_confirmation, &drag_start_confirmation_listener, NULL);
+        return;
     }
+    // Without this detection the data source would never receive any event,
+    // leaking the drag state forever and orphaning the drag toplevel as a
+    // stray window.
+    _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: start_drag was silently ignored by the compositor, cancelling drag");
+    cancel_drag(GLFW_DRAG_CANCELLED);
 }
 
 static const struct wl_callback_listener drag_start_confirmation_listener = {
     .done = drag_start_confirmation_handle_done,
+};
+
+static void
+drag_icon_surface_handle_enter(void *data UNUSED, struct wl_surface *surface UNUSED, struct wl_output *output UNUSED) {
+    // The compositor maps the drag icon surface to an output only when the
+    // DND session is live. Some compositors (e.g. niri) don't send a pointer
+    // leave or data device enter when accepting start_drag; this enter event
+    // on the drag icon is the only signal they provide.
+    _glfwWaylandConfirmDragSession();
+}
+
+static void
+drag_icon_surface_handle_leave(void *data UNUSED, struct wl_surface *surface UNUSED, struct wl_output *output UNUSED) {}
+
+#ifdef WL_SURFACE_PREFERRED_BUFFER_SCALE_SINCE_VERSION
+static void
+drag_icon_surface_handle_preferred_buffer_scale(void *data UNUSED, struct wl_surface *surface UNUSED, int32_t scale UNUSED) {}
+
+static void
+drag_icon_surface_handle_preferred_buffer_transform(void *data UNUSED, struct wl_surface *surface UNUSED, uint32_t transform UNUSED) {}
+#endif
+
+static const struct wl_surface_listener drag_icon_surface_listener = {
+    .enter = drag_icon_surface_handle_enter,
+    .leave = drag_icon_surface_handle_leave,
+#ifdef WL_SURFACE_PREFERRED_BUFFER_SCALE_SINCE_VERSION
+    .preferred_buffer_scale = &drag_icon_surface_handle_preferred_buffer_scale,
+    .preferred_buffer_transform = &drag_icon_surface_handle_preferred_buffer_transform,
+#endif
 };
 
 #define dr _glfw.wl.drag.data_requests[i]
@@ -3594,6 +3675,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     if (thumbnail && thumbnail->pixels) {
         _glfw.wl.drag.drag_icon = wl_compositor_create_surface(_glfw.wl.compositor);
         if (!_glfw.wl.drag.drag_icon) return ENOMEM;
+        wl_surface_add_listener(_glfw.wl.drag.drag_icon, &drag_icon_surface_listener, NULL);
         icon_buffer = createShmBuffer(thumbnail, false, true);
         if (!icon_buffer) return ENOMEM;
         if (_glfw.wl.wp_viewporter) {
@@ -3662,6 +3744,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     // event. Detect that with a sync: an accepted start_drag synchronously
     // produces events ordered before the sync callback.
     _glfw.wl.drag.session_confirmed = false;
+    _glfw.wl.drag.sync_retries = 0;
     _glfw.wl.drag.start_confirmation = wl_display_sync(_glfw.wl.display);
     if (_glfw.wl.drag.start_confirmation)
         wl_callback_add_listener(_glfw.wl.drag.start_confirmation, &drag_start_confirmation_listener, NULL);
