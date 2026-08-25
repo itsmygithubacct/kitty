@@ -2,7 +2,7 @@ module github.com/kovidgoyal/kitty
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.27.0
 
 require (
 	github.com/ALTree/bigfloat v0.2.0
