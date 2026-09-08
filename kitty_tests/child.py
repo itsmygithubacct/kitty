@@ -3,11 +3,61 @@
 
 import os
 import subprocess
+import unittest
+from io import StringIO
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from kitty.child import memory_used_by_process_tree_rooted_at
+from kitty.child import Child, memory_used_by_process_tree_rooted_at
 from kitty.constants import is_macos, kitty_exe
 
 from . import BaseTest
+
+
+@unittest.skipIf(is_macos, 'Linux cgroup accounting')
+class ChildMemoryAccountingTest(BaseTest):
+
+    def setUp(self):
+        super().setUp()
+        self.files = {
+            '/proc/100/cgroup': '0::/session\n',
+            '/proc/100/task/100/children': '101',
+            '/proc/101/task/101/children': '',
+            '/proc/100/smaps_rollup': 'Pss: 16 kB\n',
+            '/proc/101/smaps_rollup': 'Pss: 8 kB\n',
+            '/sys/fs/cgroup/session/cgroup.procs': '100\n101\n200\n',
+            '/sys/fs/cgroup/session/memory.stat': 'anon 104857600\nshmem 4096\n',
+        }
+
+    def memory(self):
+        def open_file(path, *args, **kwargs):
+            data = self.files.get(path)
+            if data is None:
+                raise FileNotFoundError(path)
+            if isinstance(data, Exception):
+                raise data
+            return StringIO(data)
+
+        with patch('builtins.open', side_effect=open_file):
+            return Child.get_memory_used_by_child(SimpleNamespace(pid=100))
+
+    def test_shared_cgroup_counts_only_the_pane_process_tree(self):
+        self.ae(self.memory(), 24 * 1024)
+
+    def test_dedicated_cgroup_retains_its_memory_accounting(self):
+        self.files['/sys/fs/cgroup/session/cgroup.procs'] = '100\n101\n'
+        self.ae(self.memory(), 104857600 + 4096)
+
+    def test_unverified_cgroup_membership_uses_the_process_tree(self):
+        for members in ('', PermissionError('unreadable membership')):
+            with self.subTest(members=members):
+                self.files['/sys/fs/cgroup/session/cgroup.procs'] = members
+                self.ae(self.memory(), 24 * 1024)
+
+    def test_missing_cgroup_files_use_the_process_tree(self):
+        for path in ('/proc/100/cgroup', '/sys/fs/cgroup/session/memory.stat'):
+            with self.subTest(path=path), patch.dict(self.files, {path: FileNotFoundError(path)}):
+                self.ae(self.memory(), 24 * 1024)
 
 
 class ChildMemoryTest(BaseTest):
