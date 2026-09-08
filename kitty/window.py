@@ -1754,7 +1754,7 @@ class Window:
     def handle_remote_echo(self, msg: memoryview) -> None:
         # This is used by the ssh kitten to flush garbage from the tty on exit
         data = base64_decode(msg)
-        if re.match(rb'\d+$', data) is None:
+        if re.fullmatch(rb'[0-9]+', data) is None:
             log_error(f'Invalid echo message received from client: {data!r}')
         else:
             self.write_to_child(data)

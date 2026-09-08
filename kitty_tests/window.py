@@ -3,6 +3,7 @@
 
 import os
 import tempfile
+from base64 import standard_b64encode
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -34,6 +35,30 @@ from kitty.window_title_bar import (
 )
 
 from . import BaseTest
+
+
+class TestRemoteEcho(BaseTest):
+
+    def test_echo_preserves_numeric_ssh_canaries(self):
+        for data in (b'0', b'1234567890', b'9' * 78):
+            with self.subTest(data=data):
+                received = []
+                Window.handle_remote_echo(
+                    SimpleNamespace(write_to_child=received.append),
+                    memoryview(standard_b64encode(data)),
+                )
+                self.ae(received, [data])
+
+    def test_echo_rejects_non_numeric_input(self):
+        for data in (b'', b'123\n', b'123\r', b'123\r\n', b'\n123',
+                     b'12\n34', b'12\t34', b'123\x1b', b'abc', b'1 2'):
+            with self.subTest(data=data), patch('kitty.window.log_error'):
+                received = []
+                Window.handle_remote_echo(
+                    SimpleNamespace(write_to_child=received.append),
+                    memoryview(standard_b64encode(data)),
+                )
+                self.ae(received, [])
 
 
 class TestWindowChrome(BaseTest):

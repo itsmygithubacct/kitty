@@ -33,6 +33,8 @@
 #include <math.h>
 #include <assert.h>
 
+static void computeXdgFractionalScale(struct _GLFWmonitor *monitor);
+
 
 static void outputHandleGeometry(void* data,
                                  struct wl_output* output UNUSED,
@@ -82,6 +84,9 @@ static void outputHandleMode(void* data,
 static void outputHandleDone(void* data, struct wl_output* output UNUSED)
 {
     struct _GLFWmonitor *monitor = data;
+    // Kilix: xdg-output v3 completes geometry updates with wl_output.done.
+    // Refresh existing monitors as well as newly connected ones.
+    computeXdgFractionalScale(monitor);
     for (int i = 0; i < _glfw.monitorCount; i++) {
         if (_glfw.monitors[i] == monitor) return;
     }

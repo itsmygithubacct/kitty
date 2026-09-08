@@ -148,14 +148,14 @@ else:
             cgroup_path = cgroup_line.split(':')[2].lstrip('/')
             cgroup_dir = os.path.join('/sys/fs/cgroup', cgroup_path)
 
-            use_cgroup = True
+            use_cgroup = not check_if_cgroup_root
             if check_if_cgroup_root:
                 with suppress(OSError):
                     with open(os.path.join(cgroup_dir, 'cgroup.procs')) as f:
                         cgroup_pids = {int(x) for x in f.read().split() if x}
                     descendants = _get_descendants_of(pid)
                     descendants.add(pid)
-                    use_cgroup = cgroup_pids <= descendants
+                    use_cgroup = pid in cgroup_pids and cgroup_pids <= descendants
 
             if use_cgroup:
                 target_keys = {'anon', 'shmem', 'kernel', 'sock', 'zswap'}
@@ -167,10 +167,10 @@ else:
                             mem_bytes += int(parts[1])
                 return mem_bytes
 
-            # cgroup contains processes outside our tree; sum PSS per process
+        # A shared or unreadable cgroup cannot establish this pane's usage.
+        with suppress(Exception):
             descendants = _get_descendants_of(pid)
-            descendants.add(pid)
-            mem_bytes = 0
+            mem_bytes = _memory_from_smaps_rollup(pid)
             for p in descendants:
                 with suppress(OSError):
                     mem_bytes += _memory_from_smaps_rollup(p)
@@ -789,4 +789,4 @@ class Child:
     def get_memory_used_by_child(self) -> int:
         if self.pid is None:
             return -1
-        return memory_used_by_process_tree_rooted_at(self.pid, check_if_cgroup_root=False)
+        return memory_used_by_process_tree_rooted_at(self.pid, check_if_cgroup_root=True)

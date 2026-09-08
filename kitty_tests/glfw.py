@@ -1,8 +1,14 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2020, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
+import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -13,6 +19,32 @@ is_macos = 'darwin' in _plat
 
 
 class TestGLFW(BaseTest):
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Wayland monitor callbacks')
+    def test_wayland_output_scale_updates(self):
+        root = Path(__file__).resolve().parents[1]
+        if not (root / 'glfw/wayland-xdg-output-unstable-v1-client-protocol.h').is_file():
+            self.skipTest('Wayland backend headers were not built')
+        compiler = shlex.split(os.environ.get('CC', 'cc'))
+        if not compiler or not shutil.which(compiler[0]):
+            self.skipTest('C compiler is unavailable')
+        flags = subprocess.run(
+            ['pkg-config', '--cflags', 'wayland-client', 'xkbcommon', 'dbus-1'],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.ae(flags.returncode, 0, flags.stderr)
+        with tempfile.TemporaryDirectory() as directory:
+            executable = str(Path(directory) / 'wayland-monitor-test')
+            build = subprocess.run(
+                [*compiler, '-D_GNU_SOURCE', '-D_GLFW_WAYLAND', '-UNDEBUG',
+                 '-ffunction-sections', '-fdata-sections', *shlex.split(flags.stdout),
+                 str(root / 'kitty_tests/wayland_monitor.c'),
+                 '-Wl,--gc-sections', '-lm', '-o', executable],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.ae(build.returncode, 0, build.stderr)
+            result = subprocess.run([executable], capture_output=True, text=True, timeout=10)
+            self.ae(result.returncode, 0, result.stderr)
 
     def test_fullscreen_state_change_relayouts_without_resize(self):
         from kitty.boss import Boss
