@@ -5,6 +5,7 @@ import subprocess
 import sys
 from typing import Any
 
+from kitty.fast_data_types import truncate_point_for_length, wcswidth
 from kitty.key_encoding import EventType, KeyEvent
 from kitty.utils import ScreenSize
 
@@ -78,12 +79,19 @@ class ChromeCard(Handler):
     @Handler.atomic_update
     def draw_screen(self) -> None:
         lines = card(self.kind)
-        width = max(38, max(map(len, lines)) + 4)
+        width = min(self.screen_size.cols, max(38, max(map(wcswidth, lines)) + 4))
+        if width < 4 or self.screen_size.rows < 3:
+            self.cmd.clear_screen()
+            return
+        lines = lines[:max(0, self.screen_size.rows - 2)]
+        inner = width - 2
+        lines = tuple(line[:truncate_point_for_length(line, inner)] for line in lines)
         left = max(0, (self.screen_size.cols - width) // 2)
         top = max(0, (self.screen_size.rows - len(lines) - 2) // 2)
         self.cmd.clear_screen()
         framed = ('╭' + '─' * (width - 2) + '╮', *(
-            '│' + line.center(width - 2) + '│' for line in lines),
+            '│' + ' ' * ((inner - wcswidth(line)) // 2) + line +
+            ' ' * ((inner - wcswidth(line) + 1) // 2) + '│' for line in lines),
             '╰' + '─' * (width - 2) + '╯')
         for row, line in enumerate(framed):
             self.cmd.set_cursor_position(left, top + row)

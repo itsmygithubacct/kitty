@@ -1484,13 +1484,14 @@ draw_cells(const WindowRenderData *srd, OSWindow *os_window, bool is_active_wind
     float current_inactive_text_alpha = use_active_window_only ?
         (is_tab_bar || is_active_window ? 1.0f : inactive_text_alpha) :
         (is_tab_bar || (!is_single_window && is_active_window) || (is_single_window && screen->cursor_render_info.is_focused) ? 1.0f : inactive_text_alpha);
-    float bg_alpha = effective_os_window_alpha(os_window);
+    const bool is_popup = window && window->is_chrome_popup;
+    float bg_alpha = is_popup ? 1.f : effective_os_window_alpha(os_window);
 
     color_type default_bg = cell_update_uniform_block(
             srd->vao_idx, screen, uniform_buffer, color_table_buffer, &screen->cursor_render_info, os_window, current_inactive_text_alpha, bg_alpha);
     set_cell_uniforms(screen->reload_all_gpu_data);
     WindowLogoRenderData *wl;
-    if (window && (wl = &window->window_logo) && wl->id && (wl->instance = find_window_logo(global_state.all_window_logos, wl->id)) && wl->instance->load_from_disk_ok) {
+    if (window && !is_popup && (wl = &window->window_logo) && wl->id && (wl->instance = find_window_logo(global_state.all_window_logos, wl->id)) && wl->instance->load_from_disk_ok) {
         if (!window->window_logo.instance->texture_id) {
             set_on_gpu_state(window->window_logo.instance, true);
         }
@@ -1504,8 +1505,8 @@ draw_cells(const WindowRenderData *srd, OSWindow *os_window, bool is_active_wind
         .screen_left = srd->geometry.left, .screen_top = srd->geometry.top,
         .full_framebuffer_width = os_window->viewport_width, .full_framebuffer_height = os_window->viewport_height,
         .window = window, .screen = screen, .os_window = os_window, .grd = grman_render_data(grman), .window_logo = wl,
-        .inactive_text_alpha = current_inactive_text_alpha, .has_background_image = has_bgimage(os_window),
-        .background_color = default_bg, .bg_alpha=effective_os_window_alpha(os_window),
+        .inactive_text_alpha = current_inactive_text_alpha, .has_background_image = !is_popup && has_bgimage(os_window),
+        .background_color = default_bg, .bg_alpha=bg_alpha,
     };
     screen->reload_all_gpu_data = false;
     save_viewport_using_top_left_origin(

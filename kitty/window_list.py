@@ -99,13 +99,13 @@ class WindowGroup:
     def serialize_state(self) -> dict[str, Any]:
         return {
             'id': self.id,
-            'windows': tuple(w.serialize_state() for w in self.windows),
+            'windows': tuple(w.serialize_state() for w in self.windows if not getattr(w, 'kilix_popup', None)),
         }
 
     def serialize_layout_state(self) -> dict[str, Any]:
         return {
             'id': self.id,
-            'window_ids': tuple(w.id for w in self.windows),
+            'window_ids': tuple(w.id for w in self.windows if not getattr(w, 'kilix_popup', None)),
         }
 
     def unserialize_layout_state(self, window_ids: Sequence[int]) -> None:
@@ -140,26 +140,28 @@ class WindowGroup:
 
     def set_geometry(self, geom: WindowGeometry) -> None:
         for w in self.windows:
-            w.set_geometry(geom)
+            if not getattr(w, 'kilix_popup', None):
+                w.set_geometry(geom)
+
+    @property
+    def layout_window(self) -> WindowType | None:
+        return next((w for w in reversed(self.windows) if not getattr(w, 'kilix_popup', None)), None)
 
     @property
     def default_bg(self) -> Color:
-        if self.windows:
-            w = self.windows[-1]
+        if (w := self.layout_window) is not None:
             return w.screen.color_profile.default_bg or get_options().background
         return get_options().background
 
     @property
     def geometry(self) -> WindowGeometry | None:
-        if self.windows:
-            w = self.windows[-1]
+        if (w := self.layout_window) is not None:
             return w.geometry
         return None
 
     @property
     def is_visible_in_layout(self) -> bool:
-        if self.windows:
-            w = self.windows[-1]
+        if (w := self.layout_window) is not None:
             return w.is_visible_in_layout
         return False
 

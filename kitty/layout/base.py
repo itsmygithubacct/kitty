@@ -391,10 +391,15 @@ class Layout:
         return False
 
     def update_visibility(self, all_windows: WindowList) -> None:
-        active_window = all_windows.active_window
-        for window, is_group_leader in all_windows.iter_windows_with_visibility():
-            is_visible = window is active_window or (is_group_leader and not self.only_active_window_visible)
-            window.set_visible_in_layout(is_visible)
+        active_group = all_windows.active_group
+        for group in all_windows.groups:
+            visible = group is active_group or not self.only_active_window_visible
+            for window in group:
+                popup = getattr(window, 'kilix_popup', None)
+                is_visible = visible and (
+                    window is group.layout_window or
+                    (window.id == group.active_window_id and popup is not None and not popup.cancelled))
+                window.set_visible_in_layout(is_visible)
 
     def _set_dimensions(self, all_windows: WindowList) -> None:
         lgd.central, tab_bar, vw, vh, lgd.cell_width, lgd.cell_height = viewport_for_window(self.os_window_id)

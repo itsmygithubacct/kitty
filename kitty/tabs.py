@@ -54,6 +54,7 @@ from .fast_data_types import (
     swap_tabs,
     sync_os_window_title,
 )
+from .kilix_chrome.popup import ChromePopup, current_popup, dismiss_popup, layout_popups
 from .layout.base import DragOverlayMode, Layout
 from .layout.interface import create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
@@ -395,13 +396,15 @@ class Tab:  # {{{
                 cwd = os.path.relpath(cwd, session_base_dir)
             return cwd
         most_common_cwd = ''
-        cwds = {w.id: make_relative(w.cwd_for_serialization) for g in groups for w in g}
+        cwds = {w.id: make_relative(w.cwd_for_serialization) for g in groups for w in g if w.kilix_popup is None}
         if cwds:
             from collections import Counter
             most_common_cwd, _ = Counter(cwds.values()).most_common(1)[0]
         for i, g in enumerate(groups):
             gw: list[str] = []
             for window in g:
+                if window.kilix_popup is not None:
+                    continue
                 if matched_windows is not None and window not in matched_windows:
                     continue
                 cwd = cwds[window.id]
@@ -449,6 +452,9 @@ class Tab:  # {{{
 
     def active_window_changed(self) -> None:
         w = self.active_window
+        if (popup := current_popup(self)) is not None and w is not popup and (
+                w is None or popup.keys_redirected_till_ready_from != w.id):
+            dismiss_popup(self, restore_focus=False)
         set_active_window(self.os_window_id, self.id, 0 if w is None else w.id)
         self.mark_tab_bar_dirty()
         self.relayout_borders()
@@ -470,6 +476,8 @@ class Tab:  # {{{
     @property
     def title(self) -> str:
         w = self.active_window
+        if w is not None and w.kilix_popup is not None:
+            w = self.windows.id_map.get(w.kilix_popup.owner_id)
         return w.title if w else appname
 
     @property
@@ -609,6 +617,7 @@ class Tab:  # {{{
                 self.windows.force_show_title_bars = self.force_show_title_bars
                 self.current_layout(self.windows)
                 self.windows.force_show_title_bars = False
+                layout_popups(self)
             self.relayout_borders()
 
     def relayout_borders(self) -> None:
@@ -868,6 +877,7 @@ class Tab:  # {{{
         next_to: Window | None = None,
         hold_after_ssh: bool = False,
         startup_command_via_shell_integration: Sequence[str] | str = (),
+        kilix_popup: ChromePopup | None = None,
     ) -> Window:
         cs = WindowCreationSpec(
             use_shell=use_shell, cmd=cmd, has_stdin=bool(stdin), override_title=override_title, cwd_from=cwd_from,
@@ -894,6 +904,11 @@ class Tab:  # {{{
             allow_remote_control=allow_remote_control, remote_control_passwords=remote_control_passwords
         )
         window.creation_spec = cs
+        if kilix_popup is not None:
+            from .fast_data_types import set_window_chrome_popup
+            kilix_popup.owner_id = overlay_for or 0
+            window.kilix_popup = kilix_popup
+            set_window_chrome_popup(self.os_window_id, self.id, window.id)
         # Must add child before laying out so that resize_pty succeeds
         get_boss().add_child(window)
         self._add_window(window, location=location, overlay_for=overlay_for, overlay_behind=overlay_behind, bias=bias, next_to=next_to)
@@ -914,6 +929,7 @@ class Tab:  # {{{
             remote_control_passwords: dict[str, Sequence[str]] | None = None,
             pass_fds: tuple[int, ...] = (),
             remote_control_fd: int = -1,
+            kilix_popup: ChromePopup | None = None,
     ) -> Window:
         return self.new_window(
             use_shell=False, cmd=special_window.cmd, stdin=special_window.stdin,
@@ -922,6 +938,7 @@ class Tab:  # {{{
             env=special_window.env, location=location, copy_colors_from=copy_colors_from,
             allow_remote_control=allow_remote_control, watchers=special_window.watchers, overlay_behind=special_window.overlay_behind,
             hold=special_window.hold, remote_control_passwords=remote_control_passwords, pass_fds=pass_fds, remote_control_fd=remote_control_fd,
+            kilix_popup=kilix_popup,
         )
 
     @ac('win', 'Close all windows in the tab other than the currently active window')
@@ -1422,6 +1439,8 @@ class TabManager:  # {{{
         return count < 1
 
     def _set_active_tab(self, idx: int, store_in_history: bool = True) -> None:
+        if idx != self.active_tab_idx and (tab := self.active_tab) is not None:
+            dismiss_popup(tab)
         if store_in_history:
             self.active_tab_idx = idx
         else:
@@ -1929,6 +1948,10 @@ class TabManager:  # {{{
             return
 
         tab_action = self.tab_bar.action_at(int(x), int(y))
+        if action == GLFW_PRESS:
+            from .kilix_chrome.registry import GESTURE_ACTIONS, START_MENU_ACTION
+            if tab_action not in GESTURE_ACTIONS and tab_action != START_MENU_ACTION and (tab := self.active_tab) is not None:
+                dismiss_popup(tab)
         if tab_action is not None:
             self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, -2)
             drag_started = get_tab_being_dragged()[1]

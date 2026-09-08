@@ -264,6 +264,7 @@ typedef struct DragRemoteItem {
 typedef struct Window {
     id_type id;
     bool visible;
+    bool is_chrome_popup;
     PyObject *title;
     WindowRenderData render_data;
     WindowRenderData window_title_render_data;
@@ -448,6 +449,7 @@ typedef struct OSWindow {
     bool has_received_cursor_pos_event;
     double mouse_x, mouse_y;
     bool mouse_button_pressed[32];
+    uint32_t chrome_popup_dismiss_buttons;
     bool has_too_few_tabs;
     PyObject *window_title;
     bool disallow_title_changes, title_is_overriden;

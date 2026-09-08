@@ -1009,11 +1009,31 @@ typedef struct MouseRegion {
     Window *window;
 } MouseRegion;
 
+static Window*
+chrome_popup_for_os_window(const OSWindow *osw, unsigned int *idx) {
+    if (osw->num_tabs) {
+        Tab *tab = osw->tabs + osw->active_tab;
+        for (unsigned int i = tab->num_windows; i > 0; i--) {
+            Window *window = tab->windows + i - 1;
+            if (window->is_chrome_popup && window->visible && window->render_data.screen) {
+                if (idx) *idx = i - 1;
+                return window;
+            }
+        }
+    }
+    return NULL;
+}
+
 static MouseRegion
 mouse_region(bool detect_borders, bool detect_title_bar) {
     MouseRegion ans = {0};
     Region central, tab_bar;
     const OSWindow* w = global_state.callback_os_window;
+    Window *popup = chrome_popup_for_os_window(w, &ans.window_idx);
+    if (popup && contains_mouse(popup)) {
+        ans.window = popup;
+        return ans;
+    }
     const bool detect_visible_title_bar = detect_title_bar && !is_os_window_fullscreen(w);
     os_window_regions(w, &central, &tab_bar);
     const bool in_central = mouse_in_region(&central);
@@ -1194,6 +1214,8 @@ enter_event(int modifiers, bool cursor_moved) {
     if (global_state.redirect_mouse_handling || global_state.active_drag_in_window || global_state.tracked_drag_in_window) return;
     MouseRegion r = mouse_region(false, false);
     Window *w = r.window;
+    Window *popup = chrome_popup_for_os_window(global_state.callback_os_window, NULL);
+    if (popup && popup != w) return;
     set_currently_hovered_window(w ? w->id : 0, modifiers, cursor_moved);
     if (!w || r.in_tab_bar || r.in_title_bar) return;
 
@@ -1291,6 +1313,10 @@ mouse_event(const int button, int modifiers, int action) {
     MouseShape old_cursor = mouse_cursor_shape;
     unsigned int window_idx = 0;
     Window *w = NULL; OSWindow *osw = global_state.callback_os_window;
+    if (button >= 0 && button < 32 && (osw->chrome_popup_dismiss_buttons & (1u << button))) {
+        if (action == GLFW_RELEASE) osw->chrome_popup_dismiss_buttons &= ~(1u << button);
+        return;
+    }
 
     // A fullscreen transition can happen between a title-bar press and the
     // following motion/release. Do not keep dispatching a drag to chrome that
@@ -1384,6 +1410,14 @@ mouse_event(const int button, int modifiers, int action) {
         return;
     }
     MouseRegion r = mouse_region(true, true);
+    Window *popup = chrome_popup_for_os_window(osw, NULL);
+    if (popup && r.window != popup && !r.in_tab_bar) {
+        if (button >= 0 && button < 32 && action == GLFW_PRESS) {
+            osw->chrome_popup_dismiss_buttons |= 1u << button;
+            call_boss(kilix_dismiss_popup, "K", osw->id);
+        }
+        return;
+    }
     w = r.window; window_idx = r.window_idx;
     set_currently_hovered_window(w && !r.window_border && !r.in_title_bar ? w->id : 0, modifiers, true);
 
@@ -1546,6 +1580,8 @@ scroll_event(const GLFWScrollEvent *ev) {
     }
     MouseRegion r = mouse_region(false, true);
     Window *w = r.window;
+    Window *popup = chrome_popup_for_os_window(osw, NULL);
+    if (popup && popup != w) return;
     if (!w && !r.in_tab_bar) {
         // fallback to last active window
         Tab *t = osw->tabs + osw->active_tab;

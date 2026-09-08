@@ -134,6 +134,7 @@ from .fast_data_types import (
 )
 from .key_encoding import get_name_to_functional_number_map
 from .keys import Mappings
+from .kilix_chrome.popup import ChromePopup
 from .layout.base import set_layout_options
 from .notifications import NotificationManager
 from .options.types import Options, nullable_colors
@@ -1315,6 +1316,7 @@ class Boss:
         unhide_key: str = 'u',  # key to press to unhide hidden text
         title: str = '', # window title
         name: str = '',  # optional presentation/history identity
+        kilix_popup: 'ChromePopup | None' = None,
     ) -> Window | None:
         result: str = ''
 
@@ -1344,7 +1346,7 @@ class Boss:
 
         ans = self.run_kitten_with_metadata(
             'ask', cmd, window=window, custom_callback=callback_, input_data=input_data, default_data={'response': ''},
-            action_on_removal=on_popup_overlay_removal
+            action_on_removal=on_popup_overlay_removal, kilix_popup=kilix_popup,
         )
         if isinstance(ans, Window):
             return ans
@@ -1386,13 +1388,24 @@ class Boss:
         window = self.window_for_dispatch or self.active_window
         if window is None:
             return
-        self._kilix_start_main(window)
+        from .kilix_chrome.popup import popup_target
+        if (window := popup_target(window, 'kilix_show_start_menu')) is not None:
+            self._kilix_start_main(window)
+
+    def kilix_dismiss_popup(self, os_window_id: int) -> None:
+        from .kilix_chrome.popup import dismiss_popup
+        if (manager := self.os_window_map.get(os_window_id)) is not None and (tab := manager.active_tab) is not None:
+            dismiss_popup(tab)
 
     @ac('misc', 'Open the Start menu owned by Kilix or the active desktop')
     def kilix_windows_key(self) -> None:
         """Route the Windows/Super key without stealing it from a desktop."""
         window = self.window_for_dispatch or self.active_window
         if window is None:
+            return
+        from .kilix_chrome.popup import current_popup, dismiss_popup
+        if (tab := window.tabref()) is not None and current_popup(tab) is not None:
+            dismiss_popup(tab)
             return
         if kilix_desktop_owns_start_menu(window):
             # Both Kilix 95 and IceWM define Ctrl+Escape as their portable
@@ -1423,9 +1436,12 @@ class Boss:
         # terminal colours so the menu stays crisp at every scale.
         banner = f'\x1b[48;2;52;101;164m\x1b[38;2;255;255;255m  {title}  \x1b[0m\n'
         edge = 'down' if get_options().tab_bar_edge == TOP_EDGE else 'up'
+        from .fast_data_types import wcswidth
+        columns = max(12, wcswidth(title) + 2, *(wcswidth(c.partition(':')[2]) + 4 for c in choices))
         self.choose(
             banner, dispatch, *choices, window=window, title=title,
             name=f'kilix-start-{edge}',
+            kilix_popup=ChromePopup('kilix_show_start_menu', columns, len(choices) + 3),
         )
 
     def _kilix_start_main(self, window: 'Window') -> None:
@@ -2304,6 +2320,8 @@ class Boss:
         return consumed
 
     def on_focus(self, os_window_id: int, focused: bool) -> None:
+        if not focused:
+            self.kilix_dismiss_popup(os_window_id)
         tm = self.os_window_map.get(os_window_id)
         if tm is not None:
             w = tm.active_window
@@ -2711,7 +2729,8 @@ class Boss:
         window: Window | None = None,
         custom_callback: Callable[[dict[str, Any], int, 'Boss'], None] | None = None,
         action_on_removal: Callable[[int, 'Boss'], None] | None = None,
-        default_data: dict[str, Any] | None = None
+        default_data: dict[str, Any] | None = None,
+        kilix_popup: 'ChromePopup | None' = None,
     ) -> Any:
         from kittens.runner import CLIOnlyKitten, KittenMetadata, create_kitten_handler
         is_wrapped = kitten in wrapped_kitten_names()
@@ -2793,6 +2812,7 @@ class Boss:
                         overlay_behind=end_kitten.has_ready_notification,
                     ),
                     copy_colors_from=w, remote_control_fd=remote_control_fd,
+                    kilix_popup=kilix_popup,
                 )
             finally:
                 if end_kitten.allow_remote_control:
@@ -2821,6 +2841,8 @@ class Boss:
         source_window: Window,
         default_data: dict[str, Any] | None = None
     ) -> None:
+        if source_window.kilix_popup is not None and source_window.kilix_popup.cancelled:
+            return
         data, source_window.kitten_result = source_window.kitten_result, None
         if data is None:
             data = default_data

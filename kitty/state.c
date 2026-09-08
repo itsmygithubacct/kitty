@@ -1234,6 +1234,15 @@ PYWRAP1(set_window_render_data) {
 #undef S
 }
 
+PYWRAP1(set_window_chrome_popup) {
+    id_type os_window_id, tab_id, window_id;
+    PA("KKK", &os_window_id, &tab_id, &window_id);
+    WITH_WINDOW(os_window_id, tab_id, window_id);
+        window->is_chrome_popup = true;
+    END_WITH_WINDOW;
+    Py_RETURN_NONE;
+}
+
 PYWRAP1(update_window_visibility) {
     id_type os_window_id, tab_id, window_id;
     int visible;
@@ -1859,6 +1868,7 @@ static PyMethodDef module_methods[] = {
     MW(set_tab_bar_render_data, METH_VARARGS),
     MW(set_window_title_bar_render_data, METH_VARARGS),
     MW(set_window_render_data, METH_VARARGS),
+    MW(set_window_chrome_popup, METH_VARARGS),
     MW(set_window_drag_overlay, METH_VARARGS),
     MW(set_window_padding, METH_VARARGS),
     MW(viewport_for_window, METH_VARARGS),

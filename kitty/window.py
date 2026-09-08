@@ -99,6 +99,7 @@ from .fast_data_types import (
     wakeup_main_loop,
 )
 from .keys import keyboard_mode_name, mod_mask
+from .kilix_chrome.popup import ChromePopup
 from .notifications import NotificationManager
 from .options.types import Options
 from .progress import Progress
@@ -708,6 +709,7 @@ global_watchers = GlobalWatchers()
 
 
 class Window:
+    kilix_popup: ChromePopup | None = None
     window_custom_type: str = ''
     overlay_type = OverlayType.transient
     initial_ignore_focus_changes: bool = False
@@ -846,6 +848,8 @@ class Window:
         return pt_to_px(q, self.os_window_id)
 
     def effective_padding(self, edge: EdgeLiteral) -> int:
+        if self.kilix_popup is not None:
+            return 0
         q = getattr(self.padding, edge)
         if q is not None:
             return pt_to_px(q, self.os_window_id)
@@ -1158,7 +1162,7 @@ class Window:
             update_ime_position_for_window(self.id, True)
 
     def should_show_title_bar(self, geometry: WindowGeometry) -> bool:
-        return self.show_title_bar and geometry.ynum > 1 and not is_os_window_fullscreen(self.os_window_id)
+        return self.kilix_popup is None and self.show_title_bar and geometry.ynum > 1 and not is_os_window_fullscreen(self.os_window_id)
 
     def update_title_bar(self, is_active: bool = False) -> None:
         if (pts := self._title_bar_screen) is None:
@@ -1781,6 +1785,8 @@ class Window:
         self.kitten_result_processors.append(callback)
 
     def handle_overlay_ready(self, msg: memoryview) -> None:
+        if self.kilix_popup is not None and self.kilix_popup.cancelled:
+            return
         tab = self.tabref()
         if tab is not None:
             tab.move_window_to_top_of_group(self)

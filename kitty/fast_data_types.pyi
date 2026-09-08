@@ -956,6 +956,8 @@ class Region:
     def __init__(self, x: Tuple[int, int, int, int, int, int]):
         pass
 
+def set_window_chrome_popup(os_window_id: int, tab_id: int, window_id: int) -> None: ...
+
 def viewport_for_window(os_window_id: int) -> Tuple[Region, Region, int, int, int, int]:
     pass
 

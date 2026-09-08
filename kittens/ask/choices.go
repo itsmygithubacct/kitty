@@ -19,6 +19,15 @@ import (
 
 var _ = fmt.Print
 
+// Keep keyboard-selected entries reachable when the viewport is shorter than
+// a menu. The title and two border rows never scroll into the terminal history.
+func kilixMenuVisibleChoices(selected, count, rows int) (first, last int) {
+	visible := max(0, rows-3)
+	first = max(0, min(selected-visible+1, count-visible))
+	last = min(count, first+visible)
+	return
+}
+
 type Choice struct {
 	text          string
 	idx           int
@@ -154,14 +163,14 @@ func GetChoices(o *Options) (response string, err error) {
 
 	draw_kilix_menu := func(y, screen_width, screen_height int) {
 		clickable_ranges = map[string][]Range{}
-		panel_width := 12
+		panel_width := max(12, wcswidth.Stringwidth(o.Title)+2)
 		for _, choice := range choice_order {
 			// Two border cells and one padding cell on either side. The old
 			// +2 measurement reserved +4 while drawing, clipping the longest
 			// label by exactly two characters.
 			panel_width = max(panel_width, wcswidth.Stringwidth(choice.text)+4)
 		}
-		panel_width = min(panel_width, max(4, screen_width-1))
+		panel_width = min(panel_width, max(4, screen_width))
 		// Match the shipped clickable chrome: dark inactive-tab surface,
 		// Tango blue frame/selection, and high-contrast white labels.
 		border := "\x1b[38;2;52;101;164m\x1b[48;2;46;52;54m"
@@ -173,7 +182,9 @@ func GetChoices(o *Options) (response string, err error) {
 		lp.QueueWriteString("\x1b[48;2;52;101;164m\x1b[38;2;255;255;255m" +
 			title + strings.Repeat(" ", max(0, panel_width-wcswidth.Stringwidth(title))) + "\x1b[0m\r\n")
 		lp.QueueWriteString(border + "┌" + strings.Repeat("─", panel_width-2) + "┐\x1b[0m\r\n")
-		for i, choice := range choice_order {
+		first, last := kilixMenuVisibleChoices(selected_choice, len(choice_order), screen_height)
+		for i := first; i < last; i++ {
+			choice := choice_order[i]
 			selected := i == selected_choice
 			palette := "\x1b[38;2;255;255;255m\x1b[48;2;46;52;54m"
 			accelerator := "\x1b[38;2;114;159;207m\x1b[48;2;46;52;54m\x1b[1m"
@@ -190,7 +201,7 @@ func GetChoices(o *Options) (response string, err error) {
 			}
 			row := border + "│" + palette + " " + label + strings.Repeat(" ", max(0, panel_width-3-plain_width)) + border + "│\x1b[0m"
 			lp.QueueWriteString(row)
-			row_y := y + i + 2
+			row_y := y + i - first + 2
 			clickable_ranges[choice.letter] = []Range{{0, panel_width - 1, row_y}}
 			if row_y+1 < screen_height {
 				lp.QueueWriteString("\r\n")
@@ -381,6 +392,12 @@ func GetChoices(o *Options) (response string, err error) {
 			return err
 		}
 		if is_kilix_menu {
+			if sz.HeightCells < 4 || sz.WidthCells < 4 {
+				clickable_ranges = map[string][]Range{}
+				lp.MoveCursorTo(1, 1)
+				lp.QueueWriteString("Esc")
+				return nil
+			}
 			height := len(choice_order) + 3
 			y := 0
 			if strings.HasSuffix(o.Name, "-up") {

@@ -59,6 +59,9 @@ class TestTabBar(BaseTest):
         class Window:
             child = Child()
 
+            def tabref(self):
+                return None
+
             def send_key(self, key: str) -> None:
                 self.sent = key
 
@@ -82,6 +85,9 @@ class TestTabBar(BaseTest):
 
         class Window:
             child = Child()
+
+            def tabref(self):
+                return None
 
         window = Window()
         self.assertFalse(kilix_desktop_owns_start_menu(window))

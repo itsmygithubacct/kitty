@@ -804,7 +804,7 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
                 *active_window_id = w->id;
                 if (collect_cursor_info(&WD.screen->cursor_render_info, w, now, os_window)) needs_render = true;
                 WD.screen->cursor_render_info.is_focused = os_window->is_focused;
-                set_os_window_title_from_window(w, os_window);
+                if (!w->is_chrome_popup) set_os_window_title_from_window(w, os_window);
                 *active_window_bg = window_bg;
                 if (OPT(cursor_trail)) {
                     if (os_window->last_active_tab != os_window->active_tab && os_window->last_active_tab < os_window->num_tabs) {
@@ -909,8 +909,11 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
     unsigned int num_of_visible_windows = 0;
     Window *active_window = NULL;
     for (unsigned int i = 0; i < tab->num_windows; i++) { if (tab->windows[i].visible) num_of_visible_windows++; }
-    for (unsigned int i = 0; i < tab->num_windows; i++) {
+    // Chrome popups have viewport geometry and must cover every pane, even
+    // after a pane reorder changes their position in the window array.
+    for (unsigned int popup_pass = 0; popup_pass < 2; popup_pass++) for (unsigned int i = 0; i < tab->num_windows; i++) {
         Window *w = tab->windows + i;
+        if (w->is_chrome_popup != (bool)popup_pass) continue;
         if (w->visible && WD.screen) {
             bool is_active_window = i == tab->active_window;
             if (is_active_window) active_window = w;

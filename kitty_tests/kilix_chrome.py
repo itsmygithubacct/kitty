@@ -51,11 +51,13 @@ class TestKilixChrome(BaseTest):
         calls: list[dict[str, object]] = []
 
         class Tab:
+            windows = ()
             def new_window(self, **kwargs: object) -> None:
                 calls.append(kwargs)
 
         class Window:
             id = 17
+            kilix_popup = None
 
             def tabref(self) -> Tab:
                 return Tab()
@@ -70,6 +72,8 @@ class TestKilixChrome(BaseTest):
                    side_effect=lambda mode: ['kilix-volume', mode]):
             for gesture in ('single', 'double', 'right'):
                 self.assertTrue(dispatch(Manager(), VOLUME_WIDGET_ACTION, gesture))
+        popups = [call.pop('kilix_popup') for call in calls]
+        self.assertTrue(all(popup.action.startswith(VOLUME_WIDGET_ACTION + ':') for popup in popups))
         self.ae(calls, [
             {'use_shell': False, 'cmd': ['kilix-volume', 'compact'],
              'override_title': 'Volume', 'overlay_for': 17},
