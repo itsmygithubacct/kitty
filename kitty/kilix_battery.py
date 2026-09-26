@@ -304,6 +304,8 @@ def battery_segment() -> tuple[str, str, int] | None:
     if info is None:
         return None
     glyph = _battery_glyph(info.percent)
+    if info.status == 'charging':
+        glyph += ' ' + chr(0xf0e7)  # bolt, using the same icon font as the battery
     if _BATTERY_SHOW_PERCENT:
         percent = '  ?' if info.percent is None else f'{info.percent:3d}'
         text = f' {percent}% {glyph} '

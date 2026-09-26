@@ -8,6 +8,34 @@ from . import BaseTest
 
 
 class TestBatteryVisibility(BaseTest):
+    def test_charging_bolt_in_both_display_modes(self):
+        for show_percent in (True, False):
+            for percent in (None, 0, 40, 99):
+                for status in ('charging', 'discharging', 'not charging', 'unknown'):
+                    with self.subTest(show_percent=show_percent, percent=percent, status=status), \
+                            patch.object(battery, '_BATTERY_SHOW_PERCENT', show_percent), \
+                            patch.object(battery, 'battery_info', return_value=battery.BatteryInfo(percent, status)):
+                        text, action, color = battery.battery_segment()
+                        self.ae(chr(0xf0e7) in text, status == 'charging')
+                        self.assertIn(battery._battery_glyph(percent), text)
+                        self.ae('%' in text, show_percent)
+                        self.ae(action, battery.BATTERY_TOGGLE_ACTION)
+                        self.ae(color, battery._battery_color(percent))
+
+    def test_charging_transition_refreshes_at_same_percentage(self):
+        with patch.object(battery, '_BATTERY_LAST_SIGNATURE', (40, 'discharging')), \
+                patch.object(battery, '_BATTERY_CACHE_UNTIL', 0), \
+                patch.object(battery, 'battery_info') as info, \
+                patch.object(battery, '_invalidate_all_chrome') as invalidate:
+            for status in ('charging', 'discharging'):
+                info.return_value = battery.BatteryInfo(40, status)
+                battery._battery_timer()
+                invalidate.assert_called_once_with()
+                self.ae(chr(0xf0e7) in battery.battery_segment()[0], status == 'charging')
+                invalidate.reset_mock()
+                battery._battery_timer()
+                invalidate.assert_not_called()
+
     def test_charging_idle_unknown_and_live_full_transitions(self):
         with TemporaryDirectory() as tmp, patch.dict(os.environ, {'KILIX_BATTERY_SUPPLY_DIR': tmp}), patch.object(battery, 'chrome_enabled', return_value=True):
             pack = Path(tmp) / 'BAT0'
