@@ -4,6 +4,7 @@
 import calendar
 import sys
 from datetime import datetime
+from kitty.kilix_chrome.providers import local_now
 from typing import Any
 
 from kitty.key_encoding import EventType, KeyEvent
@@ -111,7 +112,7 @@ class ClockWidget(Handler):
 
     def __init__(self, mode: str) -> None:
         self.mode = mode
-        now = datetime.now().astimezone()
+        now = local_now()
         self.year, self.month = now.year, now.month
         self._timer: Any = None
 
@@ -135,7 +136,7 @@ class ClockWidget(Handler):
 
     @Handler.atomic_update
     def draw_screen(self) -> None:
-        now = datetime.now().astimezone()
+        now = local_now()
         lines = (
             calendar_card(now, self.year, self.month)
             if self.mode == 'calendar' else date_card(now)
@@ -157,7 +158,7 @@ class ClockWidget(Handler):
         self.draw_screen()
 
     def _show_today(self) -> None:
-        now = datetime.now().astimezone()
+        now = local_now()
         self.year, self.month = now.year, now.month
         self.draw_screen()
 

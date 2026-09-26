@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import datetime
 
 from ..utils import which
 from .settings import chrome_enabled, chrome_value
@@ -37,14 +38,22 @@ def network_segment() -> tuple[str, str] | None:
             if chrome_enabled('KILIX_CHROME_NETWORK') else None)
 
 
+def local_now() -> datetime:
+    # Refresh libc's timezone cache after a user changes the system timezone.
+    # TZ, when supplied by the user's session, retains its usual precedence.
+    if hasattr(time, 'tzset'):
+        time.tzset()
+    return datetime.now().astimezone()
+
+
 def clock_segment() -> str | None:
     if not chrome_enabled('KILIX_CHROME_CLOCK'):
         return None
     fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%Y-%m-%d %H:%M') or '%Y-%m-%d %H:%M'
     try:
-        text = time.strftime(fmt)
+        text = local_now().strftime(fmt)
     except Exception:
-        text = time.strftime('%Y-%m-%d %H:%M')
+        text = local_now().strftime('%Y-%m-%d %H:%M')
     return f' {text} '
 
 

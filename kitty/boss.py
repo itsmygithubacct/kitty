@@ -1150,6 +1150,34 @@ class Boss:
         if original_tab is not None and original_tab in tm:
             tm.set_active_tab(original_tab)
 
+    @ac('win', 'Open the clicked pane\'s saved session log in a new tab')
+    def kilix_show_pane_log(self) -> None:
+        from .pty_broker import valid_session_id
+        window = self.window_for_dispatch or self.active_window
+        if window is None:
+            return
+        session_id = window.child.pty_broker_session_id
+        if not valid_session_id(session_id):
+            self.show_error(_('Pane log unavailable'), _(
+                'This pane has no recorded session. Enable pane session logging '
+                'in Settings before starting a new pane.'))
+            return
+        launcher = os.path.join(os.environ.get('KILIX_HOME', ''), 'kilix')
+        if not os.path.isabs(launcher) or not os.access(launcher, os.X_OK):
+            launcher = which('kilix') or ''
+        if not launcher:
+            self.show_error(_('Pane log unavailable'), _('The Kilix launcher could not be found.'))
+            return
+        env = {'KITTY_PTY_BROKER_BYPASS': '1'}
+        directory = window.child.final_env.get('KITTY_PTY_BROKER_TRANSCRIPT_DIR', '')
+        if directory:
+            env['KILIX_TRANSCRIPT_DIR'] = directory
+        tm = self.os_window_map.get(window.os_window_id)
+        if tm is not None:
+            tm.new_tab(special_window=SpecialWindow(
+                [launcher, 'transcript', 'view', session_id],
+                override_title=f'Log: {window.title}', env=env), as_neighbor=True)
+
     @ac('win', 'Close the currently active window')
     def close_window(self) -> None:
         self.mark_window_for_close(self.window_for_dispatch)

@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 
 import os
+import time
+from datetime import datetime, timezone
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +18,21 @@ from . import BaseTest
 
 
 class TestKilixChrome(BaseTest):
+
+    def test_clock_uses_pacific_timezone_and_dst_without_restart(self) -> None:
+        from kitty.kilix_chrome import providers
+        try:
+            for month, expected in ((1, '12:00 PST'), (7, '13:00 PDT')):
+                with patch.dict(os.environ, {'TZ': 'America/Los_Angeles'}), \
+                        patch.object(providers, 'datetime') as clock, \
+                        patch.object(providers, 'chrome_enabled', return_value=True), \
+                        patch.object(providers, 'chrome_value', return_value='%H:%M %Z'):
+                    clock.now.return_value = datetime(2026, month, 15, 20, tzinfo=timezone.utc)
+                    self.ae(providers.clock_segment(), f' {expected} ')
+            with patch.dict(os.environ, {'TZ': 'UTC'}):
+                self.ae(providers.local_now().utcoffset().total_seconds(), 0)
+        finally:
+            time.tzset()
 
     def test_settings_file_is_authoritative_and_reloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

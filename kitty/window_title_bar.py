@@ -240,6 +240,7 @@ class WindowTitleBarScreen:
                 data.pane_cpu_text, data.pane_memory_text)
             candidates = (
                 (None, resource_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # CPU load · shared chip · pane RAM
+                ('KILIX_CHROME_BUTTON_LOG', f' {chr(0xf0219)} ', 'kilix_show_pane_log', None),  # full saved pane log in a new tab
                 ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ', 'kilix_toggle_synchronized_input', None),  # join/leave synchronized keyboard input
                 ('KILIX_CHROME_BUTTON_FONT_INCREASE', ' + ', 'change_font_size current +2.0', None),  # increase font size for this kilix window
                 ('KILIX_CHROME_BUTTON_FONT_DECREASE', ' - ', 'change_font_size current -2.0', None),  # decrease font size for this kilix window

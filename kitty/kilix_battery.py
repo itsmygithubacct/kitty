@@ -21,7 +21,7 @@ from .kilix_chrome.lifecycle import (
 
 
 class BatteryInfo(NamedTuple):
-    percent: int
+    percent: int | None
     status: str
 
 
@@ -43,7 +43,7 @@ _THERMAL_REFRESH_SECONDS = 5.0
 _BATTERY_SHOW_PERCENT = True
 _BATTERY_CACHE: BatteryInfo | None = None
 _BATTERY_CACHE_UNTIL = 0.0
-_BATTERY_LAST_SIGNATURE: tuple[int, str] | None = None
+_BATTERY_LAST_SIGNATURE: tuple[int | None, str] | None = None
 _BATTERY_TIMER_STARTED = False
 _BATTERY_CACHE_SECONDS = 10.0
 _BATTERY_REFRESH_SECONDS = 30.0
@@ -210,6 +210,10 @@ def _iter_battery_dirs() -> list[str]:
         if not os.path.isdir(path):
             continue
         typ = _read_text(os.path.join(path, 'type')).lower()
+        if _read_text(os.path.join(path, 'present')) == '0':
+            continue
+        if _read_text(os.path.join(path, 'scope')).lower() == 'device':
+            continue
         if typ == 'battery' or (not typ and name.startswith(('BAT', 'CMB'))):
             ans.append(path)
     return ans
@@ -224,7 +228,8 @@ def _read_charge_pair(path: str) -> tuple[float, float] | None:
     ):
         cur = _read_number(os.path.join(path, cur_name))
         full = _read_number(os.path.join(path, full_name))
-        if cur is not None and full and full > 0:
+        if (cur is not None and full is not None and math.isfinite(cur)
+                and math.isfinite(full) and full > 0 and 0 <= cur <= full):
             return cur, full
     return None
 
@@ -232,28 +237,31 @@ def _read_charge_pair(path: str) -> tuple[float, float] | None:
 def _read_battery_info_uncached() -> BatteryInfo | None:
     if not chrome_enabled('KILIX_CHROME_BATTERY'):
         return None
-    total_now = total_full = 0.0
     capacities: list[float] = []
     statuses: list[str] = []
+    unknown = False
     for path in _iter_battery_dirs():
-        status = _read_text(os.path.join(path, 'status'))
+        status = _read_text(os.path.join(path, 'status')).lower()
         statuses.append(status)
-        pair = _read_charge_pair(path)
-        if pair is not None:
-            cur, full = pair
-            total_now += cur
-            total_full += full
-        elif (cap := _read_number(os.path.join(path, 'capacity'))) is not None:
+        cap = _read_number(os.path.join(path, 'capacity'))
+        if cap is not None and math.isfinite(cap) and 0 <= cap <= 100:
             capacities.append(cap)
-    if not any(s.lower() == 'discharging' for s in statuses):
+        elif (pair := _read_charge_pair(path)) is not None:
+            cur, full = pair
+            capacities.append(cur * 100 / full)
+        else:
+            unknown = True
+    if not statuses:
         return None
-    if total_full > 0:
-        pct = round(total_now * 100 / total_full)
-    elif capacities:
-        pct = round(sum(capacities) / len(capacities))
-    else:
+    # Never hide a partly charged or unreadable battery behind another full one.
+    if not unknown and all(cap == 100 for cap in capacities):
         return None
-    return BatteryInfo(max(0, min(100, int(pct))), 'discharging')
+    status = ('discharging' if 'discharging' in statuses else
+              'charging' if 'charging' in statuses else
+              statuses[0] if len(set(statuses)) == 1 else 'mixed')
+    # Percentages avoid adding incompatible energy and charge units across packs.
+    percent = None if unknown else min(99, int(sum(capacities) / len(capacities)))
+    return BatteryInfo(percent, status or 'unknown')
 
 
 def battery_info() -> BatteryInfo | None:
@@ -265,11 +273,13 @@ def battery_info() -> BatteryInfo | None:
     return _BATTERY_CACHE
 
 
-def _battery_signature(info: BatteryInfo | None) -> tuple[int, str] | None:
+def _battery_signature(info: BatteryInfo | None) -> tuple[int | None, str] | None:
     return None if info is None else (info.percent, info.status)
 
 
-def _battery_color(percent: int) -> int:
+def _battery_color(percent: int | None) -> int:
+    if percent is None:
+        return _THERMAL_UNKNOWN
     if percent <= 20:
         return _BATTERY_LOW
     if percent <= 50:
@@ -277,7 +287,9 @@ def _battery_color(percent: int) -> int:
     return _BATTERY_HIGH
 
 
-def _battery_glyph(percent: int) -> str:
+def _battery_glyph(percent: int | None) -> str:
+    if percent is None:
+        return chr(0xf0091)  # battery unknown
     if percent < 10:
         return chr(0xf0083)  # battery alert
     if percent >= 95:
@@ -293,7 +305,8 @@ def battery_segment() -> tuple[str, str, int] | None:
         return None
     glyph = _battery_glyph(info.percent)
     if _BATTERY_SHOW_PERCENT:
-        text = f' {info.percent:3d}% {glyph} '
+        percent = '  ?' if info.percent is None else f'{info.percent:3d}'
+        text = f' {percent}% {glyph} '
     else:
         text = f' {glyph} '
     return text, BATTERY_TOGGLE_ACTION, _battery_color(info.percent)

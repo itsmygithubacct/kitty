@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import stat
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from kitty.boss import Boss
 from kitty.child import Child
@@ -23,6 +23,32 @@ from . import BaseTest
 
 
 class TestPtyBrokerIntegration(BaseTest):
+
+    def test_log_button_uses_clicked_pane_and_opens_a_separate_tab(self) -> None:
+        boss = object.__new__(Boss)
+        child = type('Child', (), {
+            'pty_broker_session_id': 'clicked-pane',
+            'final_env': {'KITTY_PTY_BROKER_TRANSCRIPT_DIR': '/private/pane logs'},
+        })()
+        window = type('Window', (), {
+            'child': child, 'os_window_id': 7, 'title': 'source pane',
+        })()
+        manager = Mock()
+        boss.os_window_map = {7: manager}
+        boss.window_for_dispatch = window
+        with patch('kitty.boss.os.access', return_value=False), patch('kitty.boss.which', return_value='/usr/bin/kilix'):
+            boss.kilix_show_pane_log()
+        opened = manager.new_tab.call_args.kwargs['special_window']
+        self.ae(opened.cmd, ['/usr/bin/kilix', 'transcript', 'view', 'clicked-pane'])
+        self.ae(opened.override_title, 'Log: source pane')
+        self.ae(opened.env['KILIX_TRANSCRIPT_DIR'], '/private/pane logs')
+        self.ae(opened.env['KITTY_PTY_BROKER_BYPASS'], '1')
+        manager.reset_mock()
+        child.pty_broker_session_id = ''
+        with patch.object(boss, 'show_error') as error:
+            boss.kilix_show_pane_log()
+            error.assert_called_once()
+        manager.new_tab.assert_not_called()
 
     def test_explicit_close_terminates_broker_before_frontend(self) -> None:
         boss = object.__new__(Boss)

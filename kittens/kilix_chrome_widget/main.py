@@ -37,7 +37,7 @@ def _battery() -> tuple[str, ...]:
     if info is None:
         detail = ('No battery detected', '')
     else:
-        detail = (f'{info.percent}%', info.status.title())
+        detail = ('Charge unknown' if info.percent is None else f'{info.percent}%', info.status.title())
     return ('Battery', '', *detail, '',
             'Double-click toggles percentage · Esc close')
 
