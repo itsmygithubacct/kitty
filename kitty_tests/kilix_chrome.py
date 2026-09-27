@@ -5,7 +5,8 @@ import time
 from datetime import datetime, timezone
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 from kitty.kilix_chrome import settings
 from kitty.kilix_chrome.providers import (
@@ -100,3 +101,28 @@ class TestKilixChrome(BaseTest):
              'override_title': 'Volume Settings', 'overlay_for': 17},
         ])
         self.assertFalse(dispatch(Manager(), 'not-a-widget'))
+
+    def test_clock_default_am_pm_and_explicit_24_hour(self):
+        from kitty.kilix_chrome.providers import clock_segment
+        with tempfile.TemporaryDirectory() as directory:
+            filename = Path(directory) / 'settings.conf'
+            filename.write_text('KILIX_CHROME_CLOCK=1\n')
+            with patch.dict(os.environ, {'GPU_TERMINAL_SETTINGS_FILE': str(filename)}):
+                for hour, expected in ((0, '12:05 AM'), (12, '12:05 PM'), (23, '11:05 PM')):
+                    with patch('kitty.kilix_chrome.providers.local_now', return_value=datetime(2026, 9, 27, hour, 5)):
+                        self.ae(clock_segment(), f' 2026-09-27 {expected} ')
+                filename.write_text('KILIX_CHROME_CLOCK_FORMAT=%H:%M\n')
+                with patch('kitty.kilix_chrome.providers.local_now', return_value=datetime(2026, 9, 27, 23, 5)):
+                    self.ae(clock_segment(), ' 23:05 ')
+
+    def test_clock_right_click_opens_only_clock_settings(self):
+        tab = SimpleNamespace(new_window=Mock())
+        owner = SimpleNamespace(id=17, tabref=lambda: tab)
+        manager = SimpleNamespace(active_tab=SimpleNamespace(active_window=owner))
+        with patch('kitty.kilix_chrome.popup.popup_target', return_value=owner), \
+                patch('kitty.kilix_chrome.registry.settings_target', return_value=['kilix', 'settings']):
+            for action in (DATE_WIDGET_ACTION, CALENDAR_WIDGET_ACTION):
+                self.assertTrue(dispatch(manager, action, 'right'))
+                args = tab.new_window.call_args.kwargs
+                self.ae(args['cmd'], ['kilix', 'settings', '--clock'])
+                self.ae(args['override_title'], 'Clock Settings')

@@ -5,6 +5,7 @@ import calendar
 import sys
 from datetime import datetime
 from kitty.kilix_chrome.providers import local_now
+from kitty.kilix_chrome.settings import chrome_value
 from typing import Any
 
 from kitty.key_encoding import EventType, KeyEvent
@@ -41,11 +42,16 @@ def utc_offset_text(now: datetime) -> str:
     return f'{zone} · UTC{sign}{hours:02d}:{minutes:02d}'
 
 
+def clock_text(now: datetime) -> str:
+    fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%Y-%m-%d %I:%M %p')
+    return now.strftime('%I:%M:%S %p' if '%I' in fmt else '%H:%M:%S')
+
+
 def date_card_text(now: datetime) -> tuple[str, ...]:
     return (
         now.strftime('%A'),
         f'{now.strftime("%B")} {now.day}, {now.year}',
-        now.strftime('%H:%M:%S'),
+        clock_text(now),
         utc_offset_text(now),
         now.strftime('%Y-%m-%d'),
     )
@@ -82,7 +88,7 @@ def calendar_card(now: datetime, year: int, month: int) -> tuple[str, ...]:
                 token = styled(token, fg='black', bg='cyan', bold=True)
             rendered.append(token)
         lines.append((' '.join(rendered), 20))
-    clock = now.strftime('%H:%M:%S')
+    clock = clock_text(now)
     lines.extend([
         ('', 0),
         (styled(clock, fg='yellow', bold=True), len(clock)),

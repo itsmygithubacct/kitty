@@ -49,11 +49,11 @@ def local_now() -> datetime:
 def clock_segment() -> str | None:
     if not chrome_enabled('KILIX_CHROME_CLOCK'):
         return None
-    fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%Y-%m-%d %H:%M') or '%Y-%m-%d %H:%M'
+    fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%Y-%m-%d %I:%M %p') or '%Y-%m-%d %I:%M %p'
     try:
         text = local_now().strftime(fmt)
     except Exception:
-        text = local_now().strftime('%Y-%m-%d %H:%M')
+        text = local_now().strftime('%Y-%m-%d %I:%M %p')
     return f' {text} '
 
 

@@ -89,6 +89,9 @@ def dispatch(tab_manager: object, action: str, gesture: str = 'single') -> bool:
         title = {'compact': 'Volume', 'full': 'Volume Control', 'settings': 'Volume Settings'}[mode]
         columns, lines = {'compact': (48, 12), 'full': (76, 24), 'settings': (52, 14)}[mode]
         command(volume_target(mode), title, columns, lines)
+    elif gesture == 'right' and action in (CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION):
+        target_command = settings_target()
+        command([*target_command, '--clock'] if target_command else None, 'Clock Settings', 48, 13)
     elif gesture == 'right':
         command(settings_target(), 'Kilix Settings', 90, 30)
     elif action == BATTERY_TOGGLE_ACTION and gesture == 'double':
