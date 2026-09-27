@@ -727,7 +727,7 @@ class Options:
     window_title_bar_inactive_background: kitty.fast_data_types.Color | None = None
     window_title_bar_inactive_foreground: kitty.fast_data_types.Color | None = None
     window_title_bar_min_windows: int = 0
-    window_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}{progress_percent}{title}'
+    window_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}[{window_id}] {progress_percent}{title}'
     action_alias: dict[str, str] = {}
     env: dict[str, str] = {}
     exe_search_path: dict[str, str] = {}

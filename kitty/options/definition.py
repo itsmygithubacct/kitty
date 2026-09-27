@@ -1981,13 +1981,14 @@ are visible. Similar to :opt:`tab_bar_min_tabs` for the tab bar.
 
 opt(
     'window_title_template',
-    '"{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}{progress_percent}{title}"',
+    '"{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.window}[{window_id}] {progress_percent}{title}"',
     option_type='tab_title_template',
     long_text="""
 A template to render the window title bar text. Uses the same template syntax as
 :opt:`tab_title_template`. Available variables include: :code:`{title}`,
 :code:`{bell_symbol}`, :code:`{activity_symbol}`, :code:`{progress_percent}`,
-:code:`{custom}`, :code:`{fmt}`, :code:`{is_active}`.
+:code:`{custom}`, :code:`{fmt}`, :code:`{is_active}`, :code:`{window_id}`
+(also available as :code:`{pane_id}`), and :code:`{tab_id}`.
 You can also provide a custom :code:`draw_window_title(data)` function in
 :file:`window_title_bar.py` in the kitty config directory, exposed as :code:`{custom}`.
 """,

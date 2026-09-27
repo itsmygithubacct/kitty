@@ -185,6 +185,9 @@ class WindowTitleBarScreen:
 
         eval_locals = {
             'title': data.title,
+            'window_id': data.window_id,
+            'pane_id': data.window_id,
+            'tab_id': data.tab_id,
             'is_active': is_active,
             'fmt': WindowTitleFormatter,
             'bell_symbol': bell_symbol,
