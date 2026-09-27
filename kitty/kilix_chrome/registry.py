@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from .layouts import LAYOUT_ACTION, show_layout_menu
 
 from .providers import (
     CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
@@ -15,6 +16,7 @@ THERMAL_WIDGET_ACTION = 'kilix_show_thermal_widget'
 GESTURE_ACTIONS = frozenset((
     VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION, BATTERY_TOGGLE_ACTION, THERMAL_WIDGET_ACTION,
+    LAYOUT_ACTION,
 ))
 
 
@@ -69,6 +71,9 @@ def dispatch(tab_manager: object, action: str, gesture: str = 'single') -> bool:
         return True
     tab = target.tabref()
     if tab is None:
+        return True
+    if action == LAYOUT_ACTION:
+        show_layout_menu(get_boss(), target)
         return True
 
     def command(cmd: list[str] | None, title: str, columns: int, lines: int) -> None:

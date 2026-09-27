@@ -63,6 +63,19 @@ class TestRemoteEcho(BaseTest):
 
 class TestWindowChrome(BaseTest):
 
+    def test_pane_and_tab_ids_in_active_and_inactive_title_templates(self) -> None:
+        self.set_options({
+            'window_title_template': '[{window_id}] {title}',
+            'active_window_title_template': '[{pane_id}] {title} (tab {tab_id})',
+        })
+        title_bar = WindowTitleBarScreen(1, 10, 20)
+        title_bar.layout(WindowGeometry(0, 0, 1200, 20, 120, 1))
+        for active in (False, True):
+            data = WindowTitleData('release work', active, 42, 7)
+            rendered = title_bar.render(data, '')
+            self.ae(rendered, '[42] release work' + (' (tab 7)' if active else ''))
+            self.assertIn('[42] release work', str(title_bar.screen.line(0)))
+
     def test_dynamic_memory_chip_policy_and_hitbox(self) -> None:
         self.assertEqual(format_pane_memory(GIB - 1, 'auto'), '')
         self.assertEqual(format_pane_memory(int(1.14 * GIB), 'auto'), '1.1')
