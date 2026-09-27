@@ -9,7 +9,6 @@ from unittest.mock import patch
 from kitty import kilix_battery, kilix_memory
 from kitty.boss import Boss, kilix_desktop_owns_start_menu
 from kitty.kilix_chrome import settings as chrome_settings
-from kitty.kilix_chrome.layouts import LAYOUT_ACTION
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
 from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
@@ -101,14 +100,17 @@ class TestTabBar(BaseTest):
     def test_start_menu_exposes_full_hierarchy(self) -> None:
         boss = object.__new__(Boss)
         window = object()
-        with patch.object(boss, '_kilix_start_choose') as choose:
+        with patch.object(boss, '_kilix_start_choose') as choose, \
+                patch('kitty.kilix_chrome.layouts.show_layout_menu') as layout:
             boss._kilix_start_main(window)  # type: ignore[arg-type]
         title, choices, actions = choose.call_args.args[1:]
         self.ae(title, 'Kilix Start')
         for label in ('Tabs', 'Sessions', 'Programs', 'Options', 'Software',
-                      'Tools', 'Places', 'Power'):
+                      'Tools', 'Places', 'Layout', 'Power'):
             self.assertTrue(any(label in choice for choice in choices), label)
-        self.assertEqual(set('tspowklnrduaq'), set(actions))
+        self.assertEqual(set('tspowklynrduaq'), set(actions))
+        actions['y'](window)
+        layout.assert_called_once_with(boss, window)
 
     def test_start_menu_offers_both_tab_bar_edges(self) -> None:
         boss = object.__new__(Boss)
@@ -174,12 +176,11 @@ class TestTabBar(BaseTest):
             tb.layout()
             tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
 
-        self.ae(tb.left_status_end, 13)
-        self.assertGreaterEqual(tb.tab_extents[0].x.start, 13)
+        self.ae(tb.left_status_end, 3)
+        self.assertGreaterEqual(tb.tab_extents[0].x.start, 3)
         self.ae(tuple(a.action for a in tb.action_extents), (
-            START_MENU_ACTION, LAYOUT_ACTION))
+            START_MENU_ACTION,))
         self.ae(tb.action_at(5, 165), START_MENU_ACTION)
-        self.ae(tb.action_at(65, 165), LAYOUT_ACTION)
         self.assertNotEqual(tb.tab_id_at(5, 165), 1)
 
     def test_clock_status_is_bright_and_clickable(self) -> None:
@@ -232,7 +233,7 @@ class TestTabBar(BaseTest):
             for _, _, fg in segments[1:]
         ))
         self.ae(tuple(ae.action for ae in tb.action_extents), (
-            LAYOUT_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
+            THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
             CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
         for extent in tb.action_extents:

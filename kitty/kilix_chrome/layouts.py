@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING
 
 from .popup import ChromePopup
+from .providers import START_MENU_ACTION
 
 if TYPE_CHECKING:
     from ..boss import Boss
@@ -38,11 +39,15 @@ def show_layout_menu(boss: 'Boss', window: 'Window', manage: bool = False) -> No
             mark = '●' if tab.current_layout.name == name else ' '
         choices.append(f'{key}:{key}. {mark} {label}')
         actions[key] = name
-    choices.append('m:Main menu' if manage else 'm:Manage enabled layouts…')
+    choices.append('m:Layout menu' if manage else 'm:Manage enabled layouts…')
+    choices.append('z:◂ Start menu [Z]')
 
     def selected(key: str) -> None:
         owner = boss.window_id_map.get(owner_id)
         if owner is None or (current := owner.tabref()) is None or current.id != tab_id:
+            return
+        if key == 'z':
+            boss._kilix_start_main(owner)
             return
         if key == 'm':
             show_layout_menu(boss, owner, not manage)
@@ -77,5 +82,5 @@ def show_layout_menu(boss: 'Boss', window: 'Window', manage: bool = False) -> No
     boss.choose(
         title, selected, *choices, window=window, title=title,
         name=f'kilix-start-{edge}',
-        kilix_popup=ChromePopup(LAYOUT_ACTION, 54, len(choices) + 3),
+        kilix_popup=ChromePopup(START_MENU_ACTION, 54, len(choices) + 3),
     )

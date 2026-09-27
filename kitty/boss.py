@@ -1473,9 +1473,10 @@ class Boss:
         )
 
     def _kilix_start_main(self, window: 'Window') -> None:
+        from .kilix_chrome.layouts import show_layout_menu
         self._kilix_start_choose(window, 'Kilix Start', (
             't:▸ Tabs', 's:▸ Sessions', 'p:▸ Programs', 'o:▸ Options',
-            'w:▸ Software', 'k:▸ Tools [K]', 'l:▸ Places',
+            'w:▸ Software', 'k:▸ Tools [K]', 'l:▸ Places', 'y:▸ Layout',
             'n:New page                 Ctrl+Shift+T',
             'r:Split pane right', 'd:Split pane down', 'u:Run command…',
             'a:About / build status', 'q:▸ Power / Quit',
@@ -1487,6 +1488,7 @@ class Boss:
             'w': self._kilix_start_software,
             'k': self._kilix_start_tools,
             'l': self._kilix_start_places,
+            'y': lambda owner: show_layout_menu(self, owner),
             'n': 'launch --type=tab --cwd=current',
             'r': 'launch --location=vsplit --cwd=current',
             'd': 'launch --location=hsplit --cwd=current',

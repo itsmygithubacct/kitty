@@ -1105,11 +1105,11 @@ class TabBar:
         return tuple(ans)
 
     def left_status_segments(self) -> tuple[tuple[str, str | None, int], ...]:
-        from .kilix_chrome.layouts import LAYOUT_ACTION
         segment = start_menu_segment()
+        if segment is None:
+            return ()
         fg = as_rgb(color_as_int(get_options().foreground))
-        layout = (' Layout ▾ ', LAYOUT_ACTION, fg)
-        return (layout,) if segment is None else ((segment[0], segment[1], fg), layout)
+        return ((segment[0], segment[1], fg),)
 
     def status_width(self, segments: Sequence[tuple[str, str | None, int]]) -> int:
         return sum(max(0, wcswidth(text)) for text, _, _ in segments)

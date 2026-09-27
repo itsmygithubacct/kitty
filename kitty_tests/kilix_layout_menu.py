@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from kitty.kilix_chrome.layouts import LAYOUT_ACTION, show_layout_menu
 from kitty.kilix_chrome.registry import dispatch
+from kitty.kilix_chrome.providers import START_MENU_ACTION
 from kitty.tab_bar import TabBar
 
 from . import BaseTest
@@ -38,7 +39,7 @@ class TestLayoutMenu(BaseTest):
             key, label = choice.split(':', 1)
             self.assertIn(key.lower(), label.lower())
         self.assertIn('1:1.   Splits — drag in all four directions', args)
-        self.ae(boss.choose.call_args.kwargs['kilix_popup'].action, LAYOUT_ACTION)
+        self.ae(boss.choose.call_args.kwargs['kilix_popup'].action, START_MENU_ACTION)
         args[1]('1')
         self.ae(tab.current_layout.name, 'splits')
         show_layout_menu(boss, owner, True)
@@ -80,4 +81,7 @@ class TestLayoutMenu(BaseTest):
         with patch('kitty.tab_bar.start_menu_segment', return_value=None), \
                 patch('kitty.tab_bar.get_options', return_value=SimpleNamespace(foreground=0)), \
                 patch('kitty.tab_bar.color_as_int', return_value=0):
-            self.ae(TabBar.left_status_segments(None)[0][:2], (' Layout ▾ ', LAYOUT_ACTION))
+            self.ae(TabBar.left_status_segments(None), ())
+        with patch('kitty.tab_bar.start_menu_segment', return_value=(' ☰ ', START_MENU_ACTION)):
+            segments = TabBar.left_status_segments(None)
+        self.ae(tuple(segment[:2] for segment in segments), ((' ☰ ', START_MENU_ACTION),))
