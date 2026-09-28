@@ -202,6 +202,11 @@ set_currently_hovered_window(id_type window_id, int modifiers, bool focus_follow
     if (global_state.mouse_hover_in_window != window_id) {
         Window *left_window = window_for_id(global_state.mouse_hover_in_window);
         global_state.mouse_hover_in_window = window_id;
+        if (OPT(software_mouse_cursor) && !window_id && global_state.callback_os_window && global_state.callback_os_window->handle) {
+            // Leaving a grid must reveal the OS pointer immediately, even if
+            // a modal popup consumes the rest of this mouse event.
+            glfwSetInputMode(global_state.callback_os_window->handle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
         if (left_window) {
             if (left_window->scrollbar.is_hovering) update_scrollbar_hover_state(left_window, false);
             if (OPT(software_mouse_cursor)) set_software_mouse_cursor(left_window, 0, 0, 0);
@@ -1215,7 +1220,12 @@ enter_event(int modifiers, bool cursor_moved) {
     MouseRegion r = mouse_region(false, false);
     Window *w = r.window;
     Window *popup = chrome_popup_for_os_window(global_state.callback_os_window, NULL);
-    if (popup && popup != w) return;
+    if (popup && popup != w) {
+        set_currently_hovered_window(0, modifiers, false);
+        mouse_cursor_shape = DEFAULT_POINTER;
+        set_mouse_cursor(mouse_cursor_shape);
+        return;
+    }
     set_currently_hovered_window(w ? w->id : 0, modifiers, cursor_moved);
     if (!w || r.in_tab_bar || r.in_title_bar) return;
 
@@ -1412,6 +1422,9 @@ mouse_event(const int button, int modifiers, int action) {
     MouseRegion r = mouse_region(true, true);
     Window *popup = chrome_popup_for_os_window(osw, NULL);
     if (popup && r.window != popup && !r.in_tab_bar) {
+        set_currently_hovered_window(0, modifiers, false);
+        mouse_cursor_shape = DEFAULT_POINTER;
+        set_mouse_cursor(mouse_cursor_shape);
         if (button >= 0 && button < 32 && action == GLFW_PRESS) {
             osw->chrome_popup_dismiss_buttons |= 1u << button;
             call_boss(kilix_dismiss_popup, "K", osw->id);
