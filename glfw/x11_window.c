@@ -2067,6 +2067,11 @@ static void processEvent(XEvent *event)
         case KeyPress:
         {
             UPDATE_KEYMAP_IF_NEEDED;
+            if (_glfw.x11.drag.active && _glfw.x11.xkb.states.state &&
+                xkb_state_key_get_one_sym(_glfw.x11.xkb.states.state, event->xkey.keycode) == XKB_KEY_Escape) {
+                _glfwPlatformCancelDrag(window);
+                return;
+            }
             x11_cancel_momentum_scroll_timer();
             glfw_cancel_momentum_scroll();
             glfw_xkb_handle_key_event(window, &_glfw.x11.xkb, event->xkey.keycode, GLFW_PRESS);
@@ -4336,7 +4341,7 @@ create_drag_thumbnail(const GLFWimage* thumbnail, int x, int y) {
 // Handle motion during drag
 static void
 handle_drag_motion(int root_x, int root_y, Time timestamp) {
-    if (!_glfw.x11.drag.active) return;
+    if (!_glfw.x11.drag.active || _glfw.x11.drag.dropped) return;
 
     // Move thumbnail window to follow cursor
     if (_glfw.x11.drag.thumbnail_window != None) {
@@ -4369,12 +4374,27 @@ handle_drag_motion(int root_x, int root_y, Time timestamp) {
     }
 }
 
+static void
+drag_finish_timeout(unsigned long long timer_id UNUSED, void *data UNUSED) {
+    _glfw.x11.drag.finish_timer = 0;
+    _glfwPlatformCancelDrag(NULL);
+}
+
 // Handle button release during drag (drop)
 static void
 handle_drag_button_release(Time timestamp) {
-    if (!_glfw.x11.drag.active) return;
+    if (!_glfw.x11.drag.active || _glfw.x11.drag.dropped) return;
 
+    // The data transfer may outlive the gesture. Never keep the pointer or
+    // preview hostage while waiting for another client to send XdndFinished.
+    _glfw.x11.drag.dropped = true;
+    XUngrabPointer(_glfw.x11.display, CurrentTime);
+    if (_glfw.x11.drag.thumbnail_window != None)
+        XUnmapWindow(_glfw.x11.display, _glfw.x11.drag.thumbnail_window);
+    XFlush(_glfw.x11.display);
     if (_glfw.x11.drag.current_target != None && _glfw.x11.drag.accepted) {
+        _glfw.x11.drag.finish_timer = glfwAddTimer(
+            ms_to_monotonic_t(5000), false, drag_finish_timeout, NULL, NULL);
         send_xdnd_drop(_glfw.x11.drag.current_target, timestamp);
     } else {
         // Drag was cancelled or not accepted
@@ -4503,6 +4523,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
 
     _glfw.x11.drag.source_window = window->x11.handle;
     _glfw.x11.drag.active = true;
+    _glfw.x11.drag.dropped = false;
     _glfw.x11.drag.current_target = None;
     _glfw.x11.drag.waiting_for_status = false;
     _glfw.x11.drag.accepted = false;
@@ -4575,6 +4596,10 @@ _glfwPlatformCancelDrag(_GLFWwindow* window UNUSED) {
 
 void
 _glfwPlatformFreeDragSourceData(void) {
+    if (_glfw.x11.drag.finish_timer) {
+        glfwRemoveTimer(_glfw.x11.drag.finish_timer);
+        _glfw.x11.drag.finish_timer = 0;
+    }
     if (_glfw.x11.drag.active) {
         // Send leave to current target
         if (_glfw.x11.drag.current_target != None) {
@@ -4582,7 +4607,8 @@ _glfwPlatformFreeDragSourceData(void) {
         }
 
         // Ungrab the pointer
-        XUngrabPointer(_glfw.x11.display, CurrentTime);
+        if (!_glfw.x11.drag.dropped)
+            XUngrabPointer(_glfw.x11.display, CurrentTime);
 
         _glfw.x11.drag.active = false;
         _glfw.x11.drag.current_target = None;
@@ -4623,7 +4649,7 @@ _glfwPlatformFreeDragSourceData(void) {
 
 int
 _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {
-    if (!_glfw.x11.drag.active) return 0;
+    if (!_glfw.x11.drag.active || _glfw.x11.drag.dropped) return 0;
     if (!thumbnail || !thumbnail->pixels || thumbnail->width <= 0 || thumbnail->height <= 0) return 0;
 
     if (_glfw.x11.drag.thumbnail_window == None) {

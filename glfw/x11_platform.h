@@ -416,6 +416,8 @@ typedef struct _GLFWlibraryX11
         size_t           type_count;
         Atom             action_atom;   // XdndActionCopy, XdndActionMove, or XdndActionLink
         bool             active;        // Whether a drag is currently active
+        bool             dropped;       // Awaiting completion, no longer tracking the pointer
+        unsigned long long finish_timer;
         Window           current_target;// Current drop target window under cursor
         Window           proxy_target;  // Proxy target if current_target has XdndProxy
         int              xdnd_version;  // Xdnd version supported by current target
