@@ -1977,15 +1977,11 @@ class TabManager:  # {{{
                 from .kilix_voice import (
                     DICTATE_ACTION,
                     SPEAK_ACTION,
-                    begin_dictation,
-                    dictation_install_offer,
-                    end_dictation,
                     is_pixel_pane,
-                    launch_model_install,
-                    pane_at_hidden_prompt,
                     read_extent,
                     speak,
                     stop_speech,
+                    toggle_dictation,
                     voice_state,
                 )
                 from .kilix_windows import (
@@ -2023,33 +2019,7 @@ class TabManager:  # {{{
                             if (error := speak(text)) is not None:
                                 get_boss().show_error('Read aloud failed', error)
                 elif tab_action == DICTATE_ACTION:
-                    if voice_state.listening:
-                        # Toggle: a second click stops and flushes what was heard.
-                        end_dictation(flush=True)
-                    elif (target := (self.active_tab.active_window if self.active_tab else None)) is not None:
-                        if is_pixel_pane(target):
-                            get_boss().show_error(
-                                'Dictation unavailable',
-                                'This pane is drawing pixels rather than terminal text, so '
-                                'dictated text has nowhere visible to go. Voice input works '
-                                'in terminal panes.')
-                        elif pane_at_hidden_prompt(target):
-                            get_boss().show_error(
-                                'Dictation refused',
-                                'This pane is at a hidden prompt. Kilix does not dictate '
-                                'into a password prompt.')
-                        elif (offer := dictation_install_offer()) is not None:
-                            get_boss().confirm(
-                                offer.message,
-                                launch_model_install,
-                                target.id,
-                                offer.argv,
-                                offer.model,
-                                window=target,
-                                title='Install speech model?',
-                            )
-                        elif (error := begin_dictation(target.id)) is not None:
-                            get_boss().show_error('Dictation unavailable', error)
+                    toggle_dictation(self.active_tab.active_window if self.active_tab else None)
                 self.recent_tab_bar_mouse_events.clear()
             return
 

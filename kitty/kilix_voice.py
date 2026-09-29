@@ -983,6 +983,46 @@ def poll_dictation() -> None:
             return
 
 
+def toggle_dictation(target: Window | None) -> None:
+    """Start dictating into ``target``, or stop a turn already listening.
+
+    The one behaviour behind both the microphone button and the
+    ``kilix_dictate`` action (Ctrl+Shift+D by default), so the two cannot
+    drift: the same refusals, the same install offer, the same toggle.
+    """
+    from .fast_data_types import get_boss
+    if voice_state.listening:
+        # Toggle: a second press stops and flushes what was heard.
+        end_dictation(flush=True)
+        return
+    if target is None:
+        return
+    boss = get_boss()
+    if is_pixel_pane(target):
+        boss.show_error(
+            'Dictation unavailable',
+            'This pane is drawing pixels rather than terminal text, so '
+            'dictated text has nowhere visible to go. Voice input works '
+            'in terminal panes.')
+    elif pane_at_hidden_prompt(target):
+        boss.show_error(
+            'Dictation refused',
+            'This pane is at a hidden prompt. Kilix does not dictate '
+            'into a password prompt.')
+    elif (offer := dictation_install_offer()) is not None:
+        boss.confirm(
+            offer.message,
+            launch_model_install,
+            target.id,
+            offer.argv,
+            offer.model,
+            window=target,
+            title='Install speech model?',
+        )
+    elif (error := begin_dictation(target.id)) is not None:
+        boss.show_error('Dictation unavailable', error)
+
+
 def end_dictation(flush: bool = False) -> None:
     """Request stop and retain the return socket for the authoritative final.
 

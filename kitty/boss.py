@@ -1182,6 +1182,17 @@ class Boss:
     def close_window(self) -> None:
         self.mark_window_for_close(self.window_for_dispatch)
 
+    @ac('misc', '''
+    Start or stop Kilix dictation into the active pane
+
+    The same toggle as the tab bar's microphone button: it starts a dictation
+    turn into the active pane, or stops and inserts a turn already listening.
+    Kilix maps it to ctrl+shift+d.
+    ''')
+    def kilix_dictate(self) -> None:
+        from .kilix_voice import toggle_dictation
+        toggle_dictation(self.window_for_dispatch or self.active_window)
+
     @ac('win', '''
     Close a persistent Kilix pane with confirmation
 
