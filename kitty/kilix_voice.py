@@ -183,6 +183,10 @@ def stt_engine() -> str:
 
 
 def stt_model() -> str:
+    # VibeVoice has one model; choosing the engine alone selects it, exactly
+    # as kilix-voice resolves it, so the chrome never checks a vosk payload.
+    if stt_engine() == 'vibevoice':
+        return 'vibevoice-asr-bitnet'
     return _choice('KILIX_VOICE_STT_MODEL', 'small-en-us', STT_MODELS)
 
 
@@ -301,6 +305,19 @@ def _model_payload_present(model: str) -> bool:
         return False
 
 
+def _vibeasr_binary() -> str:
+    """The VibeASR runtime kilix-voice runs for VibeVoice; it may be absent."""
+    override = os.environ.get('KILIX_VOICE_VIBEASR')
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(data_voice_dir(), 'vibeasr', 'current', 'bin', 'asr_infer')
+
+
+def _vibeasr_present() -> bool:
+    binary = _vibeasr_binary()
+    return os.path.isfile(binary) and os.access(binary, os.X_OK)
+
+
 def _stt_available(engine: str, model: str) -> bool:
     if engine == 'off':
         return False
@@ -311,8 +328,8 @@ def _stt_available(engine: str, model: str) -> bool:
         return False
     if engine == 'vosk':
         return os.path.isfile(os.path.join(data, 'lib', 'current', 'libvosk.so'))
-    # The weights are shared with Bonsai and are selectable here, but this
-    # voice runtime does not yet have a VibeVoice streaming recogniser.
+    if engine == 'vibevoice':
+        return _vibeasr_present()
     return False
 
 
@@ -333,10 +350,13 @@ def dictation_install_offer() -> ModelInstallOffer | None:
         return None
     data = data_voice_dir()
     model_missing = not _model_payload_present(model)
-    library_missing = (
-        engine == 'vosk'
-        and not os.path.isfile(os.path.join(data, 'lib', 'current', 'libvosk.so'))
-    )
+    if engine == 'vibevoice':
+        library_missing = not _vibeasr_present()
+        library_name = 'VibeASR runtime'
+    else:
+        library_missing = not os.path.isfile(
+            os.path.join(data, 'lib', 'current', 'libvosk.so'))
+        library_name = 'Vosk library'
     if not model_missing and not library_missing:
         # A model installer may have completed while the five-second chrome
         # cache still says unavailable. The same click proceeds to
@@ -348,19 +368,25 @@ def dictation_install_offer() -> ModelInstallOffer | None:
         return None
     size = STT_MODEL_BYTES[model]
     if model_missing and library_missing:
-        missing = 'model and Vosk library'
+        missing = f'model and {library_name}'
     elif library_missing:
-        missing = 'Vosk library'
+        missing = library_name
     else:
         missing = 'model'
+    if model_missing:
+        action = (f'Install the {_human_bytes(size)} model now and keep it as '
+                  'the default? Nothing is downloaded unless you choose Yes.')
+    elif engine == 'vibevoice':
+        action = ('Build the VibeASR runtime now (about a minute; needs a C/C++ '
+                  'toolchain and cmake)? Nothing is fetched unless you choose Yes.')
+    else:
+        action = ('Install it now and keep this model as the default? Nothing '
+                  'is downloaded unless you choose Yes.')
     return ModelInstallOffer(
         model=model,
         size=size,
         argv=(kilix, 'stt', '--install', model, '--default', model),
-        message=(
-            f'Dictation is set to {model}, but its {missing} is not installed.\n\n'
-            f'Install the {_human_bytes(size)} model now and keep it as the '
-            'default? Nothing is downloaded unless you choose Yes.'),
+        message=f'Dictation is set to {model}, but its {missing} is not installed.\n\n{action}',
     )
 
 
@@ -823,11 +849,10 @@ def begin_dictation(window_id: int) -> str | None:
         engine, model = stt_engine(), stt_model()
         if engine == 'off':
             detail = 'Dictation is turned off. Choose a speech model in `kilix stt`.'
-        elif engine == 'vibevoice':
+        elif engine == 'vibevoice' and not _vibeasr_present():
             detail = (
-                'The VibeVoice weights can be installed and selected, but this '
-                'voice runtime cannot dictate with them yet. Choose small-en-us '
-                'or lgraph-en-us in `kilix stt`.')
+                'VibeVoice needs its VibeASR runtime. Run `kilix stt --install '
+                'vibevoice-asr-bitnet`, which also fetches any missing weights.')
         elif STT_MODEL_ENGINES.get(model) != engine:
             detail = (
                 f'{model} needs the {STT_MODEL_ENGINES.get(model, "matching")} '
