@@ -56,7 +56,7 @@ MICROPHONE_OFF_GLYPH = chr(0xf036d)   # Material Design "microphone_off"
 # One vocabulary with the Kilix SDK. These defaults and choice tuples are the
 # same ones config/kilix_sdk/settings.py declares; the fork re-reads rather than
 # imports them, so a divergence here is a silent bug and not a crash.
-TTS_ENGINES = ('espeak', 'mbrola', 'off')
+TTS_ENGINES = ('espeak', 'mbrola', 'piper', 'off')
 TTS_RATES = ('120', '150', '170', '200', '240')
 TTS_EXTENTS = ('screen', 'scrollback', 'selection')
 STT_ENGINES = ('vosk', 'vibevoice', 'whisper', 'off')
@@ -289,9 +289,23 @@ def kilix_launcher() -> str | None:
     return which('kilix')
 
 
+def _piper_present() -> bool:
+    """Whether the kilix-piper-tts provider kilix-voice runs is installed."""
+    override = os.environ.get('KILIX_PIPER_TTS')
+    if override:
+        return bool(which(override))
+    managed = os.path.join(data_voice_dir(), 'piper', 'current', 'bin', 'kilix-piper-tts')
+    if os.path.isfile(managed) and os.access(managed, os.X_OK):
+        return True
+    return bool(which('kilix-piper-tts'))
+
+
 def _tts_available(engine: str) -> bool:
     if engine == 'off':
         return False
+    if engine == 'piper':
+        # Piper synthesises by itself; something still has to play it.
+        return _piper_present() and bool(which('pacat') or which('paplay') or which('aplay'))
     # mbrola is driven through espeak-ng, so one synthesiser answers for both,
     # and something has to be able to play the result.
     if not (which('espeak-ng') or which('espeak')):
@@ -689,6 +703,10 @@ def speak(text: str) -> str | None:
     if not text:
         return flag_error('This pane has no text to read.')
     if not _availability()['speak']:
+        if tts_engine() == 'piper':
+            return flag_error(
+                'Read-aloud is set to the Piper voice, which is not installed. '
+                'Run `kilix tts --enable-kristin`, then `kilix voice doctor`.')
         return flag_error(
             'No speech engine is available. Install espeak-ng, then run '
             '`kilix voice doctor`.')
