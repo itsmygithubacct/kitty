@@ -59,17 +59,19 @@ MICROPHONE_OFF_GLYPH = chr(0xf036d)   # Material Design "microphone_off"
 TTS_ENGINES = ('espeak', 'mbrola', 'off')
 TTS_RATES = ('120', '150', '170', '200', '240')
 TTS_EXTENTS = ('screen', 'scrollback', 'selection')
-STT_ENGINES = ('vosk', 'vibevoice', 'off')
-STT_MODELS = ('small-en-us', 'lgraph-en-us', 'vibevoice-asr-bitnet')
+STT_ENGINES = ('vosk', 'vibevoice', 'whisper', 'off')
+STT_MODELS = ('small-en-us', 'lgraph-en-us', 'vibevoice-asr-bitnet', 'whisper-small-en')
 STT_MODEL_ENGINES = {
     'small-en-us': 'vosk',
     'lgraph-en-us': 'vosk',
     'vibevoice-asr-bitnet': 'vibevoice',
+    'whisper-small-en': 'whisper',
 }
 STT_MODEL_BYTES = {
     'small-en-us': 41205931,
     'lgraph-en-us': 130557655,
     'vibevoice-asr-bitnet': 1705771590,
+    'whisper-small-en': 486100128,
 }
 STT_MODEL_REQUIRED_FILES = {
     'small-en-us': ('conf/model.conf', 'am/final.mdl'),
@@ -78,6 +80,12 @@ STT_MODEL_REQUIRED_FILES = {
         'vibeasr-lm-i2_s-embed-q6_k.gguf',
         'vibeasr-vae-encoder-i8_s.gguf',
     ),
+    'whisper-small-en': ('model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt'),
+}
+# Where `kilix models install` puts a model kilix-voice uses in place, relative
+# to the Kilix data directory; kilix-voice prefers a copy under voice/models.
+STT_MODEL_CONTENT_DIRS = {
+    'whisper-small-en': ('desktop-apps', 'assets', 'faster-whisper-small-en'),
 }
 STT_MAX_SECONDS = ('15', '30', '60', '120')
 _VOICE_TOKEN = re.compile(r'[A-Za-z0-9_+-]{1,32}')
@@ -291,9 +299,18 @@ def _tts_available(engine: str) -> bool:
     return bool(which('pacat') or which('paplay') or which('aplay'))
 
 
+def _model_directory(model: str) -> str:
+    """The directory kilix-voice loads ``model`` from, as it resolves it."""
+    directory = os.path.join(data_voice_dir(), 'models', model)
+    content = STT_MODEL_CONTENT_DIRS.get(model)
+    if content is not None and not os.path.isdir(directory):
+        return os.path.join(os.path.dirname(data_voice_dir()), *content)
+    return directory
+
+
 def _model_payload_present(model: str) -> bool:
     """Whether the selected catalog model has each required non-empty file."""
-    directory = os.path.join(data_voice_dir(), 'models', model)
+    directory = _model_directory(model)
     required = STT_MODEL_REQUIRED_FILES.get(model, ())
     try:
         return bool(required) and os.path.isdir(directory) and all(
@@ -318,6 +335,19 @@ def _vibeasr_present() -> bool:
     return os.path.isfile(binary) and os.access(binary, os.X_OK)
 
 
+def _whisper_binary() -> str:
+    """The kilix-whisper-stt runtime kilix-voice runs for Whisper."""
+    override = os.environ.get('KILIX_VOICE_WHISPER')
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(data_voice_dir(), 'whisper', 'current', 'bin', 'kilix-whisper-stt')
+
+
+def _whisper_present() -> bool:
+    binary = _whisper_binary()
+    return os.path.isfile(binary) and os.access(binary, os.X_OK)
+
+
 def _stt_available(engine: str, model: str) -> bool:
     if engine == 'off':
         return False
@@ -330,6 +360,8 @@ def _stt_available(engine: str, model: str) -> bool:
         return os.path.isfile(os.path.join(data, 'lib', 'current', 'libvosk.so'))
     if engine == 'vibevoice':
         return _vibeasr_present()
+    if engine == 'whisper':
+        return _whisper_present()
     return False
 
 
@@ -353,6 +385,9 @@ def dictation_install_offer() -> ModelInstallOffer | None:
     if engine == 'vibevoice':
         library_missing = not _vibeasr_present()
         library_name = 'VibeASR runtime'
+    elif engine == 'whisper':
+        library_missing = not _whisper_present()
+        library_name = 'Whisper runtime'
     else:
         library_missing = not os.path.isfile(
             os.path.join(data, 'lib', 'current', 'libvosk.so'))
@@ -379,6 +414,9 @@ def dictation_install_offer() -> ModelInstallOffer | None:
     elif engine == 'vibevoice':
         action = ('Build the VibeASR runtime now (about a minute; needs a C/C++ '
                   'toolchain and cmake)? Nothing is fetched unless you choose Yes.')
+    elif engine == 'whisper':
+        action = ('Install the Whisper runtime now (about 200 MB of Python '
+                  'packages)? Nothing is fetched unless you choose Yes.')
     else:
         action = ('Install it now and keep this model as the default? Nothing '
                   'is downloaded unless you choose Yes.')
@@ -853,6 +891,10 @@ def begin_dictation(window_id: int) -> str | None:
             detail = (
                 'VibeVoice needs its VibeASR runtime. Run `kilix stt --install '
                 'vibevoice-asr-bitnet`, which also fetches any missing weights.')
+        elif engine == 'whisper' and not _whisper_present():
+            detail = (
+                'Whisper needs its runtime. Run `kilix stt --install '
+                'whisper-small-en`, which also fetches any missing weights.')
         elif STT_MODEL_ENGINES.get(model) != engine:
             detail = (
                 f'{model} needs the {STT_MODEL_ENGINES.get(model, "matching")} '
