@@ -255,6 +255,7 @@ class TestTabBar(BaseTest):
                 patch.dict(os.environ, {
                     'GPU_TERMINAL_SETTINGS_FILE': str(settings_path),
                     'KILIX_CHROME_TEMPERATURE': '1',
+                    'KILIX_TEMPERATURE_UNIT': 'celsius',
                     'KILIX_THERMAL_SYS_ROOT': str(root),
                 }),
                 patch.object(chrome_settings, '_cache_signature', None),

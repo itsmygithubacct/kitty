@@ -163,6 +163,17 @@ def _thermal_signature(info: ThermalInfo | None) -> tuple[float, str] | None:
     return None if info is None else (round(info.celsius, 1), info.level)
 
 
+def temperature_text(celsius: float | None) -> str:
+    """Format display units without changing Celsius-based sensor policy."""
+    unit = chrome_value('KILIX_TEMPERATURE_UNIT', 'fahrenheit').strip().lower()
+    fahrenheit = unit != 'celsius'
+    suffix = 'F' if fahrenheit else 'C'
+    if celsius is None:
+        return f'--°{suffix}'
+    value = celsius * 9.0 / 5.0 + 32.0 if fahrenheit else celsius
+    return f'{value:.1f}°{suffix}'
+
+
 def thermal_segment() -> tuple[str, str, int] | None:
     global _THERMAL_LAST_SIGNATURE
     if not chrome_enabled('KILIX_CHROME_TEMPERATURE', '0'):
@@ -171,9 +182,9 @@ def thermal_segment() -> tuple[str, str, int] | None:
     _THERMAL_LAST_SIGNATURE = _thermal_signature(info)
     # The cached reading is rounded by _display_temperature before its level is
     # selected, so this text and the policy color always describe one value.
-    temperature = '--' if info is None else f'{info.celsius:.1f}'
+    temperature = temperature_text(None if info is None else info.celsius)
     return (
-        f' {THERMOMETER_GLYPH} {temperature}° ',
+        f' {THERMOMETER_GLYPH} {temperature} ',
         THERMAL_WIDGET_ACTION,
         _thermal_color(info),
     )
