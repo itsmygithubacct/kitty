@@ -9,7 +9,7 @@ from . import BaseTest
 
 class TestKilixChromeWidget(BaseTest):
     def test_temperature_display_converts_without_changing_sensor_policy(self) -> None:
-        from kitty.kilix_battery import temperature_text, _thermal_level
+        from kitty.kilix_battery import _thermal_level, temperature_text
         with patch('kitty.kilix_battery.chrome_value', return_value='fahrenheit'):
             self.assertEqual(temperature_text(0), '32.0°F')
             self.assertEqual(temperature_text(100), '212.0°F')

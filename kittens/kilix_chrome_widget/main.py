@@ -43,7 +43,7 @@ def _battery() -> tuple[str, ...]:
 
 
 def _thermal() -> tuple[str, ...]:
-    from kitty.kilix_battery import thermal_info, temperature_text
+    from kitty.kilix_battery import temperature_text, thermal_info
     info = thermal_info()
     detail = ('No temperature sensor', '') if info is None else (
         temperature_text(info.celsius), info.level.title())
