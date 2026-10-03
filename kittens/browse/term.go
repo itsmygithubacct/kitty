@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/kovidgoyal/kitty/tools/tty"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,11 +28,12 @@ type Term struct {
 
 func newTerm() (*Term, error) {
 	t := &Term{in: os.Stdin, out: os.Stdout}
-	st, err := unix.IoctlGetTermios(int(t.in.Fd()), unix.TCGETS)
+	var st unix.Termios
+	err := tty.Tcgetattr(int(t.in.Fd()), &st)
 	if err != nil {
 		return nil, err
 	}
-	t.saved = *st
+	t.saved = st
 	if err = t.RefreshSize(); err != nil {
 		return nil, err
 	}
@@ -71,7 +73,7 @@ func (t *Term) Enter() {
 	raw.Cflag &^= unix.CSIZE | unix.PARENB
 	raw.Cflag |= unix.CS8
 	raw.Cc[unix.VMIN], raw.Cc[unix.VTIME] = 1, 0
-	unix.IoctlSetTermios(int(t.in.Fd()), unix.TCSETS, &raw)
+	tty.Tcsetattr(int(t.in.Fd()), tty.TCSANOW, &raw)
 	// alt screen, hide cursor, no autowrap, kbd protocol (1|4|8), mouse:
 	// ANY-motion tracking (the software pointer follows hover, and pages
 	// get real hover effects) + SGR + SGR-pixels, bracketed paste
@@ -90,7 +92,7 @@ func (t *Term) Restore() {
 			"\x1b[?7h\x1b_Ga=d,d=A\x1b\\\x1b[?25h\x1b[?1049l")
 		t.entered = false
 	}
-	unix.IoctlSetTermios(int(t.in.Fd()), unix.TCSETS, &t.saved)
+	tty.Tcsetattr(int(t.in.Fd()), tty.TCSANOW, &t.saved)
 }
 
 // ── input events ────────────────────────────────────────────────────────
