@@ -187,10 +187,16 @@ class TestPtyBrokerIntegration(BaseTest):
         # path that will not fit a Unix socket address. A 32-character ID
         # overflowed that with Kilix's own default runtime directory, so every
         # pane failed to start and the terminal exited with no windows.
-        limit = 108  # sizeof(struct sockaddr_un.sun_path) on Linux
-        runtime = os.path.expanduser(
-            '~/.local/gpu_terminal/kilix/session/pty-broker')
         session_id = new_session_id()
         self.ae(len(session_id), 16)
-        projected = os.path.join(runtime, 'sessions', session_id, 'control.sock')
-        self.assertLess(len(projected), limit)
+        # The test runner supplies an isolated HOME under the platform's
+        # temporary directory, which can itself exceed the socket limit on
+        # macOS. Exercise representative default homes rather than that
+        # unrelated temporary path. Unix socket limits count bytes.
+        for home, limit in ((os.path.join('/home', 'kilix'), 108), ('/Users/kilix', 104)):
+            with self.subTest(home=home):
+                runtime = os.path.join(home, '.local/gpu_terminal/kilix/session/pty-broker')
+                projected = os.path.join(runtime, 'sessions', session_id, 'control.sock')
+                self.assertLess(len(os.fsencode(projected)), limit)
+                old_projected = os.path.join(runtime, 'sessions', 'a' * 32, 'control.sock')
+                self.assertGreaterEqual(len(os.fsencode(old_projected)), limit)
