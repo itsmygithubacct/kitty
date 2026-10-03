@@ -6,18 +6,60 @@ import time
 from glob import iglob
 from typing import NamedTuple
 
-from .rgb import to_color
-from .utils import color_as_int, log_error, which
+from .kilix_chrome.lifecycle import (
+    ensure_chrome_timers as ensure_chrome_timers,
+)
+from .kilix_chrome.lifecycle import (
+    ensure_clock_timer as ensure_clock_timer,
+)
+from .kilix_chrome.lifecycle import (
+    invalidate_all,
+)
 from .kilix_chrome.providers import (
-    CALENDAR_GLYPH, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION, NETWORK_GLYPH,
-    NETWORK_WIDGET_ACTION, START_MENU_ACTION, VOLUME_GLYPH,
-    VOLUME_WIDGET_ACTION, clock_segment, clock_segments, network_segment,
-    start_menu_segment, volume_segment, volume_target,
+    CALENDAR_GLYPH as CALENDAR_GLYPH,
+)
+from .kilix_chrome.providers import (
+    CALENDAR_WIDGET_ACTION as CALENDAR_WIDGET_ACTION,
+)
+from .kilix_chrome.providers import (
+    DATE_WIDGET_ACTION as DATE_WIDGET_ACTION,
+)
+from .kilix_chrome.providers import (
+    NETWORK_GLYPH as NETWORK_GLYPH,
+)
+from .kilix_chrome.providers import (
+    NETWORK_WIDGET_ACTION as NETWORK_WIDGET_ACTION,
+)
+from .kilix_chrome.providers import (
+    START_MENU_ACTION as START_MENU_ACTION,
+)
+from .kilix_chrome.providers import (
+    VOLUME_GLYPH as VOLUME_GLYPH,
+)
+from .kilix_chrome.providers import (
+    VOLUME_WIDGET_ACTION as VOLUME_WIDGET_ACTION,
+)
+from .kilix_chrome.providers import (
+    clock_segment as clock_segment,
+)
+from .kilix_chrome.providers import (
+    clock_segments as clock_segments,
+)
+from .kilix_chrome.providers import (
+    network_segment as network_segment,
+)
+from .kilix_chrome.providers import (
+    start_menu_segment as start_menu_segment,
+)
+from .kilix_chrome.providers import (
+    volume_segment as volume_segment,
+)
+from .kilix_chrome.providers import (
+    volume_target,
 )
 from .kilix_chrome.settings import chrome_enabled, chrome_value, ensure_timer
-from .kilix_chrome.lifecycle import (
-    ensure_chrome_timers, ensure_clock_timer, invalidate_all,
-)
+from .rgb import color_from_int
+from .utils import color_as_int, log_error, which
 
 
 class BatteryInfo(NamedTuple):
@@ -36,7 +78,7 @@ THERMOMETER_GLYPH = chr(0xf2c9)
 _THERMAL_CACHE: ThermalInfo | None = None
 _THERMAL_CACHE_ROOT = ''
 _THERMAL_CACHE_UNTIL = 0.0
-_THERMAL_LAST_SIGNATURE: tuple[int, str] | None = None
+_THERMAL_LAST_SIGNATURE: tuple[float, str] | None = None
 _THERMAL_TIMER_STARTED = False
 _THERMAL_CACHE_SECONDS = 3.0
 _THERMAL_REFRESH_SECONDS = 5.0
@@ -47,10 +89,10 @@ _BATTERY_LAST_SIGNATURE: tuple[int | None, str] | None = None
 _BATTERY_TIMER_STARTED = False
 _BATTERY_CACHE_SECONDS = 10.0
 _BATTERY_REFRESH_SECONDS = 30.0
-_BATTERY_LOW = (color_as_int(to_color('#ef2929')) << 8) | 2
-_BATTERY_MID = (color_as_int(to_color('#fce94f')) << 8) | 2
-_BATTERY_HIGH = (color_as_int(to_color('#8ae234')) << 8) | 2
-_THERMAL_UNKNOWN = (color_as_int(to_color('#888a85')) << 8) | 2
+_BATTERY_LOW = (color_as_int(color_from_int(0xef2929)) << 8) | 2
+_BATTERY_MID = (color_as_int(color_from_int(0xfce94f)) << 8) | 2
+_BATTERY_HIGH = (color_as_int(color_from_int(0x8ae234)) << 8) | 2
+_THERMAL_UNKNOWN = (color_as_int(color_from_int(0x888a85)) << 8) | 2
 
 
 def kilix_temps_target() -> tuple[list[str], str | None] | None:

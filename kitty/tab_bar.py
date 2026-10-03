@@ -989,7 +989,7 @@ class TabBar:
                 s.cursor.x = row_start(line)
                 s.cursor.y = line
                 draw_tab(line, row_data, i, tab, [], unconstrained_tab_length, max_tab_lengths)
-                ideal_tab_lengths[i] = tl = max(1, s.cursor.x - start)
+                ideal_tab_lengths[i] = max(1, s.cursor.x - start)
                 if tab.is_active:
                     active_idx = i
                 # Deliberately not shrinking a short tab to its content: every

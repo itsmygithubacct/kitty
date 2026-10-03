@@ -182,6 +182,16 @@ def make_send_command(screen):
 
 
 class TestGraphics(BaseTest):
+    @unittest.skipIf(os.uname().sysname == 'Linux', 'DMA-BUF is supported on Linux')
+    def test_dmabuf_is_explicitly_unsupported_without_linux(self):
+        screen = self.create_screen()
+        result = send_command(screen, 'a=g,t=g,i=31', b'/unused/frame.sock')
+        self.assertEqual(parse_response(result), 'ENOTSUP:DMA-BUF import requires Linux')
+        self.assertEqual(screen.grman.image_count, 0)
+        self.assertEqual(screen.grman.gpu_upload_stats['dmabuf'], 0)
+        self.assertEqual(screen.grman.gpu_upload_stats['dmabuf_attempts'], 1)
+        self.assertEqual(screen.grman.gpu_upload_stats['dmabuf_failures'], 1)
+
     def test_gpu_upload_counters_are_exposed(self):
         stats = self.create_screen().grman.gpu_upload_stats
         self.assertEqual(stats, {

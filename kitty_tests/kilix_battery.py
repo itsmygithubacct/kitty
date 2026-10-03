@@ -4,6 +4,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from kitty import kilix_battery as battery
+
 from . import BaseTest
 
 

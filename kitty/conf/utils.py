@@ -552,8 +552,12 @@ def parse_kittens_key(
 
 def uniq(vals: Iterable[T]) -> list[T]:
     seen: set[T] = set()
-    seen_add = seen.add
-    return [x for x in vals if x not in seen and not seen_add(x)]
+    ans: list[T] = []
+    for x in vals:
+        if x not in seen:
+            seen.add(x)
+            ans.append(x)
+    return ans
 
 
 def save_type_stub(text: str, fpath: str) -> None:

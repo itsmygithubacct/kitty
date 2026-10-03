@@ -2119,7 +2119,7 @@ class TabManager:  # {{{
         if w is not None and pts is not None and getattr(pts, 'cell_width', 0) and getattr(pts, 'geometry', None) is not None:
             col = int((x - pts.geometry.left) // pts.cell_width)
             act = getattr(pts, 'button_cols', {}).get(col)
-        if act is not None:
+        if w is not None and act is not None:
             # kilix fork: dispatch the button on a single left-click. Returning
             # without clearing the first event means a keyboard-button double-click
             # can promote the per-pane toggle to the whole tab on its second release.
@@ -2310,9 +2310,10 @@ class TabManager:  # {{{
         dest_window = boss.window_id_map.get(target.window_id)
         if dest_window is None or dest_window.tabref() is not self.active_tab:
             return False
-        direction: Literal['left', 'right', 'top', 'bottom'] = {
+        directions: dict[int, Literal['left', 'right', 'top', 'bottom']] = {
             1: 'left', 2: 'right', 3: 'top', 4: 'bottom',
-        }[target.quadrant]
+        }
+        direction = directions[target.quadrant]
         self._set_drag_target_window(0)
         boss._insert_window_in_direction(source_window, dest_window, direction)
         return True
@@ -2369,9 +2370,10 @@ class TabManager:  # {{{
                 # Cross-tab title bar drop: move to the destination tab
                 boss._move_window_to(w, target_tab_id=active_tab.id)
         else:
-            direction: Literal['left', 'right', 'top', 'bottom'] = {
+            directions: dict[int, Literal['left', 'right', 'top', 'bottom']] = {
                 1: 'left', 2: 'right', 3: 'top', 4: 'bottom',
-            }[target.quadrant]
+            }
+            direction = directions[target.quadrant]
             boss._insert_window_in_direction(w, dest_window, direction)
 
     def update_progress(self) -> None:

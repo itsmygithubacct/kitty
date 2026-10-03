@@ -301,7 +301,7 @@ def _run_app(opts: Options, args: CLIOptions, bad_lines: Sequence[BadLine] = (),
             startup_sessions = tuple(create_sessions(opts, args))
         wincls = (startup_sessions[0].os_window_class if startup_sessions else '') or args.cls or appname
         winname = (startup_sessions[0].os_window_name if startup_sessions else '') or args.name or wincls or appname
-        window_state = (args.start_as if args.start_as and args.start_as != 'normal' else None) or (
+        window_state = (args.start_as if args.start_as != 'normal' else None) or (
             getattr(startup_sessions[0], 'os_window_state', None) if startup_sessions else None
         )
         wstate = parse_os_window_state(window_state) if window_state is not None else None

@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from kitty import kilix_battery, kilix_memory
 from kitty.boss import Boss, kilix_desktop_owns_start_menu
-from kitty.kilix_chrome import settings as chrome_settings
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
 from kitty.kilix_battery import (
     CALENDAR_WIDGET_ACTION,
@@ -18,6 +17,7 @@ from kitty.kilix_battery import (
     THERMAL_WIDGET_ACTION,
     VOLUME_WIDGET_ACTION,
 )
+from kitty.kilix_chrome import settings as chrome_settings
 from kitty.tab_bar import TabBar, TabBarData, as_rgb
 from kitty.utils import color_as_int
 

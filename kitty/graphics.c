@@ -12,8 +12,10 @@
 #include "disk-cache.h"
 #include "iqsort.h"
 #include "safe-wrappers.h"
+#ifdef __linux__
 #include "kilix-dmabuf-transport.h"
 #include "kilix-dmabuf-orientation.h"
+#endif
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -26,12 +28,14 @@
 
 #include <zlib.h>
 #include <structmember.h>
+#ifdef __linux__
 #include <drm_fourcc.h>
 #ifndef KHRONOS_APIENTRY
 #define KHRONOS_APIENTRY KHRONOS_GLAD_API_PTR
 #endif
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#endif
 #include "png-reader.h"
 PyTypeObject GraphicsManager_Type;
 
@@ -66,6 +70,7 @@ typedef enum {
     KILIX_IMPORT_DRAW_FRAMEBUFFER,
     KILIX_IMPORT_BLIT,
     KILIX_IMPORT_FINISH,
+    KILIX_IMPORT_UNSUPPORTED,
 } KilixImportStage;
 
 typedef struct {
@@ -78,7 +83,7 @@ kilix_import_stage_name(KilixImportStage stage) {
     static const char *names[] = {
         "ok", "receive", "frame", "context", "egl-context",
         "egl-extension", "egl-entrypoint", "egl-image",
-        "read-framebuffer", "draw-framebuffer", "blit", "finish",
+        "read-framebuffer", "draw-framebuffer", "blit", "finish", "unsupported-platform",
     };
     return stage < arraysz(names) ? names[stage] : "unknown";
 }
@@ -794,6 +799,7 @@ upload_region_to_gpu(GraphicsManager *self, Image *img, const bool is_opaque,
     }
 }
 
+#ifdef __linux__
 static bool
 path_is_private_session_socket(const char *path) {
     const char *root = getenv("KILIX_SESSION_HOME");
@@ -1000,6 +1006,17 @@ import_gpu_frame(GraphicsManager *self, Image *img, const GraphicsCommand *g,
     safe_close(fd, __FILE__, __LINE__);
     return valid;
 }
+#else
+static bool
+import_gpu_frame(GraphicsManager *self UNUSED, Image *img UNUSED,
+                 const GraphicsCommand *g UNUSED, const uint8_t *payload UNUSED,
+                 KilixImportFailure *failure) {
+    *failure = (KilixImportFailure){
+        .stage = KILIX_IMPORT_UNSUPPORTED, .code = ENOTSUP,
+    };
+    return false;
+}
+#endif
 
 static bool
 renderer_is_software(const char *renderer) {
@@ -2705,7 +2722,10 @@ grman_handle_command(GraphicsManager *self, const GraphicsCommand *g, const uint
                         (unsigned long long)self->gpu_dmabuf_failures,
                         kilix_import_stage_name(failure.stage), failure.code);
                 if (!existing) remove_image(self, img);
-                set_command_failed_response("EIO", "DMA-BUF import failed");
+                if (failure.stage == KILIX_IMPORT_UNSUPPORTED)
+                    set_command_failed_response("ENOTSUP", "DMA-BUF import requires Linux");
+                else
+                    set_command_failed_response("EIO", "DMA-BUF import failed");
                 ret = finish_command_response(g, false);
                 break;
             }

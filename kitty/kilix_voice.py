@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .kilix_chrome.settings import chrome_enabled, chrome_value
-from .rgb import to_color
+from .rgb import color_from_int
 from .utils import color_as_int, log_error, which
 
 if TYPE_CHECKING:
@@ -90,9 +90,9 @@ STT_MODEL_CONTENT_DIRS = {
 STT_MAX_SECONDS = ('15', '30', '60', '120')
 _VOICE_TOKEN = re.compile(r'[A-Za-z0-9_+-]{1,32}')
 
-_ACTIVE_COLOR = (color_as_int(to_color('#8ae234')) << 8) | 2
-_UNAVAILABLE_COLOR = (color_as_int(to_color('#888a85')) << 8) | 2
-_ERROR_COLOR = (color_as_int(to_color('#ef2929')) << 8) | 2
+_ACTIVE_COLOR = (color_as_int(color_from_int(0x8ae234)) << 8) | 2
+_UNAVAILABLE_COLOR = (color_as_int(color_from_int(0x888a85)) << 8) | 2
+_ERROR_COLOR = (color_as_int(color_from_int(0xef2929)) << 8) | 2
 _ERROR_SECONDS = 5.0
 
 _AVAILABILITY_CACHE: dict[str, bool] = {}
@@ -451,7 +451,7 @@ def launch_model_install(confirmed: bool, window_id: int,
     boss = get_boss()
     window = boss.window_id_map.get(window_id)
     tab = window.tabref() if window is not None and not window.destroyed else None
-    if tab is None:
+    if window is None or tab is None:
         boss.show_error(
             'Could not install speech model',
             'The pane that requested dictation is no longer available.')

@@ -1176,6 +1176,9 @@ class Screen:
     def clear_selection(self) -> None:
         pass
 
+    def select_all(self) -> None:
+        pass
+
     def reset_mode(self, mode: int, private: bool = False) -> None:
         pass
 

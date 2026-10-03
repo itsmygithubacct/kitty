@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
-import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from kitty.kilix_chrome import settings
 from kitty.kilix_chrome.providers import (
-    CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
+    CALENDAR_WIDGET_ACTION,
+    DATE_WIDGET_ACTION,
+    NETWORK_WIDGET_ACTION,
     VOLUME_WIDGET_ACTION,
 )
 from kitty.kilix_chrome.registry import SYSTEM_WIDGETS, dispatch, segments_for

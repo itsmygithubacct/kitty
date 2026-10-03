@@ -4,17 +4,16 @@
 import calendar
 import sys
 from datetime import datetime
-from kitty.kilix_chrome.providers import local_now
-from kitty.kilix_chrome.settings import chrome_value
 from typing import Any
 
 from kitty.key_encoding import EventType, KeyEvent
+from kitty.kilix_chrome.providers import local_now
+from kitty.kilix_chrome.settings import chrome_value
 from kitty.utils import ScreenSize
 
 from ..tui.handler import Handler
 from ..tui.loop import Loop
 from ..tui.operations import styled
-
 
 CALENDAR_WIDTH = 34
 DATE_WIDTH = 46

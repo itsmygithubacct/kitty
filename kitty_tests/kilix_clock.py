@@ -15,7 +15,6 @@ from kittens.kilix_clock.main import (
 
 from . import BaseTest
 
-
 ANSI = re.compile(r'\x1b\[[0-9:;]*m')
 
 

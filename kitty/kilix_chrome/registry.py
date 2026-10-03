@@ -1,14 +1,27 @@
 """Ordered widget registry and action dispatch for the Kilix top bar."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
-from .layouts import LAYOUT_ACTION, show_layout_menu
+from typing import TYPE_CHECKING
 
+from .layouts import LAYOUT_ACTION, show_layout_menu
 from .providers import (
-    CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
-    START_MENU_ACTION, VOLUME_WIDGET_ACTION, clock_segments, network_segment,
-    volume_segment, settings_target, volume_target,
+    CALENDAR_WIDGET_ACTION,
+    DATE_WIDGET_ACTION,
+    NETWORK_WIDGET_ACTION,
+    START_MENU_ACTION,
+    VOLUME_WIDGET_ACTION,
+    clock_segments,
+    network_segment,
+    settings_target,
+    volume_segment,
+    volume_target,
 )
+
+if TYPE_CHECKING:
+    from ..tabs import TabManager
 
 Segment = tuple[str, str | None, int]
 BATTERY_TOGGLE_ACTION = 'kilix_toggle_battery_percent'
@@ -55,7 +68,7 @@ def segments_for(keys: tuple[str, ...], foreground: int) -> tuple[Segment, ...]:
                  for segment in widget.segments(foreground))
 
 
-def dispatch(tab_manager: object, action: str, gesture: str = 'single') -> bool:
+def dispatch(tab_manager: TabManager, action: str, gesture: str = 'single') -> bool:
     """Handle chrome gestures through the shared, viewport-level popup layer."""
     from ..fast_data_types import get_boss
     from .popup import ChromePopup, popup_target
@@ -65,7 +78,7 @@ def dispatch(tab_manager: object, action: str, gesture: str = 'single') -> bool:
         return True
     if action not in GESTURE_ACTIONS:
         return False
-    target = tab_manager.active_tab.active_window if tab_manager.active_tab else None  # type: ignore[attr-defined]
+    target = tab_manager.active_tab.active_window if tab_manager.active_tab else None
     popup_action = f'{action}:{gesture}'
     if target is None or (target := popup_target(target, popup_action)) is None:
         return True
@@ -106,7 +119,7 @@ def dispatch(tab_manager: object, action: str, gesture: str = 'single') -> bool:
                                   'Neither an installed Kilix Temps dashboard nor a Kilix installer could be found.')
         else:
             cmd, cwd = dashboard
-            tab_manager.new_tab(SpecialWindow(cmd, override_title='Kilix Temps', cwd=cwd))  # type: ignore[attr-defined]
+            tab_manager.new_tab(SpecialWindow(cmd, override_title='Kilix Temps', cwd=cwd))
     elif action == NETWORK_WIDGET_ACTION and gesture == 'double':
         from ..utils import which
         executable = which('nmtui')

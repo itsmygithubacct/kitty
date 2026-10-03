@@ -11,15 +11,14 @@ from .fast_data_types import (
     Screen,
     get_options,
 )
-from .rgb import color_as_sgr, color_from_int, to_color
 from .kilix_chrome.settings import chrome_enabled
 from .kilix_memory import MEMORY_GLYPH, MEMORY_WIDGET_ACTION
+from .rgb import color_as_sgr, color_from_int, to_color
 from .tab_bar import draw_attributed_string, safe_builtins
 from .types import WindowGeometry, run_once
 from .utils import color_as_int, log_error
 
-
-_MEMORY_CHIP_COLOR = (color_as_int(to_color('#8ae234')) << 8) | 2
+_MEMORY_CHIP_COLOR = (color_as_int(color_from_int(0x8ae234)) << 8) | 2
 
 
 def pane_resource_text(cpu_text: str, memory_text: str) -> str:
@@ -244,13 +243,21 @@ class WindowTitleBarScreen:
             candidates = (
                 (None, resource_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # CPU load · shared chip · pane RAM
                 ('KILIX_CHROME_BUTTON_LOG', f' {chr(0xf0219)} ', 'kilix_show_pane_log', None),  # full saved pane log in a new tab
-                ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ', 'kilix_toggle_synchronized_input', None),  # join/leave synchronized keyboard input
+                # Join/leave synchronized keyboard input.
+                ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ',
+                 'kilix_toggle_synchronized_input', None),
                 ('KILIX_CHROME_BUTTON_FONT_INCREASE', ' + ', 'change_font_size current +2.0', None),  # increase font size for this kilix window
                 ('KILIX_CHROME_BUTTON_FONT_DECREASE', ' - ', 'change_font_size current -2.0', None),  # decrease font size for this kilix window
-                ('KILIX_CHROME_BUTTON_SPLIT_LEFT', f' {chr(0xf0731)} ', 'launch --location=vsplit-before --cwd=current', None),  # split left: bold ← (new pane to the left)
-                ('KILIX_CHROME_BUTTON_SPLIT_UP', f' {chr(0xf0737)} ', 'launch --location=hsplit-before --cwd=current', None),   # split up: bold ↑ (new pane above)
+                # split left: bold ← (new pane to the left)
+                ('KILIX_CHROME_BUTTON_SPLIT_LEFT', f' {chr(0xf0731)} ',
+                 'launch --location=vsplit-before --cwd=current', None),
+                # split up: bold ↑ (new pane above)
+                ('KILIX_CHROME_BUTTON_SPLIT_UP', f' {chr(0xf0737)} ',
+                 'launch --location=hsplit-before --cwd=current', None),
                 ('KILIX_CHROME_BUTTON_SPLIT_DOWN', f' {chr(0xf072e)} ', 'launch --location=hsplit --cwd=current', None),  # split down: bold ↓ (new pane below)
-                ('KILIX_CHROME_BUTTON_SPLIT_RIGHT', f' {chr(0xf0734)} ', 'launch --location=vsplit --cwd=current', None),  # split right: bold → (new pane to the right)
+                # split right: bold → (new pane to the right)
+                ('KILIX_CHROME_BUTTON_SPLIT_RIGHT', f' {chr(0xf0734)} ',
+                 'launch --location=vsplit --cwd=current', None),
                 ('KILIX_CHROME_BUTTON_MAXIMIZE', f' {max_glyph} ', 'toggle_layout stack', None),  # maximize / zoom pane (glyph = state)
                 ('KILIX_CHROME_BUTTON_CLOSE', f' {chr(0xf0156)} ', 'kilix_close_persistent_window', None),  # confirm + terminate persistent pane
             )
@@ -272,7 +279,7 @@ class WindowTitleBarScreen:
                     action == 'kilix_toggle_synchronized_input'
                     and data.is_synchronized_input
                 )
-                if action and (
+                if (
                         is_depressed
                         or start <= self.hovered_col < start + len(text)):
                     s.cursor.fg, s.cursor.bg = bg, seg_fg
@@ -281,8 +288,7 @@ class WindowTitleBarScreen:
                 else:
                     s.cursor.fg, s.cursor.bg = seg_fg, bg
                     draw_attributed_string(text, s)
-                if action:
-                    for col in range(start, s.cursor.x):
-                        self.button_cols[col] = action
+                for col in range(start, s.cursor.x):
+                    self.button_cols[col] = action
             s.cursor.bold = False
         return title_str

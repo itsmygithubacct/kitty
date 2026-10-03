@@ -464,7 +464,7 @@ class Boss:
         with Window.set_ignore_focus_changes_for_new_windows():
             for startup_session in si:
                 # The window state from the CLI options will override and apply to every single OS window in startup session
-                wstate = self.args.start_as if self.args.start_as and self.args.start_as != 'normal' else None
+                wstate = self.args.start_as if self.args.start_as != 'normal' else None
                 wid = self.add_os_window(startup_session, window_state=wstate, os_window_id=os_window_id)
                 if startup_session.focus_os_window:
                     focused_os_window = wid
@@ -685,6 +685,7 @@ class Boss:
         if isinstance(args, SpecialWindowInstance):
             sw: SpecialWindowInstance | None = args
         else:
+            args = tuple(args)
             sw = self.args_to_special_window(args, cwd_from) if args else None
         startup_session = next(create_sessions(get_options(), special_window=sw, cwd_from=cwd_from))
         startup_session.session_name = ''
@@ -991,7 +992,7 @@ class Boss:
                                 assert isinstance(window.launch_spec, LaunchSpec)
                                 launch(get_boss(), window.launch_spec.opts, window.launch_spec.args)
                     continue
-                wstate = args.start_as if args.start_as and args.start_as != 'normal' else None
+                wstate = args.start_as if args.start_as != 'normal' else None
                 os_window_id = self.add_os_window(
                     session, wclass=args.cls, wname=args.name, opts_for_size=opts, startup_id=startup_id,
                     override_title=args.title or None, window_state=wstate, x=pos_x, y=pos_y)
@@ -3476,10 +3477,11 @@ class Boss:
 
     def _new_tab(self, args: SpecialWindowInstance | Iterable[str], cwd_from: CwdRequest | None = None, as_neighbor: bool = False) -> Tab | None:
         special_window = None
-        if args:
-            if isinstance(args, SpecialWindowInstance):
-                special_window = args
-            else:
+        if isinstance(args, SpecialWindowInstance):
+            special_window = args
+        else:
+            args = tuple(args)
+            if args:
                 special_window = self.args_to_special_window(args, cwd_from=cwd_from)
         if not self.os_window_map:
             self.add_os_window()
@@ -3736,6 +3738,7 @@ class Boss:
                     log_error(f'Failed to process update check data {raw!r}, with error: {e}')
 
     def show_bad_config_lines(self, bad_lines: Iterable[BadLine], misc_errors: Iterable[str] = ()) -> None:
+        misc_errors = tuple(misc_errors)
 
         def format_bad_line(bad_line: BadLine) -> str:
             return f'{bad_line.number}:{bad_line.exception} in line: {bad_line.line}\n'

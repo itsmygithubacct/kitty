@@ -75,8 +75,8 @@ from .fast_data_types import (
     get_window_logo_settings_if_not_default,
     glfw_get_keyboard_repeat_interval,
     is_css_pointer_name_valid,
-    is_os_window_fullscreen,
     is_modifier_key,
+    is_os_window_fullscreen,
     last_focused_os_window_id,
     mark_os_window_dirty,
     monotonic,
@@ -1187,11 +1187,9 @@ class Window:
         is_overlay = tab is not None and tab.overlay_parent(self) is not None
         from .kilix_cpu import pane_cpu_label
         from .kilix_memory import pane_memory_segment
-        memory_segment = (
-            None if is_overlay else pane_memory_segment(
-                self.child.process_tree_root_pid))
-        cpu_label = '' if is_overlay else pane_cpu_label(
-            self.child.process_tree_root_pid)
+        root_pid = self.child.process_tree_root_pid
+        memory_segment = None if is_overlay or root_pid is None else pane_memory_segment(root_pid)
+        cpu_label = '' if is_overlay or root_pid is None else pane_cpu_label(root_pid)
 
         data = WindowTitleData(
             title=self.title or '',

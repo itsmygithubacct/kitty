@@ -2,8 +2,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from kitty.kilix_chrome.layouts import LAYOUT_ACTION, show_layout_menu
-from kitty.kilix_chrome.registry import dispatch
 from kitty.kilix_chrome.providers import START_MENU_ACTION
+from kitty.kilix_chrome.registry import dispatch
 from kitty.tab_bar import TabBar
 
 from . import BaseTest

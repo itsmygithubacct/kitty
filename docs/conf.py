@@ -21,7 +21,11 @@ from docutils import nodes
 try:
     from docutils.parsers.rst.roles import normalize_options
 except ImportError:
-    from docutils.parsers.rst.roles import set_classes as normalize_options  # type: ignore
+    # Older Docutils exposes only deprecated helpers for this class-key rename.
+    def normalize_options(options: dict[str, Any]) -> None:
+        if 'class' in options:
+            assert 'classes' not in options
+            options['classes'] = options.pop('class')
 from pygments.lexer import RegexLexer
 from pygments.lexer import bygroups as untyped_bygroups
 from pygments.token import Comment, Error, Keyword, Literal, Name, Number, String, Whitespace

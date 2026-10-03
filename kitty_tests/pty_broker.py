@@ -2,8 +2,8 @@
 # License: GPL v3
 
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 

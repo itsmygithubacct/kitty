@@ -1,13 +1,13 @@
 """Exercise the production drop handler with an unresponsive Xdnd peer, without X11."""
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / 'x11_window.c'
 
 
-def function(name):
+def function(name: str) -> str:
     source = SOURCE.read_text()
     start = source.index('\n' + name + '(') + 1
     brace = source.index('{', start)
@@ -20,7 +20,7 @@ def function(name):
 
 
 class DragCleanup(unittest.TestCase):
-    def test_drop_lifecycle(self):
+    def test_drop_lifecycle(self) -> None:
         harness = r'''
 #include <assert.h>
 #include <stdbool.h>
