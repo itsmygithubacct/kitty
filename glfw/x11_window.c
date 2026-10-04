@@ -2123,6 +2123,13 @@ static void processEvent(XEvent *event)
         {
             const int mods = translateState(event->xbutton.state);
 
+            // A pointer warp or window move need not deliver a preceding
+            // motion callback. Use this event's client coordinates before
+            // dispatching the button instead of the last cursor sample.
+            // Disabled cursors retain their accumulated relative position.
+            if (window->cursorMode != GLFW_CURSOR_DISABLED)
+                _glfwInputCursorPos(window, event->xbutton.x, event->xbutton.y);
+
 #define cancel_momentum() x11_cancel_momentum_scroll_timer(); glfw_cancel_momentum_scroll()
 
             if (event->xbutton.button == Button1) {
@@ -2182,6 +2189,9 @@ static void processEvent(XEvent *event)
                 handle_drag_button_release(event->xbutton.time);
                 return;
             }
+
+            if (window->cursorMode != GLFW_CURSOR_DISABLED)
+                _glfwInputCursorPos(window, event->xbutton.x, event->xbutton.y);
 
             if (event->xbutton.button == Button1)
             {
