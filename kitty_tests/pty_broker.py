@@ -5,10 +5,14 @@ import os
 import stat
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import Mock, PropertyMock, patch
 
 from kitty.boss import Boss
 from kitty.child import Child
+from kitty.options.types import defaults
+from kitty.session import Session
+from kitty.tabs import SpecialWindow
 from kitty.pty_broker import (
     configuration,
     journal_limit,
@@ -23,6 +27,114 @@ from . import BaseTest
 
 
 class TestPtyBrokerIntegration(BaseTest):
+
+    def startup(self):
+        session = Session()
+        session.add_tab(defaults, 'Desktop')
+        session.add_special_window(SpecialWindow(['/opt/kilix', 'desktop'], env={'EXISTING': 'value'}))
+        return session
+
+    def test_initial_child_gets_login_association_without_recovery(self) -> None:
+        boss = object.__new__(Boss)
+        session = self.startup()
+        with patch.dict(os.environ, {'KITTY_PTY_BROKER_STARTUP_TOKEN': 'a'*32,
+                                    'KITTY_PTY_BROKER_RECOVER_STARTUP': '0'}), \
+                patch('kitty.pty_broker.detached_sessions') as scan:
+            boss.prepare_pty_broker_startup([session])
+        spec = session.tabs[0].windows[0].launch_spec
+        self.ae(spec.cmd, ['/opt/kilix', 'desktop'])
+        self.ae(spec.env, {'EXISTING': 'value', 'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32})
+        scan.assert_not_called()
+
+    def test_recovered_initial_child_replaces_startup_before_it_is_spawned(self) -> None:
+        boss = object.__new__(Boss)
+        session = self.startup()
+        with patch.dict(os.environ, {'KITTY_PTY_BROKER_STARTUP_TOKEN': 'a'*32,
+                                    'KITTY_PTY_BROKER_RECOVER_STARTUP': '1',
+                                    'KITTY_PTY_BROKER_AUTO_RECOVER': '1'}), \
+                patch('kitty.pty_broker.configuration', return_value=('/opt/broker', '/run/user/1/broker')), \
+                patch('kitty.pty_broker.detached_sessions', return_value=({'id': 'original'},)), \
+                patch('kitty.pty_broker.startup_session', return_value={'id': 'original'}) as select:
+            boss.prepare_pty_broker_startup([session])
+        select.assert_called_once_with(({'id': 'original'},), 'a'*32)
+        spec = session.tabs[0].windows[0].launch_spec
+        self.ae(spec.cmd, ['/opt/broker', '--runtime-dir', '/run/user/1/broker', 'attach', 'original'])
+        self.ae(spec.env['KITTY_PTY_BROKER_BYPASS'], '1')
+        self.ae(spec.env['KITTY_PTY_BROKER_SESSION'], 'original')
+        self.ae(spec.env['EXISTING'], 'value')
+        self.ae(boss._pty_broker_startup_session_id, 'original')
+        self.ae(session.tabs[0].name, 'Desktop')
+
+    def test_missing_match_or_disabled_recovery_keeps_default_command(self) -> None:
+        for enabled in ('0', '1'):
+            session = self.startup()
+            boss = object.__new__(Boss)
+            with patch.dict(os.environ, {'KITTY_PTY_BROKER_STARTUP_TOKEN': 'a'*32,
+                                        'KITTY_PTY_BROKER_RECOVER_STARTUP': '1',
+                                        'KITTY_PTY_BROKER_AUTO_RECOVER': enabled}), \
+                    patch('kitty.pty_broker.configuration', return_value=('/opt/broker', '/run/user/1/broker')), \
+                    patch('kitty.pty_broker.detached_sessions', return_value=()), \
+                    patch('kitty.pty_broker.startup_session', return_value=None) as select:
+                boss.prepare_pty_broker_startup([session])
+            self.ae(session.tabs[0].windows[0].launch_spec.cmd, ['/opt/kilix', 'desktop'])
+            self.assertFalse(hasattr(boss, '_pty_broker_startup_session_id'))
+            if enabled == '0':
+                select.assert_not_called()
+
+    def test_custom_startup_sessions_are_preserved(self) -> None:
+        from kitty.launch import parse_launch_args
+        multiple_windows = self.startup()
+        multiple_windows.add_special_window(SpecialWindow(['/bin/sh']))
+        multiple_tabs = self.startup()
+        multiple_tabs.add_tab(defaults)
+        multiple_tabs.add_special_window(SpecialWindow(['/bin/sh']))
+        explicit = self.startup()
+        explicit.tabs[0].windows[0].launch_spec = parse_launch_args(['/bin/sh'])
+        for sessions in ([self.startup(), self.startup()], [multiple_windows], [multiple_tabs], [explicit], []):
+            before = [w.launch_spec for s in sessions for t in s.tabs for w in t.windows]
+            with patch.dict(os.environ, {'KITTY_PTY_BROKER_STARTUP_TOKEN': 'a'*32}), \
+                    patch('kitty.pty_broker.detached_sessions') as scan:
+                object.__new__(Boss).prepare_pty_broker_startup(sessions)
+            self.ae([w.launch_spec for s in sessions for t in s.tabs for w in t.windows], before)
+            scan.assert_not_called()
+
+    def test_initial_attach_is_not_recovered_again_and_stays_active(self) -> None:
+        boss = object.__new__(Boss)
+        boss._pty_broker_startup_session_id = 'original'
+        original_tab = object()
+        class Manager(list):
+            active_tab = original_tab
+            def new_tab(self, special_window):
+                self.append(special_window)
+            def set_active_tab(self, tab):
+                self.active_tab = tab
+        manager = Manager([original_tab])
+        with patch.dict(os.environ, {'KITTY_PTY_BROKER_AUTO_RECOVER': '1'}), \
+                patch('kitty.pty_broker.configuration', return_value=('/opt/broker', '/run/user/1/broker')), \
+                patch('kitty.pty_broker.detached_sessions', return_value=({'id': 'original'}, {'id': 'job'})), \
+                patch.object(Boss, 'active_tab_manager', new_callable=PropertyMock, return_value=manager):
+            boss.recover_pty_broker_sessions()
+            boss.recover_pty_broker_sessions()
+        self.ae(len(manager), 2)
+        self.ae(manager[1].env['KITTY_PTY_BROKER_SESSION'], 'job')
+        self.assertIs(manager.active_tab, original_tab)
+
+    def test_initial_child_role_is_not_inherited_by_later_panes(self) -> None:
+        inherited = {'KITTY_PTY_BROKER_STARTUP_SESSION': 'b'*32,
+                     'KITTY_PTY_BROKER_STARTUP_TOKEN': 'c'*32,
+                     'KITTY_PTY_BROKER_RECOVER_STARTUP': '1', 'UNCHANGED': 'value'}
+        opts = SimpleNamespace(term='xterm-kitty', terminfo_type='none', shell_integration={'disabled'})
+        boss = SimpleNamespace(encryption_public_key='test-key', listening_on='')
+        for explicit in ({}, {'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32}):
+            child = Child(['/bin/sh'], '/', env=explicit)
+            with patch('kitty.child.default_env', return_value=inherited), \
+                    patch('kitty.child.fast_data_types.get_options', return_value=opts), \
+                    patch('kitty.child.fast_data_types.get_boss', return_value=boss):
+                env, _ = child.get_final_env()
+            self.ae(env.get('KITTY_PTY_BROKER_STARTUP_SESSION'), explicit.get('KITTY_PTY_BROKER_STARTUP_SESSION'))
+            self.assertNotIn('KITTY_PTY_BROKER_STARTUP_TOKEN', env)
+            self.assertNotIn('KITTY_PTY_BROKER_RECOVER_STARTUP', env)
+            self.ae(env['UNCHANGED'], 'value')
 
     def test_log_button_uses_clicked_pane_and_opens_a_separate_tab(self) -> None:
         boss = object.__new__(Boss)

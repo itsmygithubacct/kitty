@@ -457,8 +457,12 @@ class Boss:
         self.notification_manager: NotificationManager = NotificationManager(debug=self.args.debug_keyboard or self.args.debug_rendering)
         self.atexit.unlink(store_effective_config())
 
-    def startup_first_child(self, os_window_id: int | None, startup_sessions: Iterable[Session] = ()) -> None:
-        si = startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session)
+    def startup_first_child(
+        self, os_window_id: int | None, startup_sessions: Iterable[Session] = (), allow_startup_recovery: bool = True
+    ) -> None:
+        si = tuple(startup_sessions or create_sessions(get_options(), self.args, default_session=get_options().startup_session))
+        if allow_startup_recovery:
+            self.prepare_pty_broker_startup(si)
         focused_os_window = wid = 0
         token = os.environ.pop('XDG_ACTIVATION_TOKEN', '')
         with Window.set_ignore_focus_changes_for_new_windows():
@@ -475,6 +479,33 @@ class Boss:
                 focus_os_window(wid, True, token)
         for w in self.all_windows:
             w.ignore_focus_changes = False
+
+    def prepare_pty_broker_startup(self, sessions: Sequence[Session]) -> None:
+        from .pty_broker import attach_command, configuration, detached_sessions, startup_session, valid_startup_token
+        token = os.environ.get('KITTY_PTY_BROKER_STARTUP_TOKEN', '')
+        # Preserve explicit session files, multi-window commands and URL launches.
+        if (not valid_startup_token(token)
+                or len(sessions) != 1 or len(sessions[0].tabs) != 1
+                or len(sessions[0].tabs[0].windows) != 1):
+            return
+        specification = sessions[0].tabs[0].windows[0]
+        window = specification.launch_spec
+        if not isinstance(window, SpecialWindowInstance):
+            return
+        env = dict(window.env or {}, KITTY_PTY_BROKER_STARTUP_SESSION=token)
+        replacement = window._replace(env=env)
+        executable, runtime = configuration()
+        if (executable and os.environ.get('KITTY_PTY_BROKER_RECOVER_STARTUP') == '1'
+                and os.environ.get('KITTY_PTY_BROKER_AUTO_RECOVER', '1') != '0'):
+            previous = startup_session(detached_sessions(executable, runtime), token)
+            if previous is not None:
+                session_id = previous['id']
+                env.update(KITTY_PTY_BROKER_BYPASS='1', KITTY_PTY_BROKER_SESSION=session_id)
+                replacement = replacement._replace(
+                    cmd=attach_command(executable, runtime, session_id), stdin=None, cwd_from=None)
+                # Exclude it even before the attach helper has connected to the broker.
+                self._pty_broker_startup_session_id = session_id
+        specification.launch_spec = replacement
 
     def add_os_window(
         self,
@@ -1136,6 +1167,8 @@ class Boss:
         with Window.set_ignore_focus_changes_for_new_windows():
             for status in sessions:
                 session_id = status['id']
+                if session_id == getattr(self, '_pty_broker_startup_session_id', ''):
+                    continue
                 cwd = status.get('cwd')
                 if not isinstance(cwd, str) or not os.path.isdir(cwd):
                     cwd = None
@@ -1818,7 +1851,7 @@ class Boss:
             if urls:
                 delattr(sys, 'cmdline_args_for_open')
                 sess = create_sessions(get_options(), self.args, special_window=SpecialWindow([kitty_exe(), '+runpy', 'input()']))
-                self.startup_first_child(first_os_window_id, startup_sessions=tuple(sess))
+                self.startup_first_child(first_os_window_id, startup_sessions=tuple(sess), allow_startup_recovery=False)
                 self.launch_urls(*urls)
             else:
                 self.startup_first_child(first_os_window_id, startup_sessions=startup_sessions)

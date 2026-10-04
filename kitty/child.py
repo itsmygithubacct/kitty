@@ -391,7 +391,12 @@ class Child:
             and not getattr(default_env, 'lc_ctype_set_by_user', False)
         ):
             del env['LC_CTYPE']
+        # A login's initial-child role must not become the default for later
+        # panes launched by a shell or desktop that inherited that environment.
+        env.pop('KITTY_PTY_BROKER_STARTUP_SESSION', None)
         env.update(self.env)
+        env.pop('KITTY_PTY_BROKER_STARTUP_TOKEN', None)
+        env.pop('KITTY_PTY_BROKER_RECOVER_STARTUP', None)
         env['TERM'] = opts.term
         env['COLORTERM'] = 'truecolor'
         env['KITTY_PID'] = getpid()

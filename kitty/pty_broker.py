@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 _SESSION_ID = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+_STARTUP_TOKEN = re.compile(r'^[0-9a-f]{32}$')
 
 
 def configuration(environment: Mapping[str, str] | None = None) -> tuple[str, str]:
@@ -35,6 +36,54 @@ def configuration(environment: Mapping[str, str] | None = None) -> tuple[str, st
 
 def valid_session_id(value: str) -> bool:
     return bool(_SESSION_ID.fullmatch(value)) and value not in {'.', '..'}
+
+
+def valid_startup_token(value: str) -> bool:
+    return bool(_STARTUP_TOKEN.fullmatch(value))
+
+
+def _startup_token_of_child(pid: int) -> str:
+    """Read the association from a live same-user broker child, never log env."""
+    directory = f'/proc/{pid}'
+    try:
+        if os.stat(directory).st_uid != os.getuid():
+            return ''
+        with open(f'{directory}/stat') as stream:
+            before = stream.read().rsplit(')', 1)[1].split()
+        if before[0] in {'Z', 'X'}:
+            return ''
+        with open(f'{directory}/environ', 'rb') as stream:
+            data = stream.read(262145)
+        if len(data) > 262144:
+            return ''
+        with open(f'{directory}/stat') as stream:
+            after = stream.read().rsplit(')', 1)[1].split()
+        if after[0] in {'Z', 'X'} or before[19] != after[19]:
+            return ''
+        values = [item.partition(b'=')[2] for item in data.split(b'\0')
+                  if item.startswith(b'KITTY_PTY_BROKER_STARTUP_SESSION=')]
+        if len(values) == 1:
+            token = values[0].decode('ascii')
+            if valid_startup_token(token):
+                return token
+    except (OSError, UnicodeError, IndexError):
+        pass
+    return ''
+
+
+def startup_session(sessions: Sequence[dict[str, Any]], token: str) -> dict[str, Any] | None:
+    """Select one detached initial child for this login; ambiguity starts fresh."""
+    if not valid_startup_token(token):
+        return None
+    found = []
+    for status in sessions:
+        session_id, pid = status.get('id'), status.get('child_pid')
+        if (status.get('attached') or not isinstance(session_id, str)
+                or not valid_session_id(session_id) or type(pid) is not int or pid <= 0):
+            continue
+        if _startup_token_of_child(pid) == token:
+            found.append(status)
+    return found[0] if len(found) == 1 else None
 
 
 def new_session_id() -> str:
