@@ -796,6 +796,7 @@ class Window:
         self.tabref: Callable[[], TabType | None] = weakref.ref(tab)
         self.destroyed = False
         self.geometry: WindowGeometry = WindowGeometry(0, 0, 0, 0, 0, 0)
+        self.content_geometry: tuple[int, int, int, int] = (0, 0, 0, 0)
         self._title_bar_screen: Any = None
         self.needs_layout = True
         self.is_visible_in_layout: bool = True
@@ -1098,6 +1099,7 @@ class Window:
 
         # Store original geometry for borders/padding calculations
         self.geometry = g = new_geometry
+        self.content_geometry = (g.left, render_top, g.right, render_bottom)
         # Set C-side render data with adjusted top/bottom for content area
         set_window_render_data(
             self.os_window_id,
