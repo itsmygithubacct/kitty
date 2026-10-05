@@ -280,6 +280,115 @@ def detached_sessions(executable: str, runtime: str) -> tuple[dict[str, Any], ..
     return tuple(answer)
 
 
+def live_session_ids(executable: str, runtime: str) -> frozenset[str] | None:
+    """Every session the broker still runs, attached or not; None if unknown."""
+    try:
+        completed = subprocess.run(
+            [executable, '--runtime-dir', runtime, 'list', '--json'],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return None
+        decoded = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(decoded, list):
+        return None
+    return frozenset(
+        item['id'] for item in decoded
+        if isinstance(item, dict) and isinstance(item.get('id'), str)
+        and valid_session_id(item['id']))
+
+
+# A brokered pane outlives the frontend that drew it, but its tab name and
+# window title live only in that frontend.  They are kept beside the broker's
+# runtime so a recovered frontend can show the pane under its own name again
+# instead of an anonymous session id.
+TITLE_KEYS = ('tab', 'window', 'override')
+_written_titles: dict[str, str] = {}
+
+
+def titles_path(runtime: str, session_id: str) -> str:
+    if not runtime or not os.path.isabs(runtime) or not valid_session_id(session_id):
+        return ''
+    return os.path.join(runtime, 'titles', f'{session_id}.json')
+
+
+def write_titles(runtime: str, session_id: str, titles: Mapping[str, str | None]) -> bool:
+    """Record a pane's titles; advisory, so every failure is swallowed."""
+    path = titles_path(runtime, session_id)
+    if not path:
+        return False
+    payload = json.dumps({
+        key: _one_line(value, 512) for key, value in titles.items()
+        if key in TITLE_KEYS and isinstance(value, str) and value.strip()
+    }, sort_keys=True)
+    if _written_titles.get(path) == payload:
+        return True
+    temporary = f'{path}.{os.getpid()}.tmp'
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, 'O_NOFOLLOW'):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(temporary, flags, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape') as sidecar:
+            sidecar.write(payload)
+        os.replace(temporary, path)
+    except (OSError, UnicodeError, ValueError):
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        return False
+    _written_titles[path] = payload
+    return True
+
+
+def read_titles(runtime: str, session_id: str) -> dict[str, str]:
+    path = titles_path(runtime, session_id)
+    if not path:
+        return {}
+    flags = os.O_RDONLY | (os.O_NOFOLLOW if hasattr(os, 'O_NOFOLLOW') else 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, 'rb') as sidecar:
+            data = json.loads(sidecar.read(16384).decode('utf-8', 'surrogateescape'))
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: _one_line(value, 512) for key, value in data.items()
+            if key in TITLE_KEYS and isinstance(value, str) and value.strip()}
+
+
+def forget_titles(runtime: str, session_id: str) -> None:
+    path = titles_path(runtime, session_id)
+    if path:
+        _written_titles.pop(path, None)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def prune_titles(runtime: str, live: frozenset[str]) -> None:
+    """Drop the titles of sessions the broker no longer runs."""
+    directory = os.path.join(runtime, 'titles') if runtime and os.path.isabs(runtime) else ''
+    try:
+        names = os.listdir(directory) if directory else []
+    except OSError:
+        return
+    for name in names:
+        session_id = name[:-5] if name.endswith('.json') else ''
+        if valid_session_id(session_id) and session_id not in live:
+            forget_titles(runtime, session_id)
+
+
 def terminate(executable: str, runtime: str, session_id: str) -> bool:
     if not valid_session_id(session_id):
         return False

@@ -1092,6 +1092,14 @@ class Boss:
             return
         window.child_died, window.child_exit_status = child_died, exit_status
         window.child_exit_code = os.waitstatus_to_exitcode(exit_status)
+        child = window.child
+        if child.is_pty_brokered:
+            # The pane is gone for good only if its broker session is gone too;
+            # a detached session keeps its names for a later attach.
+            from .pty_broker import forget_titles, query_status
+            if not query_status(child.pty_broker_executable, child.pty_broker_runtime,
+                                child.pty_broker_session_id):
+                forget_titles(child.pty_broker_runtime, child.pty_broker_session_id)
         with self.suppress_focus_change_events():
             for close_action in window.actions_on_close:
                 try:
@@ -1155,10 +1163,15 @@ class Boss:
         self._pty_broker_recovery_done = True
         if os.environ.get('KITTY_PTY_BROKER_AUTO_RECOVER', '1') == '0':
             return
-        from .pty_broker import attach_command, configuration, detached_sessions
+        from .pty_broker import (
+            attach_command, configuration, detached_sessions, live_session_ids, prune_titles, read_titles,
+        )
         executable, runtime = configuration()
         if not executable:
             return
+        live = live_session_ids(executable, runtime)
+        if live is not None:
+            prune_titles(runtime, live)
         sessions = detached_sessions(executable, runtime)
         tm = self.active_tab_manager
         if not sessions or tm is None:
@@ -1172,15 +1185,26 @@ class Boss:
                 cwd = status.get('cwd')
                 if not isinstance(cwd, str) or not os.path.isdir(cwd):
                     cwd = None
-                tm.new_tab(special_window=SpecialWindow(
+                titles = read_titles(runtime, session_id)
+                tab = tm.new_tab(special_window=SpecialWindow(
                     attach_command(executable, runtime, session_id),
-                    override_title=f'recovered:{session_id[:8]}',
+                    # The pane's own names when the lost frontend recorded
+                    # them; otherwise an explicit placeholder so the user can
+                    # tell the tab was recovered rather than opened.
+                    override_title=titles.get('override') or (
+                        None if titles.get('window') else f'recovered:{session_id[:8]}'),
                     cwd=cwd,
                     env={
                         'KITTY_PTY_BROKER_BYPASS': '1',
                         'KITTY_PTY_BROKER_SESSION': session_id,
                     },
                 ))
+                window = getattr(tab, 'active_window', None) if tab is not None else None
+                if window is not None and titles.get('window') and not titles.get('override'):
+                    window.child_title = titles['window']
+                    window.title_updated()
+                if tab is not None and titles.get('tab'):
+                    tab.set_title(titles['tab'])
         if original_tab is not None and original_tab in tm:
             tm.set_active_tab(original_tab)
 

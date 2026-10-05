@@ -495,6 +495,8 @@ class Tab:  # {{{
     def set_title(self, title: str) -> None:
         self.name = title or ''
         self.mark_tab_bar_dirty()
+        for window in self:
+            window.remember_broker_titles()
 
     def update_window_title_bars(self) -> None:
         active_group = self.windows.active_group

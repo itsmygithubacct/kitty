@@ -1324,6 +1324,21 @@ class Window:
         t = self.tabref()
         if t is not None:
             t.title_changed(self)
+        self.remember_broker_titles()
+
+    def remember_broker_titles(self) -> None:
+        """Keep this pane's names beside its broker session for recovery."""
+        child = getattr(self, 'child', None)
+        if child is None or not child.is_pty_brokered:
+            return
+        from .pty_broker import write_titles
+        override = self.override_title
+        if override and override.startswith('recovered:'):
+            override = None          # the recovery placeholder is not a name
+        t = self.tabref()
+        write_titles(child.pty_broker_runtime, child.pty_broker_session_id, {
+            'window': self.child_title, 'override': override,
+            'tab': t.name if t is not None else None})
 
     def set_title(self, title: str | None) -> None:
         if title:

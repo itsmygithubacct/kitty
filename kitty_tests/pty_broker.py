@@ -119,6 +119,108 @@ class TestPtyBrokerIntegration(BaseTest):
         self.ae(manager[1].env['KITTY_PTY_BROKER_SESSION'], 'job')
         self.assertIs(manager.active_tab, original_tab)
 
+    def test_pane_titles_survive_beside_the_broker(self) -> None:
+        from kitty import pty_broker
+        with TemporaryDirectory() as runtime:
+            pty_broker._written_titles.clear()
+            sid = new_session_id()
+            previous_umask = os.umask(0o022)      # permissive, so only the code keeps it private
+            self.addCleanup(os.umask, previous_umask)
+            self.assertTrue(pty_broker.write_titles(runtime, sid, {
+                'tab': 'R4 live work', 'window': 'python3\nsecond line', 'override': None,
+                'unexpected': 'dropped'}))
+            path = pty_broker.titles_path(runtime, sid)
+            self.ae(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            self.ae(stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode), 0o700)
+            self.ae(pty_broker.read_titles(runtime, sid),
+                    {'tab': 'R4 live work', 'window': 'python3 second line'})
+            # unchanged titles are not rewritten
+            before = os.stat(path).st_ino        # a rewrite replaces the inode
+            pty_broker.write_titles(runtime, sid, {'tab': 'R4 live work', 'window': 'python3\nsecond line'})
+            self.ae(os.stat(path).st_ino, before)
+            # a symlinked sidecar is never followed
+            other = new_session_id()
+            target = Path(runtime, 'elsewhere.json')
+            target.write_text('{"tab": "planted"}')
+            os.symlink(target, pty_broker.titles_path(runtime, other))
+            self.ae(pty_broker.read_titles(runtime, other), {})
+            # junk and invalid ids yield nothing
+            Path(pty_broker.titles_path(runtime, other)).unlink()
+            Path(pty_broker.titles_path(runtime, other)).write_text('[1, 2]')
+            self.ae(pty_broker.read_titles(runtime, other), {})
+            self.ae(pty_broker.titles_path(runtime, '../escape'), '')
+            self.ae(pty_broker.titles_path('relative', sid), '')
+            # pruning keeps live sessions only
+            pty_broker.prune_titles(runtime, frozenset({sid}))
+            self.assertTrue(os.path.exists(path))
+            self.assertFalse(os.path.exists(pty_broker.titles_path(runtime, other)))
+            pty_broker.prune_titles(runtime, frozenset())
+            self.assertFalse(os.path.exists(path))
+
+    def test_a_brokered_window_records_its_names_but_not_the_placeholder(self) -> None:
+        from kitty import pty_broker
+        from kitty.window import Window
+        with TemporaryDirectory() as runtime:
+            pty_broker._written_titles.clear()
+            sid = new_session_id()
+            tab = SimpleNamespace(name='R4 live work')
+            window = SimpleNamespace(
+                child=SimpleNamespace(is_pty_brokered=True, pty_broker_runtime=runtime,
+                                      pty_broker_session_id=sid),
+                child_title='python3', override_title='recovered:abcdef12', tabref=lambda: tab)
+            Window.remember_broker_titles(window)
+            self.ae(pty_broker.read_titles(runtime, sid), {'tab': 'R4 live work', 'window': 'python3'})
+            window.override_title = 'my notes'
+            Window.remember_broker_titles(window)
+            self.ae(pty_broker.read_titles(runtime, sid)['override'], 'my notes')
+            unbrokered = SimpleNamespace(child=SimpleNamespace(is_pty_brokered=False))
+            Window.remember_broker_titles(unbrokered)          # no-op, no error
+
+    def test_recovered_panes_get_their_saved_names_back(self) -> None:
+        boss = object.__new__(Boss)
+        boss._pty_broker_startup_session_id = 'original'
+        original_tab = object()
+        made = []
+        class FakeTab:
+            def __init__(self, special_window):
+                self.special_window = special_window
+                self.name = ''
+                self.active_window = SimpleNamespace(child_title='', titled=0)
+                self.active_window.title_updated = lambda w=self.active_window: setattr(w, 'titled', w.titled + 1)
+            def set_title(self, title):
+                self.name = title
+        class Manager(list):
+            active_tab = original_tab
+            def new_tab(self, special_window):
+                tab = FakeTab(special_window)
+                made.append(tab)
+                self.append(tab)
+                return tab
+            def set_active_tab(self, tab):
+                self.active_tab = tab
+        saved = {
+            'job': {'tab': 'R4 live work', 'window': 'python3'},
+            'renamed': {'window': 'shell', 'override': 'my notes'},
+        }
+        manager = Manager([original_tab])
+        with patch.dict(os.environ, {'KITTY_PTY_BROKER_AUTO_RECOVER': '1'}), \
+                patch('kitty.pty_broker.configuration', return_value=('/opt/broker', '/run/user/1/broker')), \
+                patch('kitty.pty_broker.live_session_ids', return_value=None), \
+                patch('kitty.pty_broker.read_titles', side_effect=lambda runtime, sid: dict(saved.get(sid, {}))), \
+                patch('kitty.pty_broker.detached_sessions',
+                      return_value=({'id': 'original'}, {'id': 'job'}, {'id': 'renamed'}, {'id': 'anonymous'})), \
+                patch.object(Boss, 'active_tab_manager', new_callable=PropertyMock, return_value=manager):
+            boss.recover_pty_broker_sessions()
+        job, renamed, anonymous = made
+        self.ae(job.name, 'R4 live work')
+        self.assertIsNone(job.special_window.override_title)
+        self.ae(job.active_window.child_title, 'python3')
+        self.ae(job.active_window.titled, 1)
+        self.ae(renamed.special_window.override_title, 'my notes')
+        self.ae(renamed.name, '')
+        self.ae(anonymous.special_window.override_title, 'recovered:anonymou')
+        self.assertIs(manager.active_tab, original_tab)
+
     def test_initial_child_role_is_not_inherited_by_later_panes(self) -> None:
         inherited = {'KITTY_PTY_BROKER_STARTUP_SESSION': 'b'*32,
                      'KITTY_PTY_BROKER_STARTUP_TOKEN': 'c'*32,
