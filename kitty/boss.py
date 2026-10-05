@@ -481,7 +481,7 @@ class Boss:
             w.ignore_focus_changes = False
 
     def prepare_pty_broker_startup(self, sessions: Sequence[Session]) -> None:
-        from .pty_broker import attach_command, configuration, detached_sessions, startup_session, valid_startup_token
+        from .pty_broker import STARTUP_SPEC_MARKER, attach_command, configuration, detached_sessions, startup_session, valid_startup_token
         token = os.environ.get('KITTY_PTY_BROKER_STARTUP_TOKEN', '')
         # Preserve explicit session files, multi-window commands and URL launches.
         if (not valid_startup_token(token)
@@ -493,6 +493,7 @@ class Boss:
         if not isinstance(window, SpecialWindowInstance):
             return
         env = dict(window.env or {}, KITTY_PTY_BROKER_STARTUP_SESSION=token)
+        env[STARTUP_SPEC_MARKER] = '1'
         replacement = window._replace(env=env)
         executable, runtime = configuration()
         if (executable and os.environ.get('KITTY_PTY_BROKER_RECOVER_STARTUP') == '1'
