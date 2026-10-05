@@ -11,8 +11,6 @@ from unittest.mock import Mock, PropertyMock, patch
 from kitty.boss import Boss
 from kitty.child import Child
 from kitty.options.types import defaults
-from kitty.session import Session
-from kitty.tabs import SpecialWindow
 from kitty.pty_broker import (
     configuration,
     journal_limit,
@@ -22,6 +20,8 @@ from kitty.pty_broker import (
     valid_session_id,
     wrap_command,
 )
+from kitty.session import Session
+from kitty.tabs import SpecialWindow
 
 from . import BaseTest
 

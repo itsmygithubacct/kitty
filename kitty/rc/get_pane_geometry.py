@@ -4,9 +4,18 @@
 import json
 from typing import TYPE_CHECKING
 
-from .base import (MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType,
-                   PayloadType, RCOptions, RemoteCommand,
-                   RemoteControlErrorWithoutTraceback, ResponseType, Window)
+from .base import (
+    MATCH_WINDOW_OPTION,
+    ArgsType,
+    Boss,
+    PayloadGetType,
+    PayloadType,
+    RCOptions,
+    RemoteCommand,
+    RemoteControlErrorWithoutTraceback,
+    ResponseType,
+    Window,
+)
 
 if TYPE_CHECKING:
     from kitty.cli_stub import GetPaneGeometryRCOptions as CLIOptions
@@ -28,9 +37,7 @@ class GetPaneGeometry(RemoteCommand):
     def response_from_kitty(self, boss: Boss, window: Window | None,
                             payload_get: PayloadGetType) -> ResponseType:
         from kitty.constants import is_wayland
-        from kitty.fast_data_types import (cell_size_for_window, current_focused_os_window_id,
-                                          get_os_window_pos, get_os_window_size,
-                                          os_window_is_invisible)
+        from kitty.fast_data_types import cell_size_for_window, current_focused_os_window_id, get_os_window_pos, get_os_window_size, os_window_is_invisible
         windows = self.windows_for_match_payload(boss, window, payload_get)
         if len(windows) != 1:
             raise RemoteControlErrorWithoutTraceback('Select exactly one live pane')
