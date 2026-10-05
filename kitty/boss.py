@@ -1092,14 +1092,6 @@ class Boss:
             return
         window.child_died, window.child_exit_status = child_died, exit_status
         window.child_exit_code = os.waitstatus_to_exitcode(exit_status)
-        child = window.child
-        if child.is_pty_brokered:
-            # The pane is gone for good only if its broker session is gone too;
-            # a detached session keeps its names for a later attach.
-            from .pty_broker import forget_titles, query_status
-            if not query_status(child.pty_broker_executable, child.pty_broker_runtime,
-                                child.pty_broker_session_id):
-                forget_titles(child.pty_broker_runtime, child.pty_broker_session_id)
         with self.suppress_focus_change_events():
             for close_action in window.actions_on_close:
                 try:
@@ -1154,6 +1146,12 @@ class Boss:
         if (window.child.is_pty_brokered
                 and not window.child.terminate_pty_broker()):
             return False
+        if window.child.is_pty_brokered:
+            # The session is gone for good; its names go with it. Sessions that
+            # end any other way are pruned at the next recovery instead.
+            from .pty_broker import forget_titles
+            forget_titles(getattr(window.child, 'pty_broker_runtime', ''),
+                          getattr(window.child, 'pty_broker_session_id', ''))
         self.mark_window_for_close(window)
         return True
 
@@ -1169,9 +1167,11 @@ class Boss:
         executable, runtime = configuration()
         if not executable:
             return
+        import time
+        listed_at = time.time()
         live = live_session_ids(executable, runtime)
         if live is not None:
-            prune_titles(runtime, live)
+            prune_titles(runtime, live, listed_at)
         sessions = detached_sessions(executable, runtime)
         tm = self.active_tab_manager
         if not sessions or tm is None:

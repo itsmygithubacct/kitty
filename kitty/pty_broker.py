@@ -376,8 +376,11 @@ def forget_titles(runtime: str, session_id: str) -> None:
             pass
 
 
-def prune_titles(runtime: str, live: frozenset[str]) -> None:
-    """Drop the titles of sessions the broker no longer runs."""
+def prune_titles(runtime: str, live: frozenset[str], listed_at: float | None = None) -> None:
+    """Drop the titles of sessions the broker no longer runs.
+
+    A sidecar written after the listing (``listed_at``) may belong to a session
+    started since, so it is kept for the next prune."""
     directory = os.path.join(runtime, 'titles') if runtime and os.path.isabs(runtime) else ''
     try:
         names = os.listdir(directory) if directory else []
@@ -385,8 +388,15 @@ def prune_titles(runtime: str, live: frozenset[str]) -> None:
         return
     for name in names:
         session_id = name[:-5] if name.endswith('.json') else ''
-        if valid_session_id(session_id) and session_id not in live:
-            forget_titles(runtime, session_id)
+        if not valid_session_id(session_id) or session_id in live:
+            continue
+        if listed_at is not None:
+            try:
+                if os.lstat(os.path.join(directory, name)).st_mtime >= listed_at:
+                    continue
+            except OSError:
+                continue
+        forget_titles(runtime, session_id)
 
 
 def terminate(executable: str, runtime: str, session_id: str) -> bool:

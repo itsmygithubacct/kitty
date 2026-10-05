@@ -176,6 +176,75 @@ class TestPtyBrokerIntegration(BaseTest):
             unbrokered = SimpleNamespace(child=SimpleNamespace(is_pty_brokered=False))
             Window.remember_broker_titles(unbrokered)          # no-op, no error
 
+    def test_every_naming_path_records_and_ending_paths_forget(self) -> None:
+        import inspect
+        from kitty import pty_broker
+        from kitty.tabs import Tab
+        from kitty.window import Window
+        # a title change records
+        fake = SimpleNamespace(os_window_id=1, tab_id=2, id=3, title='t', tabref=lambda: None,
+                               remember_broker_titles=Mock())
+        with patch('kitty.window.update_window_title'):
+            Window.title_updated(fake)
+        fake.remember_broker_titles.assert_called_once_with()
+        # renaming a tab records every pane in it
+        panes = [Mock(), Mock()]
+        class FakeTab(list):
+            name = ''
+            mark_tab_bar_dirty = Mock()
+        tab = FakeTab(panes)
+        Tab.set_title(tab, 'R4 live work')
+        self.ae(tab.name, 'R4 live work')
+        for pane in panes:
+            pane.remember_broker_titles.assert_called_once_with()
+        # a window joining its tab records (a tab named at launch, or a silent program)
+        joining = Mock()
+        host = SimpleNamespace(current_layout=Mock(), windows=Mock(), active_window=None,
+                               mark_tab_bar_dirty=Mock(), relayout=Mock())
+        Tab._add_window(host, joining)
+        joining.remember_broker_titles.assert_called_once_with()
+        # an explicit close forgets, but only once the broker really ended the session
+        for terminated in (True, False):
+            boss = object.__new__(Boss)
+            boss.mark_window_for_close = Mock()
+            child = SimpleNamespace(is_pty_brokered=True, terminate_pty_broker=lambda: terminated,
+                                    pty_broker_runtime='/run/user/1/broker', pty_broker_session_id='sess')
+            with patch('kitty.pty_broker.forget_titles') as forget:
+                Boss.close_window_explicitly(boss, SimpleNamespace(child=child))
+            if terminated:
+                forget.assert_called_once_with('/run/user/1/broker', 'sess')
+            else:
+                forget.assert_not_called()
+        # child death never blocks on the broker
+        self.assertNotIn('query_status', inspect.getsource(Boss.on_child_death))
+        # recovery prunes against the live list, timed before the listing
+        boss = object.__new__(Boss)
+        boss._pty_broker_startup_session_id = ''
+        class Manager(list):
+            active_tab = None
+            def new_tab(self, special_window):
+                return None
+        with patch.dict(os.environ, {'KITTY_PTY_BROKER_AUTO_RECOVER': '1'}), \
+                patch('kitty.pty_broker.configuration', return_value=('/opt/broker', '/run/user/1/broker')), \
+                patch('kitty.pty_broker.live_session_ids', return_value=frozenset({'job'})), \
+                patch('kitty.pty_broker.prune_titles') as prune, \
+                patch('kitty.pty_broker.detached_sessions', return_value=()), \
+                patch.object(Boss, 'active_tab_manager', new_callable=PropertyMock, return_value=Manager()):
+            boss.recover_pty_broker_sessions()
+        prune.assert_called_once()
+        self.ae(prune.call_args.args[:2], ('/run/user/1/broker', frozenset({'job'})))
+        self.assertIsInstance(prune.call_args.args[2], float)
+        # a sidecar written after the listing survives the prune
+        with TemporaryDirectory() as runtime:
+            pty_broker._written_titles.clear()
+            old, new = new_session_id(), new_session_id()
+            pty_broker.write_titles(runtime, old, {'window': 'gone'})
+            os.utime(pty_broker.titles_path(runtime, old), (1000, 1000))
+            pty_broker.write_titles(runtime, new, {'window': 'started meanwhile'})
+            pty_broker.prune_titles(runtime, frozenset(), listed_at=2000.0)
+            self.assertFalse(os.path.exists(pty_broker.titles_path(runtime, old)))
+            self.assertTrue(os.path.exists(pty_broker.titles_path(runtime, new)))
+
     def test_recovered_panes_get_their_saved_names_back(self) -> None:
         boss = object.__new__(Boss)
         boss._pty_broker_startup_session_id = 'original'

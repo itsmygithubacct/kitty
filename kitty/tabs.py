@@ -853,6 +853,9 @@ class Tab:  # {{{
             window.keys_redirected_till_ready_from = w.id
         self.mark_tab_bar_dirty()
         self.relayout()
+        # A tab named at launch, or a program that never sets a title, would
+        # otherwise have nothing recorded until its first title change.
+        window.remember_broker_titles()
 
     def new_window(
         self,
