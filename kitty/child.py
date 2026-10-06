@@ -393,6 +393,9 @@ class Child:
             and not getattr(default_env, 'lc_ctype_set_by_user', False)
         ):
             del env['LC_CTYPE']
+        # The marker is honoured only from this child's own launch spec, where
+        # only the boss sets it; one inherited by kitty itself marks nothing.
+        env.pop(STARTUP_SPEC_MARKER, None)
         env.update(self.env)
         # A login's initial-child role must not become the default for later
         # panes, whether they inherited it from the environment or copied it

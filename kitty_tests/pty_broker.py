@@ -343,6 +343,25 @@ class TestPtyBrokerIntegration(BaseTest):
             self.assertNotIn('KITTY_PTY_BROKER_RECOVER_STARTUP', env)
             self.ae(env['UNCHANGED'], 'value')
 
+    def test_an_inherited_startup_marker_marks_no_pane(self) -> None:
+        # Only the boss-marked launch spec may keep the startup session. A
+        # kitty that itself inherited the marker must not keep an inherited
+        # session for every pane.
+        inherited = {'KITTY_PTY_BROKER_STARTUP_SESSION': 'b'*32,
+                     'KITTY_PTY_BROKER_STARTUP_SPEC': '1', 'UNCHANGED': 'value'}
+        opts = SimpleNamespace(term='xterm-kitty', terminfo_type='none', shell_integration={'disabled'})
+        boss = SimpleNamespace(encryption_public_key='test-key', listening_on='')
+        startup_spec = {'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32, 'KITTY_PTY_BROKER_STARTUP_SPEC': '1'}
+        for explicit, expected in (({}, None), ({'OTHER': 'x'}, None), (startup_spec, 'a'*32)):
+            child = Child(['/bin/sh'], '/', env=explicit)
+            with patch('kitty.child.default_env', return_value=inherited), \
+                    patch('kitty.child.fast_data_types.get_options', return_value=opts), \
+                    patch('kitty.child.fast_data_types.get_boss', return_value=boss):
+                env, _ = child.get_final_env()
+            self.ae(env.get('KITTY_PTY_BROKER_STARTUP_SESSION'), expected)
+            self.assertNotIn('KITTY_PTY_BROKER_STARTUP_SPEC', env)
+            self.ae(env['UNCHANGED'], 'value')
+
     def test_copy_env_from_the_initial_pane_does_not_copy_its_role(self) -> None:
         from kitty.launch import get_env, parse_launch_args
         opts = SimpleNamespace(term='xterm-kitty', terminfo_type='none', shell_integration={'disabled'})
