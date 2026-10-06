@@ -203,6 +203,7 @@ class TestPtyBrokerIntegration(BaseTest):
 
     def test_every_naming_path_records_and_ending_paths_forget(self) -> None:
         import inspect
+
         from kitty import pty_broker
         from kitty.tabs import Tab
         from kitty.window import Window

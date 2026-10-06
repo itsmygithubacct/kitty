@@ -1163,7 +1163,12 @@ class Boss:
         if os.environ.get('KITTY_PTY_BROKER_AUTO_RECOVER', '1') == '0':
             return
         from .pty_broker import (
-            attach_command, configuration, detached_sessions, live_session_ids, prune_titles, read_titles,
+            attach_command,
+            configuration,
+            detached_sessions,
+            live_session_ids,
+            prune_titles,
+            read_titles,
         )
         executable, runtime = configuration()
         if not executable:
