@@ -11,8 +11,6 @@ from unittest.mock import Mock, PropertyMock, patch
 from kitty.boss import Boss
 from kitty.child import Child
 from kitty.options.types import defaults
-from kitty.session import Session
-from kitty.tabs import SpecialWindow
 from kitty.pty_broker import (
     configuration,
     journal_limit,
@@ -22,6 +20,8 @@ from kitty.pty_broker import (
     valid_session_id,
     wrap_command,
 )
+from kitty.session import Session
+from kitty.tabs import SpecialWindow
 
 from . import BaseTest
 
@@ -43,7 +43,8 @@ class TestPtyBrokerIntegration(BaseTest):
             boss.prepare_pty_broker_startup([session])
         spec = session.tabs[0].windows[0].launch_spec
         self.ae(spec.cmd, ['/opt/kilix', 'desktop'])
-        self.ae(spec.env, {'EXISTING': 'value', 'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32})
+        self.ae(spec.env, {'EXISTING': 'value', 'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32,
+                           'KITTY_PTY_BROKER_STARTUP_SPEC': '1'})
         scan.assert_not_called()
 
     def test_recovered_initial_child_replaces_startup_before_it_is_spawned(self) -> None:
@@ -329,16 +330,38 @@ class TestPtyBrokerIntegration(BaseTest):
                      'KITTY_PTY_BROKER_RECOVER_STARTUP': '1', 'UNCHANGED': 'value'}
         opts = SimpleNamespace(term='xterm-kitty', terminfo_type='none', shell_integration={'disabled'})
         boss = SimpleNamespace(encryption_public_key='test-key', listening_on='')
-        for explicit in ({}, {'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32}):
+        startup_spec = {'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32, 'KITTY_PTY_BROKER_STARTUP_SPEC': '1'}
+        for explicit, expected in (({}, None), (startup_spec, 'a'*32)):
             child = Child(['/bin/sh'], '/', env=explicit)
             with patch('kitty.child.default_env', return_value=inherited), \
                     patch('kitty.child.fast_data_types.get_options', return_value=opts), \
                     patch('kitty.child.fast_data_types.get_boss', return_value=boss):
                 env, _ = child.get_final_env()
-            self.ae(env.get('KITTY_PTY_BROKER_STARTUP_SESSION'), explicit.get('KITTY_PTY_BROKER_STARTUP_SESSION'))
+            self.ae(env.get('KITTY_PTY_BROKER_STARTUP_SESSION'), expected)
+            self.assertNotIn('KITTY_PTY_BROKER_STARTUP_SPEC', env)
             self.assertNotIn('KITTY_PTY_BROKER_STARTUP_TOKEN', env)
             self.assertNotIn('KITTY_PTY_BROKER_RECOVER_STARTUP', env)
             self.ae(env['UNCHANGED'], 'value')
+
+    def test_copy_env_from_the_initial_pane_does_not_copy_its_role(self) -> None:
+        from kitty.launch import get_env, parse_launch_args
+        opts = SimpleNamespace(term='xterm-kitty', terminfo_type='none', shell_integration={'disabled'})
+        boss = SimpleNamespace(encryption_public_key='test-key', listening_on='')
+        with patch('kitty.child.default_env', return_value={}), \
+                patch('kitty.child.fast_data_types.get_options', return_value=opts), \
+                patch('kitty.child.fast_data_types.get_boss', return_value=boss):
+            initial = Child(['/bin/sh'], '/', env={'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32,
+                                                   'KITTY_PTY_BROKER_STARTUP_SPEC': '1'})
+            initial_env, _ = initial.get_final_env()
+            self.ae(initial_env['KITTY_PTY_BROKER_STARTUP_SESSION'], 'a'*32)
+            # The initial pane's shell exports exactly what it was started with.
+            active = SimpleNamespace(foreground_environ=dict(initial_env, COPIED='yes'))
+            copied = get_env(parse_launch_args(['--copy-env', '/bin/sh']).opts, active)
+            self.ae(copied['KITTY_PTY_BROKER_STARTUP_SESSION'], 'a'*32)
+            env, _ = Child(['/bin/sh'], '/', env=copied).get_final_env()
+        self.assertNotIn('KITTY_PTY_BROKER_STARTUP_SESSION', env)
+        self.assertNotIn('KITTY_PTY_BROKER_STARTUP_SPEC', env)
+        self.ae(env['COPIED'], 'yes')
 
     def test_log_button_uses_clicked_pane_and_opens_a_separate_tab(self) -> None:
         boss = object.__new__(Boss)

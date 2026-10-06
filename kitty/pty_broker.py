@@ -21,6 +21,9 @@ from typing import Any
 
 _SESSION_ID = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 _STARTUP_TOKEN = re.compile(r'^[0-9a-f]{32}$')
+# Set by the boss on the one launch spec that is a login's initial child.
+# Child.get_final_env consumes it and never exports it to the process.
+STARTUP_SPEC_MARKER = 'KITTY_PTY_BROKER_STARTUP_SPEC'
 
 
 def configuration(environment: Mapping[str, str] | None = None) -> tuple[str, str]:
