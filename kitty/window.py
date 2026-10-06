@@ -1333,11 +1333,18 @@ class Window:
             return
         from .pty_broker import write_titles
         override = self.override_title
-        if override and override.startswith('recovered:'):
+        placeholder = bool(override) and override.startswith('recovered:')
+        if placeholder:
             override = None          # the recovery placeholder is not a name
+        window_title: str | None = self.child_title
+        attach = (getattr(child, 'final_env', None) or {}).get('KITTY_PTY_BROKER_BYPASS') == '1'
+        if window_title == getattr(self, 'default_title', None) and (placeholder or attach):
+            # A recovered pane's default title is the broker's own executable;
+            # recording it would replace the placeholder after the next loss.
+            window_title = None
         t = self.tabref()
         write_titles(child.pty_broker_runtime, child.pty_broker_session_id, {
-            'window': self.child_title, 'override': override,
+            'window': window_title, 'override': override,
             'tab': t.name if t is not None else None})
 
     def set_title(self, title: str | None) -> None:

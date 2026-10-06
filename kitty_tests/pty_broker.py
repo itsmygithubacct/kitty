@@ -175,6 +175,30 @@ class TestPtyBrokerIntegration(BaseTest):
             self.ae(pty_broker.read_titles(runtime, sid)['override'], 'my notes')
             unbrokered = SimpleNamespace(child=SimpleNamespace(is_pty_brokered=False))
             Window.remember_broker_titles(unbrokered)          # no-op, no error
+            # A recovered pane whose program never set a title shows the broker's
+            # executable as its default title: that is not a name to bring back.
+            for override, env in (('recovered:abcdef12', {}), (None, {'KITTY_PTY_BROKER_BYPASS': '1'})):
+                pty_broker._written_titles.clear()
+                rsid = new_session_id()
+                attach = SimpleNamespace(
+                    child=SimpleNamespace(is_pty_brokered=True, pty_broker_runtime=runtime,
+                                          pty_broker_session_id=rsid, final_env=env),
+                    child_title='kitty-pty-broker', default_title='kitty-pty-broker',
+                    override_title=override, tabref=lambda: None)
+                Window.remember_broker_titles(attach)
+                self.ae(pty_broker.read_titles(runtime, rsid), {})
+                attach.child_title = 'vim'                       # ... until its program names it
+                Window.remember_broker_titles(attach)
+                self.ae(pty_broker.read_titles(runtime, rsid), {'window': 'vim'})
+            # An ordinary pane's default title (its shell) is still its name.
+            pty_broker._written_titles.clear()
+            psid = new_session_id()
+            plain = SimpleNamespace(
+                child=SimpleNamespace(is_pty_brokered=True, pty_broker_runtime=runtime,
+                                      pty_broker_session_id=psid, final_env={}),
+                child_title='bash', default_title='bash', override_title=None, tabref=lambda: None)
+            Window.remember_broker_titles(plain)
+            self.ae(pty_broker.read_titles(runtime, psid), {'window': 'bash'})
 
     def test_every_naming_path_records_and_ending_paths_forget(self) -> None:
         import inspect
@@ -224,16 +248,25 @@ class TestPtyBrokerIntegration(BaseTest):
             active_tab = None
             def new_tab(self, special_window):
                 return None
+        events: list[str] = []
+        def clock() -> float:
+            events.append('clock')
+            return 1234.5
+        def listing(executable: str, runtime: str) -> frozenset[str]:
+            events.append('list')
+            return frozenset({'job'})
         with patch.dict(os.environ, {'KITTY_PTY_BROKER_AUTO_RECOVER': '1'}), \
                 patch('kitty.pty_broker.configuration', return_value=('/opt/broker', '/run/user/1/broker')), \
-                patch('kitty.pty_broker.live_session_ids', return_value=frozenset({'job'})), \
+                patch('time.time', side_effect=clock), \
+                patch('kitty.pty_broker.live_session_ids', side_effect=listing), \
                 patch('kitty.pty_broker.prune_titles') as prune, \
                 patch('kitty.pty_broker.detached_sessions', return_value=()), \
                 patch.object(Boss, 'active_tab_manager', new_callable=PropertyMock, return_value=Manager()):
             boss.recover_pty_broker_sessions()
         prune.assert_called_once()
-        self.ae(prune.call_args.args[:2], ('/run/user/1/broker', frozenset({'job'})))
-        self.assertIsInstance(prune.call_args.args[2], float)
+        self.ae(prune.call_args.args, ('/run/user/1/broker', frozenset({'job'}), 1234.5))
+        # the clock is read before the listing: a sidecar written while it ran is kept
+        self.assertLess(events.index('clock'), events.index('list'), events)
         # a sidecar written after the listing survives the prune
         with TemporaryDirectory() as runtime:
             pty_broker._written_titles.clear()
