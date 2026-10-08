@@ -59,19 +59,21 @@ MICROPHONE_OFF_GLYPH = chr(0xf036d)   # Material Design "microphone_off"
 TTS_ENGINES = ('espeak', 'mbrola', 'piper', 'off')
 TTS_RATES = ('120', '150', '170', '200', '240')
 TTS_EXTENTS = ('screen', 'scrollback', 'selection')
-STT_ENGINES = ('vosk', 'vibevoice', 'whisper', 'off')
-STT_MODELS = ('small-en-us', 'lgraph-en-us', 'vibevoice-asr-bitnet', 'whisper-small-en')
+STT_ENGINES = ('vosk', 'vibevoice', 'whisper', 'whistle', 'off')
+STT_MODELS = ('small-en-us', 'lgraph-en-us', 'vibevoice-asr-bitnet', 'whisper-small-en', 'whistle')
 STT_MODEL_ENGINES = {
     'small-en-us': 'vosk',
     'lgraph-en-us': 'vosk',
     'vibevoice-asr-bitnet': 'vibevoice',
     'whisper-small-en': 'whisper',
+    'whistle': 'whistle',
 }
 STT_MODEL_BYTES = {
     'small-en-us': 41205931,
     'lgraph-en-us': 130557655,
     'vibevoice-asr-bitnet': 1705771590,
     'whisper-small-en': 486100128,
+    'whistle': 16937647,
 }
 STT_MODEL_REQUIRED_FILES = {
     'small-en-us': ('conf/model.conf', 'am/final.mdl'),
@@ -80,12 +82,14 @@ STT_MODEL_REQUIRED_FILES = {
         'vibeasr-lm-i2_s-embed-q6_k.gguf',
         'vibeasr-vae-encoder-i8_s.gguf',
     ),
+    'whistle': ('whistle.cact',),
     'whisper-small-en': ('model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt'),
 }
 # Where `kilix models install` puts a model kilix-voice uses in place, relative
 # to the Kilix data directory; kilix-voice prefers a copy under voice/models.
 STT_MODEL_CONTENT_DIRS = {
     'whisper-small-en': ('desktop-apps', 'assets', 'faster-whisper-small-en'),
+    'whistle': ('desktop-apps', 'assets', 'whistle'),
 }
 STT_MAX_SECONDS = ('15', '30', '60', '120')
 _VOICE_TOKEN = re.compile(r'[A-Za-z0-9_+-]{1,32}')
@@ -193,6 +197,8 @@ def stt_engine() -> str:
 def stt_model() -> str:
     # VibeVoice has one model; choosing the engine alone selects it, exactly
     # as kilix-voice resolves it, so the chrome never checks a vosk payload.
+    if stt_engine() == 'whistle':
+        return 'whistle'
     if stt_engine() == 'vibevoice':
         return 'vibevoice-asr-bitnet'
     return _choice('KILIX_VOICE_STT_MODEL', 'small-en-us', STT_MODELS)
@@ -362,6 +368,13 @@ def _whisper_present() -> bool:
     return os.path.isfile(binary) and os.access(binary, os.X_OK)
 
 
+def _whistle_present() -> bool:
+    override = os.environ.get('KILIX_VOICE_WHISTLE_LIBRARY')
+    library = (os.path.abspath(os.path.expanduser(override)) if override else
+               os.path.join(data_voice_dir(), 'whistle', 'current', 'libneedle3.so'))
+    return os.path.isfile(library)
+
+
 def _stt_available(engine: str, model: str) -> bool:
     if engine == 'off':
         return False
@@ -376,6 +389,8 @@ def _stt_available(engine: str, model: str) -> bool:
         return _vibeasr_present()
     if engine == 'whisper':
         return _whisper_present()
+    if engine == 'whistle':
+        return _whistle_present()
     return False
 
 
@@ -399,6 +414,9 @@ def dictation_install_offer() -> ModelInstallOffer | None:
     if engine == 'vibevoice':
         library_missing = not _vibeasr_present()
         library_name = 'VibeASR runtime'
+    elif engine == 'whistle':
+        library_missing = not _whistle_present()
+        library_name = 'Whistle runtime'
     elif engine == 'whisper':
         library_missing = not _whisper_present()
         library_name = 'Whisper runtime'
@@ -428,6 +446,8 @@ def dictation_install_offer() -> ModelInstallOffer | None:
     elif engine == 'vibevoice':
         action = ('Build the VibeASR runtime now (about a minute; needs a C/C++ '
                   'toolchain and cmake)? Nothing is fetched unless you choose Yes.')
+    elif engine == 'whistle':
+        action = ('Install the Whistle runtime now? Nothing is fetched unless you choose Yes.')
     elif engine == 'whisper':
         action = ('Install the Whisper runtime now (about 200 MB of Python '
                   'packages)? Nothing is fetched unless you choose Yes.')
@@ -909,6 +929,8 @@ def begin_dictation(window_id: int) -> str | None:
             detail = (
                 'VibeVoice needs its VibeASR runtime. Run `kilix stt --install '
                 'vibevoice-asr-bitnet`, which also fetches any missing weights.')
+        elif engine == 'whistle' and not _whistle_present():
+            detail = 'The Whistle runtime is missing. Install it with `kilix stt --install whistle`.'
         elif engine == 'whisper' and not _whisper_present():
             detail = (
                 'Whisper needs its runtime. Run `kilix stt --install '
