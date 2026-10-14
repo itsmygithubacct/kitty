@@ -1659,6 +1659,7 @@ add_children(ChildMonitor *self) {
 }
 
 
+#ifndef _WIN32
 static void
 hangup(pid_t pid) {
     errno = 0;
@@ -1669,6 +1670,7 @@ hangup(pid_t pid) {
         if (errno != ESRCH) perror("Failed to kill child");
     }
 }
+#endif
 
 
 static void
@@ -1680,7 +1682,9 @@ cleanup_child(ssize_t i) {
     windows_pty_close_for(children[i].fd);
 #endif
     safe_close(children[i].fd, __FILE__, __LINE__);
+#ifndef _WIN32
     hangup(children[i].pid);
+#endif
 }
 
 
