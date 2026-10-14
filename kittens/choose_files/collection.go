@@ -238,38 +238,33 @@ func (s *SortedResults) Apply(first, last CollectionIndex, action func(*ResultIt
 func (s *SortedResults) Closest(idx CollectionIndex, matches func(*ResultItem) bool) *CollectionIndex {
 	s.lock()
 	defer s.unlock()
-	if idx.Slice >= len(s.slices) || idx.Pos >= len(s.slices[idx.Slice]) {
+	if idx.Slice < 0 || idx.Pos < 0 || idx.Slice >= len(s.slices) || idx.Pos >= len(s.slices[idx.Slice]) {
 		return nil
 	}
 
-	type result struct {
-		idx   CollectionIndex
-		count int
-	}
-	var a, b result
-	iterate := func(idx CollectionIndex, amt int, result *result) {
+	search := func(amt int) (CollectionIndex, int, bool) {
+		pos := idx
 		var did_wrap bool
-		var count int
-		result.count = -1
-		for {
-			idx, did_wrap = s.increment_with_wrap_around(idx, amt)
+		for count := 1; ; count++ {
+			pos, did_wrap = s.increment_with_wrap_around(pos, amt)
 			if did_wrap {
-				break
+				return CollectionIndex{}, 0, false
 			}
-			count++
-			if matches(s.slices[idx.Slice][idx.Pos]) {
-				result.idx = idx
-				result.count = count
-				break
+			if matches(s.slices[pos.Slice][pos.Pos]) {
+				return pos, count, true
 			}
 		}
 	}
-	go func() { iterate(idx, 1, &a) }()
-	go func() { iterate(idx, -1, &a) }()
-	if a.count < 0 && b.count < 0 {
+
+	forward, forward_distance, found_forward := search(1)
+	backward, backward_distance, found_backward := search(-1)
+	if !found_forward && !found_backward {
 		return nil
 	}
-	return utils.IfElse(a.count < b.count, &b.idx, &a.idx)
+	if !found_backward || (found_forward && forward_distance <= backward_distance) {
+		return &forward
+	}
+	return &backward
 }
 
 func (s *SortedResults) IncrementIndexWithWrapAroundAndCheck(idx CollectionIndex, amt int) (ans CollectionIndex, did_wrap bool) {

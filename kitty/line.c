@@ -442,8 +442,10 @@ unicode_in_range(const Line *self, const index_type start, const index_type limi
     for (index_type i = start; i < limit; i++) {
         lc.chars = buf->buf + buf->len; lc.capacity = buf->capacity - buf->len;
         while (!text_in_cell_without_alloc(self->cpu_cells + i, self->text_cache, &lc)) {
+            if (buf->capacity > SIZE_MAX / 2) return false;
             size_t ns = MAX(initial_cap, 2 * buf->capacity);
-            char_type *np = realloc(buf->buf, ns);
+            if (ns > SIZE_MAX / sizeof(buf->buf[0])) return false;
+            char_type *np = realloc(buf->buf, ns * sizeof(buf->buf[0]));
             if (!np) return false;
             buf->capacity = ns; buf->buf = np;
             lc.chars = buf->buf + buf->len; lc.capacity = buf->capacity - buf->len;

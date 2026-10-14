@@ -354,6 +354,7 @@ code. The variants are listed in the table below:
      - The drag offer has been dropped onto a client, there are likely to be requests for data in the near future
    * - ``t=e : x=4 : y=0 or 1``
      - The drag is finished. If ``y=1`` then the drag was canceled by the user.
+       A terminal with the completion report also sends ``o``, see below.
    * - ``t=e : x=5 : y=idx``
      - Request data for the MIME type at the zero based index ``idx`` in the list of MIME types
 
@@ -471,6 +472,41 @@ client.
 
 Metadata reference
 ---------------------------
+
+Native bridge capability
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+On X11, this engine's ``t=q`` response includes the ASCII payload ``native=1``.
+It identifies the completion-aware X11 transport: bounded direct/INCR
+selections, pane-scoped pointer routing, COPY/MOVE negotiation and cancellation.
+Clients requiring this transport should wait for this capability before
+registering. Other clients can ignore the payload as before.
+
+Drop movement/release reports include ``s``: the proposed action, encoded as
+``1`` (COPY), ``2`` (MOVE), or ``0`` (unsupported). The ``o`` mask still
+describes all source actions. Source completion ``t=e:x=4`` includes ``o``
+with the actual successful action, or zero on refusal/cancellation. A Status
+report is not successful completion. A client must treat ``o=0`` as a refusal:
+it must not delete the sources of a Move or report the drag as completed, even
+if the target had earlier accepted a Move. A value other than ``0``, ``1`` or
+``2`` (negative, too large, not a number) is a bogus report and is also a
+refusal, as is a bogus ``o`` on ``t=e:x=2``, which accepts no operation. A repeated explicit ``o`` key is ambiguous and must be treated as refusal,
+even if both values are valid and identical. An empty or malformed explicit
+value must never inherit an earlier value. Only
+if ``o`` is absent altogether (a terminal without the completion report) may
+the client use the operation most recently reported by ``t=e:x=2``. If no
+operation was ever reported, the action is unknown, which is not a completed
+Copy or Move: the client deletes nothing and ``--exit-on drag-finish`` does not
+exit. A remote URI Move is destructive only when the accepted and final actions
+both name MOVE and every requested transfer is complete. If a successful finish
+arrives while only the final queued URI terminator's write callback is pending,
+the client holds the finish until that callback. A partial stream, queued later
+request, cancellation or refusal must not delete any source. Transfer marks are
+scoped to the current gesture and cleared after its completion is resolved.
+Native source XIDs and selection request
+windows are fresh for each gesture so delayed replies cannot complete a later
+drag. Native X11 transfers retain at most 64 MiB and eight conversion requests;
+completion after release has a five-second deadline.
 
 The table below shows all the metadata keys as well as what values they can
 take, and the default value they take when missing. All integers are 32-bit.

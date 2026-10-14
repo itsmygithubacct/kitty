@@ -50,7 +50,7 @@ MA_CAT(MA_NAME, _get)(MA_TYPE_NAME *self, size_t sz) {
         size_t block_sz = MAX(required_size, MA_ARENA_NUM_BLOCKS * MA_BLOCK_SIZE);
         void *chunk = NULL;
         if (MA_BLOCK_SIZE >= sizeof(void*) && MA_BLOCK_SIZE % sizeof(void*) == 0) {
-            if (posix_memalign(&chunk, MA_BLOCK_SIZE, block_sz) != 0) chunk = NULL;
+            if (posix_memalign(&chunk, MA_BLOCK_SIZE, block_sz) != 0) return NULL;
             memset(chunk, 0, block_sz);
         } else chunk = calloc(1, block_sz);
         if (!chunk) { return NULL; }

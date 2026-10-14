@@ -22,6 +22,7 @@ from kitty.fast_data_types import (
     parse_input_from_terminal,
     read_file,
     replace_c0_codes_except_nl_space_tab,
+    Shlex,
     split_into_graphemes,
     strip_csi,
     truncate_point_for_length,
@@ -81,8 +82,8 @@ class TestDataTypes(BaseTest):
         c('oklch(0.5,0.1,180)', 0, 117, 101)
         c('oklcH(0.7 0.15 140) # comment', 0x68, 0xb4, 0x57)
         c('oklch(0.9 0.05 265)', 0xce, 0xde, 0xff)
-        c('lAb(70 50 -30)', 0xea, 0x88, 0xe2)
-        c('lab(50,0,0)', 199, 199, 199)
+        c('lAb(70 50 -30)', 0xee, 0x86, 0xe3)
+        c('lab(50,0,0)', 119, 119, 119)
         c('lab(100,0,0)', 255, 255, 255)
         c('lab(0,0,0)', 0, 0, 0)
 
@@ -126,8 +127,8 @@ class TestDataTypes(BaseTest):
         c('oklch(1 0 0)', 0xff, 0xff, 0xff)  # Pure white
 
         # Achromatic colors (zero chroma)
-        c('oklch(0.5 0 180)', 0xbc, 0xbc, 0xbc)  # Mid gray, hue irrelevant
-        c('oklch(0.25 0 90)', 0x89, 0x89, 0x89)  # Dark gray
+        c('oklch(0.5 0 180)', 0x63, 0x63, 0x63)  # Mid gray, hue irrelevant
+        c('oklch(0.25 0 90)', 0x22, 0x22, 0x22)  # Dark gray
 
         # Test various hues with moderate chroma
         in_range('oklch(0.6 0.15 0)')    # Red hue
@@ -168,7 +169,7 @@ class TestDataTypes(BaseTest):
         c('#0000ff # Blue', 0x00, 0x00, 0xff)
 
         # LAB colors with inline comments
-        c('lab(70 50 -30) # Purple-ish', 0xea, 0x88, 0xe2)
+        c('lab(70 50 -30) # Purple-ish', 0xee, 0x86, 0xe3)
 
         # RGB with inline comments
         c('rgb:ff/00/00 # RGB Red', 0xff, 0x00, 0x00)
@@ -190,10 +191,10 @@ class TestDataTypes(BaseTest):
         # LAB basic colors
         c('lab(0 0 0)', 0x00, 0x00, 0x00)      # LAB black
         c('lab(100 0 0)', 0xff, 0xff, 0xff)    # LAB white
-        c('lab(50 0 0)', 0xc7, 0xc7, 0xc7)     # LAB mid-gray
+        c('lab(50 0 0)', 0x77, 0x77, 0x77)     # LAB mid-gray
 
         # LAB with color components
-        c('lab(70 50 -30)', 0xea, 0x88, 0xe2)  # Purple-ish
+        c('lab(70 50 -30)', 0xee, 0x86, 0xe3)  # Purple-ish
         color = to_color('lab(50 50 50)')      # Orange/red-ish (positive a and b)
         self.assertIsNotNone(color)
         self.assertGreater(color.red, 0xc0)    # Should have high red
@@ -540,6 +541,30 @@ class TestDataTypes(BaseTest):
         lb2 = self.line_comparison_rewrap(lb, '123', '  a', 'bcd', 'e')
         self.assertContinued(lb2, False, True, True, True)
 
+    def test_string_parser_nonterminating_escape(self):
+        for prefix, callback_index in (('P', 1), (']', 3), ('^', 4), ('_', 5)):
+            for payload in ('alpha\x1bxback\\slash', 'a\x1b', 'a\x1b\x1bx'):
+                sequence = 'before\x1b' + prefix + payload + '\x1b\\after'
+                # Every split is an independently specified two-chunk input.
+                for cut in range(len(sequence) + 1):
+                    with self.subTest(prefix=prefix, payload=payload, cut=cut):
+                        events = [[] for _ in range(6)]
+                        callbacks = [event.append for event in events]
+                        left = ''
+                        for chunk in (sequence[:cut], sequence[cut:]):
+                            left = parse_input_from_terminal(*callbacks, left + chunk, False)
+                        self.ae(left, '')
+                        self.ae(''.join(events[0]), 'beforeafter')
+                        self.ae(events[callback_index], [payload])
+                        for index in range(1, 6):
+                            if index != callback_index:
+                                self.ae(events[index], [])
+
+    def test_wcswidth_after_two_byte_escape(self):
+        for text in ('\x1bmm', '\x1bcm', '\x1b=m', '\x1b>c', '\x1b7[', '\x1bF]', '\x1bMP'):
+            with self.subTest(text=repr(text)):
+                self.ae(wcswidth(text), 1)
+
     def test_utils(self):
         def w(x):
             return wcwidth(ord(x))
@@ -790,6 +815,53 @@ class TestDataTypes(BaseTest):
         hb.as_ansi(a.append)
         self.ae(a, [str(hb.line(i)) + '\n' for i in range(hb.count - 1, -1, -1)])
 
+    def test_ansi_empty_linebuf(self):
+        empty = LineBuf(1, 1)
+        lines = []
+        empty.as_ansi(lines.append)
+        self.ae(lines, ['\n'])
+
+        def fail(_line):
+            raise ValueError('callback failure')
+
+        with self.assertRaisesRegex(ValueError, 'callback failure'):
+            empty.as_ansi(fail)
+
+        one_line = LineBuf(1, 1)
+        one_line.line(0).set_text('x', 0, 1, C())
+        lines = []
+        one_line.as_ansi(lines.append)
+        self.ae(lines, ['x\n'])
+
+        trailing_empty = LineBuf(3, 1)
+        trailing_empty.line(0).set_text('a', 0, 1, C())
+        trailing_empty.line(1).set_text('b', 0, 1, C())
+        lines = []
+        trailing_empty.as_ansi(lines.append)
+        self.ae(lines, ['a\n', 'b\n'])
+
+    def test_unicode_export_growth(self):
+        short_buf = LineBuf(1, 100)
+        short_line = short_buf.line(0)
+        short_text = 'y' * 100
+        short_line.set_text(short_text, 0, len(short_text), C())
+        self.ae(str(short_line), short_text)
+
+        long_buf = LineBuf(1, 5000)
+        long_line = long_buf.line(0)
+        text = 'x' * 5000
+        long_line.set_text(text, 0, len(text), C())
+        self.ae(str(long_line), text)
+
+        width, combining = 200, '\u0301'
+        combining_buf = LineBuf(1, width)
+        line = combining_buf.line(0)
+        line.set_text('a' * width, 0, width, C())
+        for x in range(width):
+            for _ in range(23):
+                line.add_combining_char(x, combining)
+        self.ae(str(line), ''.join('a' + combining * 23 for _ in range(width)))
+
     def test_strip_csi(self):
         def q(x, y=''):
             self.ae(y or x, strip_csi(x))
@@ -851,6 +923,19 @@ class TestDataTypes(BaseTest):
         }.items():
             actual = expand_ansi_c_escapes(src)
             self.ae(expected, actual)
+
+    def test_shlex_default_ansi_c_quoting(self):
+        self.ae(tuple(Shlex("$'default path'")), ("$default path",))
+        self.ae(tuple(Shlex("$'explicit path'", False)), ("$explicit path",))
+        self.ae(tuple(Shlex(r"$'ansi\nquoted'", True)), ("ansi\nquoted",))
+
+        lexer = Shlex("😀 x")
+        self.ae(lexer.next_word(), (0, "😀"))
+        self.ae(lexer.next_word(), (2, "x"))
+        self.ae(lexer.next_word(), (-1, ""))
+
+        with self.assertRaises(ValueError):
+            Shlex("'unterminated").next_word()
 
     def test_shlex_split(self):
         for bad in (

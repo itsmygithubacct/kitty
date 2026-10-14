@@ -268,7 +268,7 @@ choices=text,json,shell,shell-relative
 default=text
 The format in which to write the output. The :code:`text` format is absolute paths separated by newlines,
 with a trailing newline. The :code:`shell` format is quoted absolute paths separated by spaces,
-quoting is done only if needed. The :code:`shell-relative` format is the same as :code:`shell` except that
+Each path is always shell-quoted. The :code:`shell-relative` format is the same as :code:`shell` except that
 it returns paths relative to the starting directory. Note that when invoked from a mapping,
 this option is ignored, and either text or shell format is used automatically based on whether
 the cursor is at a shell prompt or not.

@@ -67,7 +67,12 @@ serialize(const EncodingData *data, char *output, const char csi_trailer) {
     int pos = 0;
     bool second_field_not_empty = data->has_mods || data->add_actions;
     bool third_field_not_empty = data->add_text;
-#define P(fmt, ...) pos += snprintf(output + pos, KEY_BUFFER_SIZE - 2 <= pos ? 0 : KEY_BUFFER_SIZE - 2 - pos, fmt, __VA_ARGS__)
+#define P(fmt, ...) do { \
+    if (pos >= KEY_BUFFER_SIZE) return KEY_ENCODING_ERROR; \
+    int written = snprintf(output + pos, KEY_BUFFER_SIZE - pos, fmt, __VA_ARGS__); \
+    if (written < 0 || written >= KEY_BUFFER_SIZE - pos) return KEY_ENCODING_ERROR; \
+    pos += written; \
+} while (0)
     P("\x1b%s", "[");
     if (data->key != 1 || data->add_alternates || second_field_not_empty || third_field_not_empty) P("%u", data->key);
     if (data->add_alternates) {
@@ -93,6 +98,7 @@ serialize(const EncodingData *data, char *output, const char csi_trailer) {
         }
     }
 #undef P
+    if (pos >= KEY_BUFFER_SIZE - 1) return KEY_ENCODING_ERROR;
     output[pos++] = csi_trailer;
     output[pos] = 0;
     return pos;

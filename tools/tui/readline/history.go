@@ -99,29 +99,50 @@ func (self *History) merge_items(items ...HistoryItem) {
 	self.cmd_map = map_from_items(self.items)
 }
 
-func (self *History) Write() {
+func (self *History) Write() (retErr error) {
 	if self.file == nil {
-		return
+		return nil
 	}
-	self.file.Seek(0, 0)
-	utils.LockFileExclusive(self.file)
-	defer utils.UnlockFile(self.file)
+	if err := utils.LockFileExclusive(self.file); err != nil {
+		return err
+	}
+	defer func() {
+		if err := utils.UnlockFile(self.file); retErr == nil && err != nil {
+			retErr = err
+		}
+	}()
+	if _, err := self.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 	data, err := io.ReadAll(self.file)
 	if err != nil {
-		return
+		return err
 	}
 	var items []HistoryItem
-	err = json.Unmarshal(data, &items)
-	if err != nil {
-		self.merge_items(items...)
+	if len(data) > 0 {
+		if err = json.Unmarshal(data, &items); err != nil {
+			return fmt.Errorf("failed to parse history file %q: %w", self.file_path, err)
+		}
 	}
+	self.merge_items(items...)
 	ndata, err := json.MarshalIndent(self.items, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
-	self.file.Truncate(int64(len(ndata)))
-	self.file.Seek(0, 0)
-	self.file.Write(ndata)
+	if _, err = self.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if err = self.file.Truncate(0); err != nil {
+		return err
+	}
+	n, err := self.file.Write(ndata)
+	if err != nil {
+		return err
+	}
+	if n != len(ndata) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (self *History) Read() {
@@ -148,8 +169,12 @@ func (self *History) AddItem(cmd string, duration time.Duration) {
 
 func (self *History) Shutdown() {
 	if self.file != nil {
-		self.Write()
-		self.file.Close()
+		if err := self.Write(); err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to write history file at:", self.file_path, "with error:", err)
+		}
+		if err := self.file.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to close history file at:", self.file_path, "with error:", err)
+		}
 		self.file = nil
 	}
 }

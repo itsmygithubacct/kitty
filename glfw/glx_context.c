@@ -79,6 +79,22 @@ choose_fb_config(const _GLFWfbconfig* desired, bool trust_window_bit, int *nelem
 #undef ATTR
 }
 
+typedef struct
+{
+    _GLFWfbconfig desired;
+    GLXFBConfig result;
+    Display* display;
+    int screen;
+    bool valid;
+} _GLFWglxFBConfigCache;
+
+static _GLFWglxFBConfigCache glxFBConfigCache;
+
+static void resetGLXFBConfigCache(void)
+{
+    memset(&glxFBConfigCache, 0, sizeof(glxFBConfigCache));
+}
+
 
 // Return the GLXFBConfig most closely matching the specified hints
 //
@@ -89,13 +105,14 @@ static bool chooseGLXFBConfig(const _GLFWfbconfig* desired,
     int i, nativeCount, ans_idx = 0;
     const char* vendor;
     bool trustWindowBit = true;
-    static _GLFWfbconfig prev_desired  = {0};
-    static GLXFBConfig prev_result = 0;
-    if (prev_result != 0 && memcmp(&prev_desired, desired, sizeof(_GLFWfbconfig)) == 0) {
-        *result = prev_result;
+    if (glxFBConfigCache.valid &&
+        glxFBConfigCache.display == _glfw.x11.display &&
+        glxFBConfigCache.screen == _glfw.x11.screen &&
+        memcmp(&glxFBConfigCache.desired, desired, sizeof(_GLFWfbconfig)) == 0)
+    {
+        *result = glxFBConfigCache.result;
         return true;
     }
-    prev_desired = *desired;
 
     // HACK: This is a (hopefully temporary) workaround for Chromium
     //       (VirtualBox GL) not setting the window bit on any GLXFBConfigs
@@ -105,9 +122,14 @@ static bool chooseGLXFBConfig(const _GLFWfbconfig* desired,
     nativeConfigs = choose_fb_config(desired, trustWindowBit, &nativeCount, false);
     if (!nativeConfigs || !nativeCount)
     {
+        if (nativeConfigs)
+            XFree(nativeConfigs);
         nativeConfigs = choose_fb_config(desired, trustWindowBit, &nativeCount, true);
 
         if (!nativeConfigs || !nativeCount) {
+            if (nativeConfigs)
+                XFree(nativeConfigs);
+            resetGLXFBConfigCache();
             _glfwInputError(GLFW_API_UNAVAILABLE, "GLX: No GLXFBConfigs returned");
             return false;
         }
@@ -133,7 +155,11 @@ static bool chooseGLXFBConfig(const _GLFWfbconfig* desired,
     }
 
     *result = nativeConfigs[ans_idx];
-    prev_result = nativeConfigs[ans_idx];
+    glxFBConfigCache.desired = *desired;
+    glxFBConfigCache.result = *result;
+    glxFBConfigCache.display = _glfw.x11.display;
+    glxFBConfigCache.screen = _glfw.x11.screen;
+    glxFBConfigCache.valid = true;
 
     XFree(nativeConfigs);
 
@@ -267,7 +293,7 @@ bool _glfwInitGLX(void)
         NULL
     };
 
-    if (_glfw.glx.handle)
+    if (_glfw.glx.initialized)
         return true;
 
     for (i = 0;  sonames[i];  i++)
@@ -318,7 +344,7 @@ bool _glfwInitGLX(void)
     {
         _glfwInputError(GLFW_PLATFORM_ERROR,
                         "GLX: Failed to load required entry points");
-        return false;
+        goto fail;
     }
 
     if (!glXQueryExtension(_glfw.x11.display,
@@ -326,21 +352,21 @@ bool _glfwInitGLX(void)
                            &_glfw.glx.eventBase))
     {
         _glfwInputError(GLFW_API_UNAVAILABLE, "GLX: GLX extension not found");
-        return false;
+        goto fail;
     }
 
     if (!glXQueryVersion(_glfw.x11.display, &_glfw.glx.major, &_glfw.glx.minor))
     {
         _glfwInputError(GLFW_API_UNAVAILABLE,
                         "GLX: Failed to query GLX version");
-        return false;
+        goto fail;
     }
 
     if (_glfw.glx.major == 1 && _glfw.glx.minor < 3)
     {
         _glfwInputError(GLFW_API_UNAVAILABLE,
                         "GLX: GLX version 1.3 is required");
-        return false;
+        goto fail;
     }
 
     if (extensionSupportedGLX("GLX_EXT_swap_control"))
@@ -403,7 +429,12 @@ bool _glfwInitGLX(void)
     if (extensionSupportedGLX("GLX_ARB_context_flush_control"))
         _glfw.glx.ARB_context_flush_control = true;
 
+    _glfw.glx.initialized = true;
     return true;
+
+fail:
+    _glfwTerminateGLX();
+    return false;
 }
 
 // Terminate GLX
@@ -413,11 +444,15 @@ void _glfwTerminateGLX(void)
     // NOTE: This function must not call any X11 functions, as it is called
     //       after XCloseDisplay (see _glfwPlatformTerminate for details)
 
+    resetGLXFBConfigCache();
+
     if (_glfw.glx.handle)
     {
         _glfw_dlclose(_glfw.glx.handle);
         _glfw.glx.handle = NULL;
     }
+
+    memset(&_glfw.glx, 0, sizeof(_glfw.glx));
 }
 
 #define setAttrib(a, v) \
@@ -597,6 +632,8 @@ bool _glfwCreateContextGLX(_GLFWwindow* window,
         _glfwInputErrorX11(GLFW_VERSION_UNAVAILABLE, "GLX: Failed to create context");
         return false;
     }
+
+    window->context.destroy = destroyContextGLX;
 
     window->context.glx.window =
         glXCreateWindow(_glfw.x11.display, native, window->x11.handle, NULL);

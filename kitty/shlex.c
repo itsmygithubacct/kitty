@@ -25,7 +25,7 @@ new_shlex_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
     self = (Shlex *)type->tp_alloc(type, 0);
     if (self) {
         const char *src; Py_ssize_t sz;
-        int support_ansi_c_quoting;
+        int support_ansi_c_quoting = 0;
         if (!PyArg_ParseTuple(args, "s#|p", &src, &sz, &support_ansi_c_quoting)) return NULL;
         if (!alloc_shlex_state(&self->state, src, sz, support_ansi_c_quoting != 0)) return PyErr_NoMemory();
         self->src = PyTuple_GetItem(args, 0);

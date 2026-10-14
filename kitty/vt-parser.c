@@ -784,6 +784,16 @@ commit_csi_param(PS *self UNUSED, ParsedCSI *csi) {
     return true;
 }
 
+static bool
+mark_next_csi_param(PS *self UNUSED, ParsedCSI *csi, bool is_sub_param) {
+    if (csi->num_params >= MAX_CSI_PARAMS) {
+        REPORT_ERROR("CSI escape code has too many parameters, ignoring it");
+        return false;
+    }
+    csi->is_sub_param[csi->num_params] = is_sub_param;
+    return true;
+}
+
 static void
 csi_add_digit(ParsedCSI *csi, uint8_t ch) {
     if (UNLIKELY(csi->num_digits >= arraysz(digit_multipliers))) return;
@@ -869,12 +879,12 @@ csi_parse_loop(PS *self, ParsedCSI *csi, const uint8_t *buf, size_t *pos, const 
                         return true;
                     case ':':
                         if (!commit_csi_param(self, csi)) return true;
-                        csi->is_sub_param[csi->num_params] = true;
+                        if (!mark_next_csi_param(self, csi, true)) return true;
                         break;
                     case ';':
                         if (!csi->num_digits) csi->num_digits++;  // Empty means zero
                         if (!commit_csi_param(self, csi)) return true;
-                        csi->is_sub_param[csi->num_params] = false;
+                        if (!mark_next_csi_param(self, csi, false)) return true;
                         break;
                     case DIGIT:
                         csi_add_digit(csi, ch);

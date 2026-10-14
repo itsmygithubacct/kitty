@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -241,6 +242,104 @@ func TestChooseFilesScoring(t *testing.T) {
 	af("glob:*:All", "x", "y", "a", "b", "c.png", "x/s", "x/1", "x/2", "x/3", "y/3", "y/4", "y/5", "x/s/m", "x/s/n")
 }
 
+func TestChangeQueryDuringIncompleteScanKeepsPopulation(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "late", "deeper")
+	if err := os.MkdirAll(deep, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "needle-match.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	late := filepath.Join(root, "late")
+	completed := make(chan error, 1)
+	s := NewFileSystemScorer(root, "initial-query", Filter{}, false, func(err error, is_complete bool) {
+		if is_complete {
+			completed <- err
+		}
+	})
+	s.global_gitignore = ignorefiles.NewGitignore()
+	s.global_ignore = ignorefiles.NewGitignore()
+	s.dir_reader = func(path string) ([]fs.DirEntry, error) {
+		if filepath.Clean(path) == late {
+			close(entered)
+			<-release
+		}
+		return os.ReadDir(path)
+	}
+	s.Start()
+	original_scanner := s.scanner
+	scanner := original_scanner.(*FileSystemScanner)
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scanner did not reach the controlled unfinished directory")
+	}
+
+	change_query := func(query string) {
+		changed := make(chan struct{})
+		go func() {
+			s.Change_query(query)
+			close(changed)
+		}()
+		select {
+		case <-changed:
+		case <-time.After(5 * time.Second):
+			unblock()
+			<-changed
+			t.Fatal("query worker did not cancel independently of the scanner")
+		}
+		if s.scanner != original_scanner {
+			t.Fatal("query change replaced the active population scanner")
+		}
+		scanner.lock()
+		listener_count := len(scanner.listeners)
+		scanner.unlock()
+		if listener_count != 1 {
+			t.Fatalf("query change retained scanner listeners: got %d, want 1", listener_count)
+		}
+	}
+	for i := range 64 {
+		change_query(fmt.Sprintf("query-%d", i))
+	}
+	change_query("needle-match")
+	unblock()
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("new query worker did not finish with the scanner")
+	}
+	scanner.lock()
+	listener_count := len(scanner.listeners)
+	scanner.unlock()
+	if listener_count != 0 {
+		t.Fatalf("completed scan retained listeners: got %d, want 0", listener_count)
+	}
+	results, is_finished := s.Results()
+	if !is_finished {
+		t.Fatal("query worker did not mark its results complete")
+	}
+	found := false
+	for _, item := range results.RenderedMatches(CollectionIndex{}, -1) {
+		if item.text == "late/deeper/needle-match.txt" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("query change discarded a file in the unfinished scan population")
+	}
+}
+
 func TestSortedResults(t *testing.T) {
 	r := NewSortedResults()
 	idx := CollectionIndex{}
@@ -368,4 +467,23 @@ func BenchmarkFileNameScoringWithoutQuery(b *testing.B) {
 // go test -bench=FileNameScoringWithQuery -benchmem -cpuprofile=/tmp/cpu.prof -memprofile=/tmp/mem.prof github.com/kovidgoyal/kitty/kittens/choose_files -o /tmp/cfexe
 func BenchmarkFileNameScoringWithQuery(b *testing.B) {
 	run_scoring(b, 5, 20, "abc")
+}
+
+func TestClosestChecksBothDirectionsBeforeChoosing(t *testing.T) {
+	r := NewSortedResults()
+	r.AddSortedSlice([]*ResultItem{
+		{text: "zero"}, {text: "near-left"}, {text: "current"}, {text: "no-match"}, {text: "far-right"},
+	})
+	closest := r.Closest(CollectionIndex{Slice: 0, Pos: 2}, func(item *ResultItem) bool {
+		return item.text == "near-left" || item.text == "far-right"
+	})
+	if closest == nil || closest.Slice != 0 || closest.Pos != 1 {
+		t.Fatalf("closest = %v, want nearest match at {0, 1}", closest)
+	}
+	backwardOnly := r.Closest(CollectionIndex{Slice: 0, Pos: 2}, func(item *ResultItem) bool {
+		return item.text == "near-left"
+	})
+	if backwardOnly == nil || backwardOnly.Pos != 1 {
+		t.Fatalf("backward-only closest = %v, want {0, 1}", backwardOnly)
+	}
 }

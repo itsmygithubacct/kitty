@@ -473,6 +473,9 @@ class TestKeys(BaseTest):
         ae(eq(ord('a'), mods=shift, text='A'), csi(shift, num='a', text='A'))
         ae(eq(ord('a'), mods=shift, text='AB'), csi(shift, num='a', text='AB'))
 
+        with self.assertRaises(OverflowError):
+            eq(ord('a'), text='a' * 41)
+
         # test roundtripping via KeyEvent
         for mods in range(64):
             for action in EventType:
@@ -922,3 +925,44 @@ class TestKeys(BaseTest):
         kd = first_kd('--when-focus-on 1 --allow-fallback=ascii ctrl+c copy_to_clipboard')
         self.ae(kd.options.allow_fallback, (KeyFallbackType.alternate,))
         self.ae(kd.options.when_focus_on, '1')
+
+    def test_encode_key_event_size_limit(self):
+        # "too long to encode" must be told apart from "this key has no encoding"
+        # (which yields an empty string) and from "send the text as is".
+        enc = defines.encode_key_for_tty
+        ae = self.assertEqual
+        release = defines.GLFW_RELEASE
+        embed_text = 0b11000  # report all keys as escape codes + embed text
+        limit = 127  # KEY_BUFFER_SIZE (128) minus the terminating NUL
+
+        # no encoding exists: empty string, never an error
+        for key in (defines.GLFW_FKEY_ENTER, defines.GLFW_FKEY_BACKSPACE, defines.GLFW_FKEY_TAB):
+            ae(enc(key=key, action=release, key_encoding_flags=0b10), '', key)  # internal -1 from encode_glfw_key_event
+        ae(enc(key=defines.GLFW_FKEY_LEFT_SHIFT), '')
+        # text is forwarded as is, however long, when the protocol does not embed it
+        ae(enc(key=ord('a'), text='a'), 'a')
+        long_text = '\U0001f600' * 100
+        ae(enc(key=ord('a'), text=long_text), long_text)
+        ae(enc(key=ord('a'), text='abc', key_encoding_flags=0b1), 'abc')
+
+        # embedded text is bounded by the buffer: find the first length that does not fit
+        first_error = None
+        for n in range(1, 60):
+            text = 'a' * n
+            try:
+                ans = enc(key=ord('a'), text=text, key_encoding_flags=embed_text)
+            except OverflowError as err:
+                self.assertIn('fixed output buffer', str(err))
+                if first_error is None:
+                    first_error = n
+                continue
+            ae(first_error, None, f'a shorter text failed after n={first_error} but n={n} encoded')
+            self.assertLessEqual(len(ans), limit, n)
+            ae(ans, '\x1b[97;;' + ':'.join(['97'] * n) + 'u')
+        self.assertIsNotNone(first_error, 'long embedded text never exceeded the buffer')
+        # each extra code point adds 3 bytes to \x1b[97;; ...u: 40 fit (126 bytes), 41 would need 129
+        ae(first_error, 41)
+        with self.assertRaisesRegex(OverflowError, 'fixed output buffer'):
+            enc(key=ord('a'), text=long_text, key_encoding_flags=embed_text)
+        # a failed encode leaves the module usable
+        ae(enc(key=ord('a'), text='a', key_encoding_flags=embed_text), '\x1b[97;;97u')

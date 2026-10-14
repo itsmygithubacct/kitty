@@ -512,6 +512,13 @@ pick_cursor_color(color_type cell_fg, color_type cell_bg, color_type *cursor_fg,
     }
 }
 
+static void
+pick_special_cursor_colors(color_type cell_fg, color_type cell_bg, bool has_cell, color_type *cursor_fg, color_type *cursor_bg, color_type default_fg, color_type default_bg) {
+    if (has_cell) pick_cursor_color(cell_fg, cell_bg, cursor_fg, cursor_bg, default_fg, default_bg);
+    else { *cursor_fg = default_bg; *cursor_bg = default_fg; }
+    if (cell_bg == cell_fg) { *cursor_fg = default_bg; *cursor_bg = default_fg; }
+}
+
 static bool
 has_bgimage(OSWindow *w) {
     return background_image_for_os_window(w) != NULL;
@@ -609,11 +616,7 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, i
         }
         // If you change the following algorithm remember to change it in the cell shader for extra cursors too
         if (IS_SPECIAL_COLOR(cursor_color)) {
-            if (line_for_cursor) pick_cursor_color(cell_fg, cell_bg, &rd->main_cursor_fg, &rd->main_cursor_bg, rd->default_fg, rd->bg_colors0);
-            else { rd->main_cursor_fg = rd->bg_colors0; rd->main_cursor_bg = rd->default_fg; }
-            if (cell_bg == cell_fg) {
-                rd->main_cursor_fg = rd->bg_colors0; rd->main_cursor_bg = rd->default_fg;
-            } else { rd->main_cursor_fg = cell_bg; rd->main_cursor_bg = cell_fg; }
+            pick_special_cursor_colors(cell_fg, cell_bg, line_for_cursor != NULL, &rd->main_cursor_fg, &rd->main_cursor_bg, rd->default_fg, rd->bg_colors0);
         } else {
             rd->main_cursor_bg = COLOR(cursor_color);
             if (IS_SPECIAL_COLOR(cursor_text_color)) rd->main_cursor_fg = cell_bg;
@@ -807,23 +810,41 @@ set_cell_uniforms(bool force) {
 static Animation *default_visual_bell_animation = NULL;
 
 static float
-get_visual_bell_intensity(Screen *screen) {
-    if (screen->start_visual_bell_at > 0) {
+visual_bell_intensity_for_progress(monotonic_t *start, monotonic_t progress, monotonic_t duration) {
+    if (*start <= 0) return 0.0f;
+    if (duration <= 0 || progress > duration) {
+        *start = 0;
+        return 0.0f;
+    }
+    Animation *a = OPT(animation.visual_bell);
+    if (!animation_is_valid(a)) {
         if (!default_visual_bell_animation) {
             default_visual_bell_animation = alloc_animation();
             if (!default_visual_bell_animation) fatal("Out of memory");
             add_cubic_bezier_animation(default_visual_bell_animation, 0, 1, EASE_IN_OUT);
             add_cubic_bezier_animation(default_visual_bell_animation, 1, 0, EASE_IN_OUT);
         }
-        const monotonic_t progress = monotonic() - screen->start_visual_bell_at;
-        const monotonic_t duration = OPT(visual_bell_duration) / 2;
-        if (progress <= duration) {
-            Animation *a = animation_is_valid(OPT(animation.visual_bell)) ? OPT(animation.visual_bell) : default_visual_bell_animation;
-            return (float)apply_easing_curve(a, progress / (double)duration, duration);
-        }
-        screen->start_visual_bell_at = 0;
+        a = default_visual_bell_animation;
     }
-    return 0.0f;
+    const monotonic_t segment_duration = duration / 2;
+    return (float)apply_easing_curve(a, progress / (double)duration, segment_duration);
+}
+
+static float
+get_visual_bell_intensity(Screen *screen) {
+    if (screen->start_visual_bell_at <= 0) return 0.0f;
+    const monotonic_t progress = monotonic() - screen->start_visual_bell_at;
+    return visual_bell_intensity_for_progress(&screen->start_visual_bell_at, progress, OPT(visual_bell_duration));
+}
+
+static PyObject*
+test_visual_bell_intensity(PyObject *self UNUSED, PyObject *args) {
+    double elapsed_s;
+    int active;
+    if (!PyArg_ParseTuple(args, "dp", &elapsed_s, &active)) return NULL;
+    monotonic_t start = active ? 1 : 0;
+    float intensity = visual_bell_intensity_for_progress(&start, s_double_to_monotonic_t(elapsed_s), OPT(visual_bell_duration));
+    return Py_BuildValue("(fi)", intensity, start > 0);
 }
 
 static void
@@ -1939,9 +1960,22 @@ sprite_map_set_limits(PyObject UNUSED *self, PyObject *args) {
 
 #define M(name, arg_type) {#name, (PyCFunction)name, arg_type, NULL}
 #define MW(name, arg_type) {#name, (PyCFunction)py##name, arg_type, NULL}
+
+static PyObject*
+test_special_cursor_colors(PyObject *self UNUSED, PyObject *args) {
+    unsigned int cell_fg, cell_bg, default_fg, default_bg;
+    int has_cell;
+    if (!PyArg_ParseTuple(args, "IIIIp", &cell_fg, &cell_bg, &default_fg, &default_bg, &has_cell)) return NULL;
+    color_type cursor_fg, cursor_bg;
+    pick_special_cursor_colors(cell_fg, cell_bg, has_cell, &cursor_fg, &cursor_bg, default_fg, default_bg);
+    return Py_BuildValue("(II)", (unsigned int)cursor_fg, (unsigned int)cursor_bg);
+}
+
 static PyMethodDef module_methods[] = {
     M(compile_program, METH_VARARGS),
     M(sprite_map_set_limits, METH_VARARGS),
+    M(test_special_cursor_colors, METH_VARARGS),
+    M(test_visual_bell_intensity, METH_VARARGS),
     MW(create_vao, METH_NOARGS),
     MW(gpu_driver_version_string, METH_NOARGS),
     MW(bind_vertex_array, METH_O),

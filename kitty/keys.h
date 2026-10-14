@@ -13,8 +13,13 @@
 
 #define KEY_BUFFER_SIZE 128
 #define SEND_TEXT_TO_CHILD INT_MIN
+#define KEY_ENCODING_ERROR (INT_MIN + 1)
 #define debug debug_input
 
+// output points to KEY_BUFFER_SIZE bytes. A positive result is the number of
+// encoded bytes, zero or -1 means no sequence was emitted, SEND_TEXT_TO_CHILD
+// asks the caller to send the event text directly, and KEY_ENCODING_ERROR means
+// the complete sequence did not fit in the fixed output buffer.
 int
 encode_glfw_key_event(const GLFWkeyevent *e, const bool cursor_key_mode, const unsigned flags, char *output);
 

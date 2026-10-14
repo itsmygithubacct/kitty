@@ -308,8 +308,9 @@ static void
 flush_pending_payloads(id_type timer_id UNUSED, void *x) {
     id_type id = (uintptr_t)x;
     Window *w = window_for_window_id(id);
-    if (w && w->drop.wanted) {
+    if (w) {
         if (!flush_pending(w->id, &w->drop.pending)) check_for_pending_writes();
+        if (!flush_pending(w->id, &w->drag_source.pending)) check_for_pending_writes();
     }
 }
 
@@ -334,7 +335,11 @@ void
 dnd_query(Window *w, uint32_t client_id) {
     char buf[64];
     ssize_t header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=q", DND_CODE);
-    send_payload_to_child(w->id, client_id, buf, header_size, NULL, 0, false);
+    const char *capabilities = "";
+#ifndef __APPLE__
+    if (!global_state.is_wayland) capabilities = "native=1";
+#endif
+    send_payload_to_child(w->id, client_id, buf, header_size, capabilities, strlen(capabilities), false);
 }
 
 static bool
@@ -537,9 +542,9 @@ drop_move_on_child(Window *w, const char** mimes, size_t num_mimes, bool is_drop
     if (global_state.drop_dest.allowed_ops & GLFW_DRAG_OPERATION_COPY) allowed_ops |= 1;
     if (global_state.drop_dest.allowed_ops & GLFW_DRAG_OPERATION_MOVE) allowed_ops |= 2;
     if (global_state.drop_dest.allowed_ops & GLFW_DRAG_OPERATION_GENERIC) allowed_ops |= 3;
-    header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=%c:x=%u:y=%u:X=%d:Y=%d:o=%d", DND_CODE,
+    header_size = snprintf(buf, sizeof(buf), "\x1b]%d;t=%c:x=%u:y=%u:X=%d:Y=%d:o=%d:s=%d", DND_CODE,
             is_drop ? 'M' : 'm', w->mouse_pos.cell_x, w->mouse_pos.cell_y,
-            (int)w->mouse_pos.global_x, (int)w->mouse_pos.global_y, allowed_ops);
+            (int)w->mouse_pos.global_x, (int)w->mouse_pos.global_y, allowed_ops, global_state.drop_dest.suggested_operation);
     if (w->drop.offered_mimes_total_size) {
         const size_t mimes_total_size = 1 + w->drop.offered_mimes_total_size;
         RAII_ALLOC(char, mbuf, malloc(mimes_total_size));
@@ -1623,7 +1628,20 @@ drag_start(Window *w) {
         }
     }
     last_total_image_size = total_size;
+    id_type window_id = w->id;
+    OSWindow *parent = os_window_for_kitty_window(window_id);
+    id_type os_window_id = parent ? parent->id : 0;
+    GLFWwindow *handle = parent ? parent->handle : NULL;
+    uint64_t generation = global_state.drag_source.generation + 1;
     int err = start_window_drag(w, dnd_is_test_mode());
+    // Startup can run Python finalizers and native callbacks. A superseded
+    // attempt must not cancel or release a replacement pane's offer.
+    if (err == ECANCELED) return;
+    w = window_for_window_id(window_id);
+    parent = os_window_for_kitty_window(window_id);
+    if (!w || !parent || parent->id != os_window_id || parent->handle != handle) return;
+    if (!err && (global_state.drag_source.generation != generation ||
+            global_state.drag_source.from_window != window_id || ds.state != DRAG_SOURCE_BEING_BUILT)) return;
     if (err != 0) {
         if (err == EPERM) abrt(err, "permission to start drag denied, this can happen if the user has already released the drag or if the mouse has moved out of the window");
         abrt(err, "failed to start drag in OS");
@@ -1671,12 +1689,17 @@ drag_notify(Window *w, DragNotifyType type) {
             switch (global_state.drag_source.action) {
                 case GLFW_DRAG_OPERATION_MOVE:
                     sz += snprintf(buf + sz, sizeof(buf) - sz, ":o=2"); break;
-                default:
+                case GLFW_DRAG_OPERATION_COPY:
                     sz += snprintf(buf + sz, sizeof(buf) - sz, ":o=1"); break;
+                default:
+                    sz += snprintf(buf + sz, sizeof(buf) - sz, ":o=0"); break;
             } break;
         case DRAG_NOTIFY_DROPPED: ds.state = DRAG_SOURCE_DROPPED; break;
         case DRAG_NOTIFY_FINISHED:
-            sz += snprintf(buf + sz, sizeof(buf) - sz, ":y=%d", global_state.drag_source.was_canceled ? 1 : 0); break;
+            sz += snprintf(buf + sz, sizeof(buf) - sz, ":y=%d:o=%d", global_state.drag_source.was_canceled ? 1 : 0,
+                !global_state.drag_source.was_canceled && global_state.drag_source.was_dropped ?
+                (global_state.drag_source.action == GLFW_DRAG_OPERATION_COPY ? 1 :
+                 global_state.drag_source.action == GLFW_DRAG_OPERATION_MOVE ? 2 : 0) : 0); break;
     }
     queue_payload_to_child(w->id, w->drag_source.client_id, &w->drag_source.pending, buf, sz, NULL, 0, false);
     if (type == DRAG_NOTIFY_FINISHED) drag_free_offer(w, false);
@@ -1938,6 +1961,11 @@ drag_process_item_data(Window *w, size_t idx, int has_more, const uint8_t *paylo
         if (!base64_decode_stream(&ds.items[idx].base64_state, payload, payload_sz, decoded, &outlen)) {
             cancel_drag(w, EINVAL, "failed to base64 decode drag source item data");
             return;
+        }
+        size_t retained = 0;
+        for (size_t i = 0; i < ds.num_mimes; i++) retained += ds.items[i].data_capacity;
+        if (outlen > PRESENT_DATA_CAP - MIN(PRESENT_DATA_CAP, retained)) {
+            cancel_drag(w, EFBIG, "too much native drag source data"); return;
         }
         size_t written = 0;
         while (written < outlen) {
@@ -2378,7 +2406,7 @@ destroy_fake_window_contents(Window *w) {
     drop_free_data(w);
     drag_free_offer(w, false);
     free(w->pending_clicks.clicks); zero_at_ptr(&w->pending_clicks);
-    free(w->buffered_keys.key_data); zero_at_ptr(&w->buffered_keys);
+    free_buffered_keys(w);
     Py_CLEAR(w->render_data.screen);
     Py_CLEAR(w->title);
     Py_CLEAR(w->title_bar_data.last_drawn_title_object_id);
@@ -2528,9 +2556,10 @@ static PyObject *
 dnd_test_force_drag_dropped(PyObject *self UNUSED, PyObject *args) {
     // Force the drag source state to DROPPED for testing purposes.
     // This simulates what would happen after start_window_drag() succeeds
-    // and the drop target receives the data.
+    // and the terminal reports a successful drop.
     unsigned long long window_id;
-    if (!PyArg_ParseTuple(args, "K", &window_id)) return NULL;
+    int mark_dropped = 1;
+    if (!PyArg_ParseTuple(args, "K|p", &window_id, &mark_dropped)) return NULL;
     Window *w = window_for_window_id((id_type)window_id);
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
     // Simulate what drag_start does on success, without calling start_window_drag
@@ -2553,6 +2582,7 @@ dnd_test_force_drag_dropped(PyObject *self UNUSED, PyObject *args) {
         zero_at_ptr(ds.images + i);
     }
     ds.state = DRAG_SOURCE_DROPPED;
+    global_state.drag_source.was_dropped = mark_dropped;
 #undef ds
     Py_RETURN_NONE;
 }
@@ -2576,11 +2606,12 @@ dnd_test_request_drag_data(PyObject *self UNUSED, PyObject *args) {
 
 static PyObject *
 dnd_test_drag_finish(PyObject *self UNUSED, PyObject *args) {
-    unsigned long long window_id; int canceled_by_user; int errcode = 0;
-    if (!PyArg_ParseTuple(args, "Kp|i", &window_id, &canceled_by_user, &errcode)) return NULL;
+    unsigned long long window_id; int canceled_by_user; int errcode = 0, action = 0;
+    if (!PyArg_ParseTuple(args, "Kp|ii", &window_id, &canceled_by_user, &errcode, &action)) return NULL;
     Window *w = window_for_window_id((id_type)window_id);
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
     global_state.drag_source.was_canceled = canceled_by_user;
+    if (PyTuple_GET_SIZE(args) > 3) global_state.drag_source.action = action;
     if (!errcode) drag_notify(w, DRAG_NOTIFY_FINISHED);
     cancel_drag(w, errcode, "");
     Py_RETURN_NONE;
@@ -2591,12 +2622,13 @@ dnd_test_drag_notify(PyObject *self UNUSED, PyObject *args) {
     // Call drag_notify with a specific type for testing the protocol output.
     // type: 0=ACCEPTED, 1=ACTION_CHANGED, 2=DROPPED, 3=FINISHED
     // accepted_mime: the MIME type to set in global_state.drag_source.accepted_mime_type (for ACCEPTED)
-    // action: the action to set in global_state.drag_source.action (for ACTION_CHANGED)
+    // action: the operation for ACTION_CHANGED or an explicit FINISHED event.
+    // If omitted, keep the previous operation across other notifications.
     // was_canceled: whether the drag was canceled (for FINISHED)
     unsigned long long window_id;
     int type;
     const char *accepted_mime = NULL;
-    int action = 0, was_canceled = 0;
+    int action = -1, was_canceled = 0;
     if (!PyArg_ParseTuple(args, "Ki|sip", &window_id, &type, &accepted_mime, &action, &was_canceled)) return NULL;
     Window *w = window_for_window_id((id_type)window_id);
     if (!w) { PyErr_SetString(PyExc_ValueError, "Window not found"); return NULL; }
@@ -2606,8 +2638,10 @@ dnd_test_drag_notify(PyObject *self UNUSED, PyObject *args) {
         global_state.drag_source.accepted_mime_type = strdup(accepted_mime);
         if (!global_state.drag_source.accepted_mime_type) { PyErr_NoMemory(); return NULL; }
     }
-    global_state.drag_source.action = action;
-    global_state.drag_source.was_canceled = was_canceled;
+    if ((type == DRAG_NOTIFY_ACTION_CHANGED || type == DRAG_NOTIFY_FINISHED) && PyTuple_GET_SIZE(args) > 3)
+        global_state.drag_source.action = action;
+    if (type == DRAG_NOTIFY_DROPPED) global_state.drag_source.was_dropped = true;
+    if (type == DRAG_NOTIFY_FINISHED) global_state.drag_source.was_canceled = was_canceled;
     drag_notify(w, (DragNotifyType)type);
     Py_RETURN_NONE;
 }

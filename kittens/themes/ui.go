@@ -73,6 +73,7 @@ type handler struct {
 	rl                 *readline.Readline
 	shortcut_tracker   config.ShortcutTracker
 	keyboard_shortcuts []*config.KeyAction
+	save_error         string
 }
 
 // fetching {{{
@@ -525,6 +526,7 @@ func (self *handler) on_accepting_key_event(ev *loop.KeyEvent) error {
 		return nil
 	}
 	if ac := self.shortcut_tracker.Match(ev, self.keyboard_shortcuts); ac != nil {
+		ev.Handled = true
 		switch ac.Name {
 		case "quit":
 			self.lp.Quit(0)
@@ -532,28 +534,31 @@ func (self *handler) on_accepting_key_event(ev *loop.KeyEvent) error {
 			self.state = BROWSING
 			self.draw_screen()
 		case "place_theme":
-			self.themes_list.CurrentTheme().SaveInDir(utils.ConfigDir())
-			self.update_recent()
-			self.lp.Quit(0)
+			return self.finish_theme_save(ev, self.themes_list.CurrentTheme().SaveInDir(utils.ConfigDir()))
 		case "modify_conf":
-			self.themes_list.CurrentTheme().SaveInConf(utils.ConfigDir(), self.opts.ReloadIn, self.opts.ConfigFileName)
-			self.update_recent()
-			self.lp.Quit(0)
+			return self.finish_theme_save(ev, self.themes_list.CurrentTheme().SaveInConf(utils.ConfigDir(), self.opts.ReloadIn, self.opts.ConfigFileName))
 		case "dark_scheme":
-			self.themes_list.CurrentTheme().SaveInFile(utils.ConfigDir(), kitty.DarkThemeFileName)
-			self.update_recent()
-			self.lp.Quit(0)
+			return self.finish_theme_save(ev, self.themes_list.CurrentTheme().SaveInFile(utils.ConfigDir(), kitty.DarkThemeFileName))
 		case "light_scheme":
-			self.themes_list.CurrentTheme().SaveInFile(utils.ConfigDir(), kitty.LightThemeFileName)
-			self.update_recent()
-			self.lp.Quit(0)
+			return self.finish_theme_save(ev, self.themes_list.CurrentTheme().SaveInFile(utils.ConfigDir(), kitty.LightThemeFileName))
 		case "no_preference":
-			self.themes_list.CurrentTheme().SaveInFile(utils.ConfigDir(), kitty.NoPreferenceThemeFileName)
-			self.update_recent()
-			self.lp.Quit(0)
+			return self.finish_theme_save(ev, self.themes_list.CurrentTheme().SaveInFile(utils.ConfigDir(), kitty.NoPreferenceThemeFileName))
 		}
 		return nil
 	}
+	return nil
+}
+
+func (self *handler) finish_theme_save(ev *loop.KeyEvent, err error) error {
+	ev.Handled = true
+	if err != nil {
+		self.save_error = err.Error()
+		self.draw_screen()
+		return nil
+	}
+	self.save_error = ""
+	self.update_recent()
+	self.lp.Quit(0)
 	return nil
 }
 
@@ -601,6 +606,10 @@ func (self *handler) draw_accepting_screen() {
 	self.lp.Println()
 	self.lp.Println()
 	self.lp.Printf(` %sbort and return to list of themes`, ac("A"))
+	if self.save_error != "" {
+		self.lp.Println()
+		self.lp.Println(self.lp.SprintStyled("fg=red", "Could not save theme: "+self.save_error))
+	}
 	self.lp.Println()
 	self.lp.Println()
 	self.lp.Printf(` %suit`, ac("Q"))

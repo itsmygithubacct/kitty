@@ -437,11 +437,23 @@ class TestDnDKitten(BaseTest):
         self.wait_for_state('can_offer', True)
         self.wait_for_state('drag_operations', 0)
         def wait_for_drag_active(active=True):
+            if not active:
+                # The kitten holds a successful finish until the write completion
+                # of its last queued URI terminator, so poll until it has decided.
+                end_time = time.monotonic() + 10
+                while True:
+                    self.send_dnd_command_to_kitten('DRAG_ACTIVE')
+                    self.pty.wait_till(lambda: bool(self.messages_from_kitten.strip()))
+                    answer, self.messages_from_kitten = self.messages_from_kitten.strip(), ''
+                    if answer == 'DRAG_INACTIVE':
+                        return
+                    self.assertEqual(answer, 'DRAG_ACTIVE')
+                    self.assertLess(time.monotonic(), end_time, 'the kitten never finished the drag')
+                    time.sleep(0.005)
             self.send_dnd_command_to_kitten('DRAG_ACTIVE')
-            self.wait_for_responses('DRAG_ACTIVE' if active else 'DRAG_INACTIVE')
-            if active:
-                self.send_dnd_command_to_kitten('DRAG_OK')
-                self.wait_for_responses('DRAG_OK')
+            self.wait_for_responses('DRAG_ACTIVE')
+            self.send_dnd_command_to_kitten('DRAG_OK')
+            self.wait_for_responses('DRAG_OK')
         def start_drag(x, y, expected):
             dnd_test_start_drag_offer(self.capture.window_id, x, y)
             wait_for_drag_active()
@@ -497,3 +509,246 @@ class TestDnDKitten(BaseTest):
             for name in src_items_before:
                 item_path = os.path.join(self.src_data_dir, name)
                 self.assertFalse(os.path.lexists(item_path), f'move drag: {name} should have been deleted from source')
+
+    def drag_thumbnail_arg(self):
+        from .graphics import png_data
+        drag_thumbnail = os.path.join(self.test_dir, 'drag.png')
+        with open(drag_thumbnail, 'wb') as f:
+            f.write(png_data)
+        return f'--drag-thumbnail={drag_thumbnail}'
+
+    def test_dnd_kitten_drag_refusal_and_repeated_gestures(self):
+        # The terminal reports t=e:x=4:o=0 for a dropped drag that no action completed.
+        # That is a refusal: the sources stay, and a later Copy or Move gesture of the
+        # same kitten session must neither inherit what the earlier ones transferred.
+        create_fs(self.src_data_dir)
+        tl = tuple(os.path.join(self.src_data_dir, x) for x in os.listdir(self.src_data_dir))
+        self.finish_setup(cli_args=(self.drag_thumbnail_arg(),) + tl)
+        for remote_client in (False, True):
+            with self.subTest(remote_client=remote_client):
+                if remote_client:
+                    self.reset_kitten(True)
+                    create_fs(self.src_data_dir)
+                self.dnd_kitten_refusal_and_gestures(remote_client)
+        self.exit_kitten()
+
+    def dnd_kitten_refusal_and_gestures(self, remote_client):
+        self.wait_for_state('can_offer', True)
+        self.wait_for_state('drag_operations', 0)
+        names = set(os.listdir(self.src_data_dir))
+        self.assertTrue(names)
+        def wait_for_drag_active(active=True):
+            self.send_dnd_command_to_kitten('DRAG_ACTIVE')
+            if active:
+                self.wait_for_responses('DRAG_ACTIVE')
+            else:
+                self.wait_for_completed_drag()
+            if active:
+                self.send_dnd_command_to_kitten('DRAG_OK')
+                self.wait_for_responses('DRAG_OK')
+        protocol_operation = {GLFW_DRAG_OPERATION_COPY: 1, GLFW_DRAG_OPERATION_MOVE: 2}  # the o values of the protocol
+        def gesture(action_when_dropped, refuse=False):
+            dnd_test_start_drag_offer(self.capture.window_id, 1, 1)
+            wait_for_drag_active()
+            self.wait_for_state('drag_operations', 3)
+            dnd_test_drag_notify(self.capture.window_id, 0, 'text/uri-list')
+            dnd_test_drag_notify(self.capture.window_id, 1, '', action_when_dropped)
+            dnd_test_force_drag_dropped(self.capture.window_id)
+            dnd_test_drag_notify(self.capture.window_id, 2)
+            self.send_dnd_command_to_kitten('DRAG_STATUS')
+            self.wait_for_responses(f'text/uri-list:{protocol_operation[action_when_dropped]}:true')
+            self.read_drag_data('text/uri-list')  # the target reads everything
+            if refuse:
+                # The target accepted a Move (x=2:o=2) and the drop then failed: the terminal's own
+                # completion report has the dropped flag and a zero action, i.e. x=4:y=0:o=0.
+                dnd_test_drag_finish(self.capture.window_id, False, 0, 0)
+            else:
+                dnd_test_drag_finish(self.capture.window_id, False)
+        def assert_sources_kept():
+            self.assertEqual(names, set(os.listdir(self.src_data_dir)))
+        # accepted as Move, then reported finished with o=0
+        gesture(GLFW_DRAG_OPERATION_MOVE, refuse=True)
+        wait_for_drag_active(False)
+        assert_sources_kept()
+        self.wait_for_state('drag_operations', 0)
+        self.wait_for_state('can_offer', True)
+        # a completed Copy keeps the sources
+        gesture(GLFW_DRAG_OPERATION_COPY)
+        wait_for_drag_active(False)
+        assert_sources_kept()
+        self.wait_for_state('drag_operations', 0)
+        # a completed Move removes what it transferred
+        gesture(GLFW_DRAG_OPERATION_MOVE)
+        wait_for_drag_active(False)
+        if remote_client:
+            for name in names:
+                self.assertFalse(os.path.lexists(os.path.join(self.src_data_dir, name)), f'{name} should have been deleted by the Move')
+        else:
+            assert_sources_kept()
+
+    def dnd_kitten_wire_completion(self, completion, expect_deleted, announce=GLFW_DRAG_OPERATION_MOVE, announce_wire=None,
+                                   expect_accepted=2, exit_on=None, expect_exit=False, writer_action=None):
+        # The kitten is told, byte for byte, how the terminal reports the end of a dropped drag
+        # that the target read in full. "completion" is what follows t=e:x=4:y=0.
+        # announce: the action the real C writer announces with x=2 (None: no x=2 at all, a legacy
+        # terminal); announce_wire: raw text after t=e:x=2 instead; expect_accepted: what the kitten
+        # then reports as the accepted operation; exit_on/expect_exit: --exit-on and whether the
+        # completion ends the kitten; writer_action: the completion comes from the real C writer
+        # (drag_notify FINISHED with this GLFW action) instead of from raw bytes.
+        create_fs(self.src_data_dir)
+        tl = tuple(os.path.join(self.src_data_dir, x) for x in os.listdir(self.src_data_dir))
+        exit_args = (f'--exit-on={exit_on},esc-key',) if exit_on else ()  # esc-key lets the test end a kitten that did not exit
+        self.finish_setup(remote_client=True, cli_args=(self.drag_thumbnail_arg(),) + exit_args + tl)
+        names = set(os.listdir(self.src_data_dir))
+        self.wait_for_state('can_offer', True)
+        dnd_test_start_drag_offer(self.capture.window_id, 1, 1)
+        self.send_dnd_command_to_kitten('DRAG_ACTIVE')
+        self.wait_for_responses('DRAG_ACTIVE')
+        self.send_dnd_command_to_kitten('DRAG_OK')
+        self.wait_for_responses('DRAG_OK')
+        dnd_test_drag_notify(self.capture.window_id, 0, 'text/uri-list')
+        if announce_wire is not None:
+            self.pty.write_to_child(f'\x1b]{DND_CODE};t=e:x=2{announce_wire}\x1b\\'.encode(), flush=True)
+        elif announce is not None:
+            dnd_test_drag_notify(self.capture.window_id, 1, '', announce)
+        dnd_test_force_drag_dropped(self.capture.window_id)
+        dnd_test_drag_notify(self.capture.window_id, 2)
+        self.send_dnd_command_to_kitten('DRAG_STATUS')
+        self.wait_for_responses(f'text/uri-list:{expect_accepted}:true')
+        self.read_drag_data('text/uri-list')
+        if writer_action is not None:
+            dnd_test_drag_notify(self.capture.window_id, 3, '', writer_action, 0)
+        else:
+            self.pty.write_to_child(f'\x1b]{DND_CODE};t=e:x=4:y=0{completion}\x1b\\'.encode(), flush=True)
+        if expect_exit:
+            self.pty.wait_till_child_exits(require_exit_code=0)
+        else:
+            self.send_dnd_command_to_kitten('DRAG_ACTIVE')
+            self.wait_for_completed_drag()
+        for name in names:
+            self.assertEqual(expect_deleted, not os.path.lexists(os.path.join(self.src_data_dir, name)), name)
+        if not expect_exit:
+            self.exit_kitten()
+
+    def test_dnd_kitten_drag_completion_o_zero_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=0', False)
+
+    def test_dnd_kitten_drag_completion_o_move_deletes(self):
+        self.dnd_kitten_wire_completion(':o=2', True)
+
+    def test_dnd_kitten_drag_completion_without_o_uses_accepted_operation(self):
+        self.dnd_kitten_wire_completion('', True)
+
+    def test_dnd_kitten_drag_completion_o_copy_keeps(self):
+        self.dnd_kitten_wire_completion(':o=1', False)
+
+    def test_dnd_kitten_drag_completion_o_negative_one_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=-1', False)
+
+    def test_dnd_kitten_drag_completion_o_negative_two_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=-2', False)
+
+    def test_dnd_kitten_drag_completion_o_most_negative_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=-9223372036854775808', False)
+
+    def test_dnd_kitten_drag_completion_o_three_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=3', False)
+
+    def test_dnd_kitten_drag_completion_o_ninety_nine_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=99', False)
+
+    def test_dnd_kitten_drag_completion_o_int32_overflow_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=2147483648', False)
+
+    def test_dnd_kitten_drag_completion_o_most_positive_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=9223372036854775807', False)
+
+    def test_dnd_kitten_drag_completion_o_int64_overflow_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=9223372036854775808', False)
+
+    def test_dnd_kitten_drag_completion_o_huge_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=99999999999999999999', False)
+
+    def test_dnd_kitten_drag_completion_o_empty_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=', False)
+
+    def test_dnd_kitten_drag_completion_o_decimal_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=1.5', False)
+
+    def test_dnd_kitten_drag_completion_o_garbage_is_a_refusal(self):
+        self.dnd_kitten_wire_completion(':o=zz', False)
+
+    def test_dnd_kitten_drag_completion_bare_o_key_is_unreported(self):
+        # "o" with no "=" is not an o key: the base-protocol fallback applies.
+        self.dnd_kitten_wire_completion(':o', True)
+
+    def test_dnd_kitten_drag_status_negative_o_accepts_nothing(self):
+        self.dnd_kitten_wire_completion('', False, announce_wire=':o=-1', expect_accepted=0)
+
+    def test_dnd_kitten_drag_status_three_accepts_nothing(self):
+        self.dnd_kitten_wire_completion('', False, announce_wire=':o=3', expect_accepted=0)
+
+    def test_dnd_kitten_drag_status_ninety_nine_accepts_nothing(self):
+        self.dnd_kitten_wire_completion('', False, announce_wire=':o=99', expect_accepted=0)
+
+    def test_dnd_kitten_drag_status_most_negative_accepts_nothing(self):
+        self.dnd_kitten_wire_completion('', False, announce_wire=':o=-9223372036854775808', expect_accepted=0)
+
+    def test_dnd_kitten_legacy_completion_with_no_operation_at_all_does_not_exit(self):
+        self.dnd_kitten_wire_completion('', False, announce=None, expect_accepted=0, exit_on='drag-finish')
+
+    def test_dnd_kitten_legacy_completion_after_accepted_move_exits_and_deletes(self):
+        self.dnd_kitten_wire_completion('', True, exit_on='drag-finish', expect_exit=True)
+
+    def test_dnd_kitten_explicit_refusal_does_not_exit_on_drag_finish(self):
+        self.dnd_kitten_wire_completion(':o=0', False, exit_on='drag-finish')
+
+    def test_dnd_kitten_bogus_completion_does_not_exit_on_drag_finish(self):
+        self.dnd_kitten_wire_completion(':o=-1', False, exit_on='drag-finish')
+
+    def test_dnd_kitten_completed_move_exits_on_drag_finish(self):
+        self.dnd_kitten_wire_completion(':o=2', True, exit_on='drag-finish', expect_exit=True)
+
+    def test_dnd_kitten_c_writer_move_completion_deletes(self):
+        self.dnd_kitten_wire_completion('', True, writer_action=GLFW_DRAG_OPERATION_MOVE)
+
+    def test_dnd_kitten_c_writer_copy_completion_keeps(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=GLFW_DRAG_OPERATION_COPY)
+
+    def test_dnd_kitten_c_writer_none_action_is_a_refusal(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=0)
+
+    def test_dnd_kitten_c_writer_negative_action_is_a_refusal(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=-1)
+
+    def test_dnd_kitten_c_writer_most_negative_action_is_a_refusal(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=-(2**31))
+
+    def test_dnd_kitten_c_writer_generic_action_is_a_refusal(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=4)
+
+    def test_dnd_kitten_c_writer_unknown_action_three_is_a_refusal(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=3)
+
+    def test_dnd_kitten_c_writer_unknown_action_ninety_nine_is_a_refusal(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=99)
+
+    def test_dnd_kitten_c_writer_largest_action_is_a_refusal(self):
+        self.dnd_kitten_wire_completion('', False, writer_action=2**31 - 1)
+
+    def test_dnd_kitten_c_writer_rejects_an_action_that_does_not_fit_an_int(self):
+        for action in (2**31, -(2**31) - 1, 2**63, 2**64):
+            with self.subTest(action=action), self.assertRaises(OverflowError):
+                dnd_test_drag_notify(self.capture.window_id, 3, '', action, 0)
+
+    def wait_for_completed_drag(self):
+        end_time = time.monotonic() + 10
+        while True:
+            self.pty.wait_till(lambda: bool(self.messages_from_kitten.strip()))
+            answer, self.messages_from_kitten = self.messages_from_kitten.strip(), ''
+            if answer == 'DRAG_INACTIVE':
+                return
+            self.assertEqual(answer, 'DRAG_ACTIVE')
+            self.assertLess(time.monotonic(), end_time, 'the kitten never finished the drag')
+            time.sleep(0.005)
+            self.send_dnd_command_to_kitten('DRAG_ACTIVE')

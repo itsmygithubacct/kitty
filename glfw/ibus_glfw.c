@@ -387,7 +387,9 @@ input_context_created(DBusMessage *msg, const DBusError *err, void *data) {
     ibus->input_ctx_path = _glfw_strdup(path);
     if (!ibus->input_ctx_path) return;
     dbus_bus_add_match(ibus->conn, "type='signal',interface='org.freedesktop.DBus', member='NameOwnerChanged'", NULL);
-    dbus_connection_add_filter(ibus->conn, ibus_on_owner_change, ibus, free);
+    // ibus is embedded in the global XKB state, so the connection must not
+    // release it when this filter is removed.
+    dbus_connection_add_filter(ibus->conn, ibus_on_owner_change, ibus, NULL);
     dbus_bus_add_match(ibus->conn, "type='signal',interface='org.freedesktop.IBus.InputContext'", NULL);
     DBusObjectPathVTable ibus_vtable = {.message_function = message_handler};
     dbus_connection_try_register_object_path(ibus->conn, ibus->input_ctx_path, &ibus_vtable, ibus, NULL);

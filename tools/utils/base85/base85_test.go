@@ -59,3 +59,51 @@ func TestBase85(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeRejectsImpossibleTrailingLength(t *testing.T) {
+	for _, encoded := range []string{"0", "000000"} {
+		decoded, err := DecodeString(encoded)
+		if len(decoded) != 0 {
+			t.Fatalf("Expected no decoded bytes for impossible length %#v, got %#v", encoded, decoded)
+		}
+		corrupt, ok := err.(CorruptInputError)
+		if !ok {
+			t.Fatalf("Expected CorruptInputError for %#v, got %T: %v", encoded, err, err)
+		}
+		if int64(corrupt) != int64(len(encoded)) {
+			t.Fatalf("Expected trailing byte index %d for %#v, got %d", len(encoded), encoded, corrupt)
+		}
+	}
+
+	encoded := []byte("000000")
+	dst := make([]byte, DecodedLen(len(encoded)))
+	for i := range dst {
+		dst[i] = 0xAA
+	}
+	n, err := Decode(dst, encoded)
+	if n != 0 {
+		t.Fatalf("Expected impossible input length to be rejected before decoding, got %d bytes", n)
+	}
+	for i, b := range dst {
+		if b != 0xAA {
+			t.Fatalf("Decode changed destination byte %d before rejecting the input length", i)
+		}
+	}
+	if corrupt, ok := err.(CorruptInputError); !ok || int64(corrupt) != int64(len(encoded)) {
+		t.Fatalf("Expected CorruptInputError at byte %d, got %T: %v", len(encoded), err, err)
+	}
+
+	_, err = DecodeString("0.0000")
+	if corrupt, ok := err.(CorruptInputError); !ok || int64(corrupt) != 2 {
+		t.Fatalf("Expected invalid-character error at byte 2, got %T: %v", err, err)
+	}
+}
+
+func TestBase85RejectsOneCharacterTrailingGroup(t *testing.T) {
+	if _, err := Decode(make([]byte, DecodedLen(1)), []byte("x")); err == nil {
+		t.Fatal("Decode accepted an impossible one-character trailing group")
+	}
+	if _, err := DecodeString("x"); err == nil {
+		t.Fatal("DecodeString accepted an impossible one-character trailing group")
+	}
+}

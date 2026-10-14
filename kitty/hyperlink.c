@@ -75,18 +75,23 @@ dupstr(const char *src, size_t len) {
     return ans;
 }
 
-static void
-process_cell(HyperLinkPool *pool, hyperlink_id_type *map, HyperLinks clone, CPUCell *c) {
-    if (!c->hyperlink_id) return;
-    if (c->hyperlink_id >= clone.count) { c->hyperlink_id = 0; return; }
-    hyperlink_id_type new_id = map[c->hyperlink_id];
+static hyperlink_id_type
+process_hyperlink_id(HyperLinkPool *pool, hyperlink_id_type *map, HyperLinks clone, hyperlink_id_type id) {
+    if (!id) return 0;
+    if (id >= clone.count) return 0;
+    hyperlink_id_type new_id = map[id];
     if (!new_id) {
         new_id = pool->array.count++;
-        map[c->hyperlink_id] = new_id;
-        pool->array.items[new_id] = clone.items[c->hyperlink_id]; clone.items[c->hyperlink_id] = NULL;
+        map[id] = new_id;
+        pool->array.items[new_id] = clone.items[id]; clone.items[id] = NULL;
         if (vt_is_end(vt_insert(&pool->map, pool->array.items[new_id], new_id))) fatal("Out of memory");
     }
-    c->hyperlink_id = new_id;
+    return new_id;
+}
+
+static void
+process_cell(HyperLinkPool *pool, hyperlink_id_type *map, HyperLinks clone, CPUCell *c) {
+    c->hyperlink_id = process_hyperlink_id(pool, map, clone, c->hyperlink_id);
 }
 
 static void
@@ -101,6 +106,7 @@ remap_hyperlink_ids(Screen *self, bool preserve_hyperlinks_in_history, hyperlink
     LineBuf *second = self->linebuf, *first = second == self->main_linebuf ? self->alt_linebuf : self->main_linebuf;
     for (index_type i = 0; i < self->lines * self->columns; i++) process_cell(pool, map, clone, first->cpu_cell_buf + i);
     for (index_type i = 0; i < self->lines * self->columns; i++) process_cell(pool, map, clone, second->cpu_cell_buf + i);
+    self->active_hyperlink_id = process_hyperlink_id(pool, map, clone, self->active_hyperlink_id);
 }
 
 static void
@@ -145,14 +151,15 @@ get_id_for_hyperlink(Screen *screen, const char *id, const char *url) {
             }
         }
     }
+    // Collection must happen before insertion: the caller cannot publish the
+    // returned ID as the active hyperlink until this function returns.
+    if (pool->adds_since_last_gc >= 8192) screen_garbage_collect_hyperlink_pool(screen);
     if (!pool->array.count) pool->array.count = 1;  // First id must be 1
     ensure_space_for(&(pool->array), items, hyperlink, pool->array.count + 1, capacity, 256, false);
     hyperlink_id_type new_id = pool->array.count++;
     pool->array.items[new_id] = dupstr(key, keylen);
     if (vt_is_end(vt_insert(&pool->map, pool->array.items[new_id], new_id))) fatal("Out of memory");
-    // If there have been a lot of hyperlink adds do a garbage collect so as
-    // not to leak too much memory over unused hyperlinks
-    if (++pool->adds_since_last_gc > 8192) screen_garbage_collect_hyperlink_pool(screen);
+    ++pool->adds_since_last_gc;
     return new_id;
 }
 

@@ -31,7 +31,9 @@ func (self *MatchGroup) remove_common_prefix() string {
 			lcp := self.longest_common_prefix()
 			if strings.Contains(lcp, utils.Sep) {
 				lcp = strings.TrimRight(filepath.Dir(lcp), utils.Sep) + utils.Sep
-				self.remove_prefix_from_all_matches(lcp)
+				if !self.remove_prefix_from_all_matches(lcp) {
+					return ""
+				}
 				return lcp
 			}
 		}
@@ -39,7 +41,9 @@ func (self *MatchGroup) remove_common_prefix() string {
 		lcp, _, _ := strings.Cut(self.longest_common_prefix(), "=")
 		lcp += "="
 		if len(lcp) > 3 {
-			self.remove_prefix_from_all_matches(lcp)
+			if !self.remove_prefix_from_all_matches(lcp) {
+				return ""
+			}
 			return lcp
 		}
 	}
@@ -58,10 +62,16 @@ func (self *MatchGroup) AddPrefixToAllMatches(prefix string) {
 	}
 }
 
-func (self *MatchGroup) remove_prefix_from_all_matches(prefix string) {
+func (self *MatchGroup) remove_prefix_from_all_matches(prefix string) bool {
+	for _, m := range self.Matches {
+		if !strings.HasPrefix(m.Word, prefix) {
+			return false
+		}
+	}
 	for _, m := range self.Matches {
 		m.Word = m.Word[len(prefix):]
 	}
+	return true
 }
 
 func (self *MatchGroup) has_descriptions() bool {

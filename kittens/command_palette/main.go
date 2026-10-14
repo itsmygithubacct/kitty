@@ -277,7 +277,16 @@ type Handler struct {
 	keyboard_shortcuts []*config.KeyAction
 }
 
-// initialize sets up the TUI: screen size, cursor, cached settings, and initial data load.
+func loadCachedSettings() (*utils.CachedValues[*CachedSettings], error) {
+	cv := utils.NewCachedValues("command-palette", &CachedSettings{ShowUnmapped: true})
+	cv.Load()
+	if err := cv.LoadError(); err != nil {
+		return nil, fmt.Errorf("failed to load command palette cache: %w", err)
+	}
+	return cv, nil
+}
+
+// initialize sets up the TUI: screen size, cursor, and initial data load.
 func (h *Handler) initialize() (string, error) {
 	sz, err := h.lp.ScreenSize()
 	if err != nil {
@@ -288,12 +297,6 @@ func (h *Handler) initialize() (string, error) {
 	h.lp.SetCursorShape(loop.BAR_CURSOR, true)
 	h.lp.AllowLineWrapping(false)
 	h.lp.SetWindowTitle("Command Palette")
-
-	// Initialize with ShowUnmapped: true as the default; Load() returns this
-	// default when no cache file exists yet.
-	h.cv = utils.NewCachedValues("command-palette", &CachedSettings{ShowUnmapped: true})
-	settings := h.cv.Load()
-	h.show_unmapped = settings.ShowUnmapped
 
 	h.keyboard_shortcuts = config.ResolveShortcuts(NewConfig().KeyboardShortcuts)
 
@@ -1009,13 +1012,17 @@ func main(cmd *cli.Command, opts *Options, args []string) (rc int, err error) {
 	if tty.IsTerminal(os.Stdin.Fd()) {
 		return 1, fmt.Errorf("This kitten must only be run via the command_palette action mapped to a shortcut in kitty.conf")
 	}
+	cv, err := loadCachedSettings()
+	if err != nil {
+		return 1, err
+	}
 	output := tui.KittenOutputSerializer()
 	lp, err := loop.New()
 	if err != nil {
 		return 1, err
 	}
 
-	handler := &Handler{lp: lp}
+	handler := &Handler{lp: lp, cv: cv, show_unmapped: cv.Opts.ShowUnmapped}
 	lp.MouseTrackingMode(loop.FULL_MOUSE_TRACKING)
 
 	lp.OnInitialize = func() (string, error) {

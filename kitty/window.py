@@ -115,7 +115,7 @@ from .utils import (
     log_error,
     open_cmd,
     open_url,
-    parse_uri_list,
+    quote_file_uri_list,
     path_from_osc7_url,
     resolve_custom_file,
     resolved_shell,
@@ -675,11 +675,11 @@ class EdgeWidths:
         if self.left is not None:
             yield f'--spacing={prefix}-left={self.left}'
         if self.right is not None:
-            yield f'--spacing={prefix}-left={self.right}'
+            yield f'--spacing={prefix}-right={self.right}'
         if self.top is not None:
-            yield f'--spacing={prefix}-left={self.top}'
+            yield f'--spacing={prefix}-top={self.top}'
         if self.bottom is not None:
-            yield f'--spacing={prefix}-left={self.bottom}'
+            yield f'--spacing={prefix}-bottom={self.bottom}'
 
 
 class GlobalWatchers:
@@ -2315,19 +2315,27 @@ class Window:
         "Return the last position at which a mouse event was received by this window"
         return get_mouse_data_for_window(self.os_window_id, self.tab_id, self.id)
 
-    def on_drop(self, drop: dict[str, bytes]) -> None:
+    def on_drop(self, drop: dict[str, bytes]) -> bool:
+        if getattr(self, 'destroyed', False):
+            return False
         text = ''
-        is_uri_list = False
         if uri_list := drop.pop('text/uri-list', b''):
-            urls = parse_uri_list(uri_list.decode('utf-8', 'replace'))
-            text = '\n'.join(urls)
-            is_uri_list = True
+            try:
+                text = quote_file_uri_list(uri_list)
+            except (ValueError, UnicodeError):
+                return False
+            if text:
+                self.paste_text(text)
+                return True
+            return False
         elif tp := drop.pop('text/plain', b''):
             text = tp.decode('utf-8', 'replace')
         elif tp := drop.pop('text/plain;charset=utf-8', b''):
             text = tp.decode('utf-8', 'replace')
         if text:
-            self.paste_with_actions(text, from_drop=True, is_uri_list=is_uri_list)
+            self.paste_with_actions(text, from_drop=True)
+            return True
+        return False
 
     # Serialization {{{
     def as_dict(
@@ -2402,6 +2410,24 @@ class Window:
 
     def as_launch_command(self, ser_opts: SaveAsSessionOptions, cwd: str, is_overlay: bool = False) -> list[str]:
         "Return a launch command that can be used to serialize this window. Empty list indicates not serializable."
+        from .pty_broker import STARTUP_SPEC_MARKER
+
+        creation_env = dict(self.creation_spec.env or ()) if self.creation_spec else {}
+        creation_cmd = self.creation_spec.cmd if self.creation_spec else None
+        # A broker attachment points at a live PTY session; a saved session
+        # must not replay that attachment after the session is later closed.
+        # Only an attach pane loses BYPASS: other bypass panes (the pane log
+        # viewer) must stay out of a new broker session when reloaded.
+        broker_attach = (
+            creation_env.get('KITTY_PTY_BROKER_BYPASS') == '1'
+            and bool(creation_cmd)
+            and len(creation_cmd) >= 4
+            and creation_cmd[-2] == 'attach'
+        )
+        # The one title the boss gives a recovered pane, derived from the same
+        # session ID as its attach command; nothing else is treated as one.
+        recovery_placeholder = f'recovered:{creation_cmd[-1][:8]}' if broker_attach else None
+
         if self.actions_on_close or self.actions_on_focus_change or self.actions_on_removal:
             # such windows are typically UI kittens. The actions are not
             # serializable anyway, so skip.
@@ -2419,7 +2445,11 @@ class Window:
         if self.creation_spec:
             if self.creation_spec.env:
                 for k, v in self.creation_spec.env:
-                    if k not in ('KITTY_PIPE_DATA',):
+                    # Login startup authority belongs to the boss's live
+                    # initial launch. A saved session must not replay it.
+                    if k not in ('KITTY_PIPE_DATA', 'KITTY_PTY_BROKER_STARTUP_SESSION', STARTUP_SPEC_MARKER,
+                                 'KITTY_PTY_BROKER_STARTUP_TOKEN', 'KITTY_PTY_BROKER_RECOVER_STARTUP',
+                                 'KITTY_PTY_BROKER_SESSION') and not (broker_attach and k == 'KITTY_PTY_BROKER_BYPASS'):
                         ans.append(f'--env={k}={v}')
             for cs in self.creation_spec.colors:
                 ans.append(f'--color={cs}')
@@ -2432,7 +2462,7 @@ class Window:
         ans.extend(f'--var={k}={v}' for k, v in self.user_vars.items())
         ans.extend(self.padding.as_launch_args())
         ans.extend(self.margin.as_launch_args('margin'))
-        if self.override_title:
+        if self.override_title and self.override_title != recovery_placeholder:
             ans.append(f'--title={self.override_title}')
         wl = get_window_logo_settings_if_not_default(self.os_window_id, self.tab_id, self.id)
         if wl is not None:
@@ -2456,7 +2486,7 @@ class Window:
         from kittens.ssh.utils import remove_env_var_from_cmdline, set_cwd_in_cmdline, set_single_env_var_in_cmdline
 
         cmd: list[str] = []
-        if self.creation_spec and self.creation_spec.cmd:
+        if self.creation_spec and self.creation_spec.cmd and not broker_attach:
             if self.creation_spec.cmd != resolved_shell(get_options()):
                 cmd = self.creation_spec.cmd
                 if is_ssh_kitten_cmdline(cmd):
@@ -2464,7 +2494,7 @@ class Window:
                         if self.screen.last_reported_cwd:
                             set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), cmd)
         unserialize_data: dict[str, int | list[str] | str] = {'id': self.id}
-        if not cmd and ser_opts.use_foreground_process:
+        if not cmd and not broker_attach and ser_opts.use_foreground_process:
 
             def make_exe_absolute(cmd: list[str], pid: int) -> None:
                 if cmd and not os.path.isabs(cmd[0]):

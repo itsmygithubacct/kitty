@@ -19,6 +19,9 @@ import (
 
 var _ = fmt.Print
 
+// The ambiguous legacy unicode-input.json is left untouched and not migrated.
+const theme_cache_name = "themes-v1"
+
 func complete_themes(completions *cli.Completions, word string, arg_num int) {
 	themes.CompleteThemes(completions, word, arg_num)
 }
@@ -59,12 +62,16 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 	if len(args) == 1 {
 		return non_interactive(opts, args[0])
 	}
+	cv := utils.NewCachedValues(theme_cache_name, &CachedData{Category: "All"})
+	cached_data := cv.Load()
+	if err = cv.LoadError(); err != nil {
+		return 1, fmt.Errorf("failed to load theme cache: %w", err)
+	}
 	lp, err := loop.New()
 	if err != nil {
 		return 1, err
 	}
-	cv := utils.NewCachedValues("unicode-input", &CachedData{Category: "All"})
-	h := &handler{lp: lp, opts: opts, cached_data: cv.Load()}
+	h := &handler{lp: lp, opts: opts, cached_data: cached_data}
 	defer cv.Save()
 	lp.OnInitialize = func() (string, error) {
 		lp.AllowLineWrapping(false)

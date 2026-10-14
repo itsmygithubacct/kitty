@@ -1839,6 +1839,9 @@ typedef struct GLFWDragEvent {
     // Once glfw is done reading the data the drag event callback will be
     // called with the data pointer unchanged. The application is now free
     // to delete the data, as needed.
+    // Release is indicated by a non-NULL data pointer, including error and
+    // zero-size allocations. On X11 the original callback is retained for
+    // release; its window argument may be NULL if that window was destroyed.
     const char *mime_type;
     const char *data; size_t data_sz;
     int err_num;  // POSIX error code indicating failure fetching data

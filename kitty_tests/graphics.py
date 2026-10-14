@@ -859,6 +859,18 @@ class TestGraphics(BaseTest):
         refs = layers(s)
         self.ae(len(refs), 0)
 
+    def test_unicode_placeholder_ignores_excluded_diacritic(self):
+        cw, ch = 10, 20
+        s, dx, dy, put_image, put_ref, layers, rect_eq = put_helpers(self, cw, ch)
+        put_image(s, 20, 20, num_cols=4, num_lines=2, unicode_placeholder=1, id=42)
+        s.apply_sgr("38;5;42")
+        # U+0305 is a valid row marker; U+0306 is excluded by the source table.
+        s.draw("\U0010EEEE\u0305\u0306")
+        s.update_only_line_graphics_data()
+        refs = layers(s)
+        self.ae(len(refs), 1)
+        self.ae(refs[0]['src_rect'], {'left': 0.0, 'top': 0.0, 'right': 0.25, 'bottom': 0.5})
+
     def test_unicode_placeholders_3rd_combining_char(self):
         # This test tests that we can use the 3rd diacritic for the most
         # significant byte
@@ -1424,3 +1436,35 @@ class TestGraphics(BaseTest):
                 self.ae((width, height), (w, h))
                 f.seek(8)
                 self.ae(rgba_data, f.read())
+
+    def test_unicode_placeholders_exclusive_diacritic_range_endpoints(self):
+        # The row/column diacritic table is generated from ranges whose end is
+        # exclusive. A combining mark just past the end of a range (U+0306 after
+        # U+0305, U+030F after U+030D..U+030E, ...) is not a row/column
+        # diacritic: the cell then has no explicit row or column and continues
+        # the run started by the previous cell, instead of starting a new run at
+        # a wrong row.
+        cw, ch = 10, 20
+        s, dx, dy, put_image, put_ref, layers, rect_eq = put_helpers(self, cw, ch)
+        put_image(s, 20, 20, num_cols=4, num_lines=2, unicode_placeholder=1, id=42)
+        s.apply_sgr("38;5;42")
+        not_diacritics = ('\u0306', '\u030f', '\u0311', '\u0313', '\u0340', '\u0347', '\u034d', '\u0353', '\u0358', '\u035c')
+        for mark in not_diacritics:
+            with self.subTest(mark=f'U+{ord(mark):04X}'):
+                s.cursor.x = 0
+                s.erase_in_line(2)
+                s.draw("\U0010EEEE\u0305\u0305\U0010EEEE" + mark)
+                s.update_only_line_graphics_data()
+                refs = layers(s)
+                self.ae(len(refs), 1, 'the second cell must continue the first: it has no row/column diacritic')
+                self.ae(refs[0]['src_rect'], {'left': 0.0, 'top': 0.0, 'right': 0.5, 'bottom': 0.5})
+        # the last code point inside each range is still a diacritic
+        for mark, col in (('\u030e', 3), ('\u0310', 4)):
+            with self.subTest(mark=f'U+{ord(mark):04X}'):
+                s.cursor.x = 0
+                s.erase_in_line(2)
+                s.draw("\U0010EEEE\u0305\u0305\U0010EEEE\u0305" + mark)
+                s.update_only_line_graphics_data()
+                refs = layers(s)
+                self.ae(len(refs), 2, 'an explicit column that is not the next one starts a new run')
+                self.ae(refs[1]['src_rect']['left'], (col - 1) * 0.25)

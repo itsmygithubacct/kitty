@@ -10,7 +10,7 @@ from collections import namedtuple
 from contextlib import contextmanager
 from pathlib import Path
 
-from kittens.transfer.rsync import Differ, Hasher, Patcher, parse_ftc
+from kittens.transfer.rsync import Differ, Hasher, Patcher, RsyncError, parse_ftc
 from kittens.transfer.utils import set_paths
 from kitty.constants import kitten_exe
 from kitty.file_transmission import Action, Compression, FileTransmissionCommand, FileType, TransmissionType, ZlibDecompressor
@@ -327,6 +327,22 @@ class TestFileTransmission(BaseTest):
         h128 = Hasher("xxh3-128")
         h128.update(b'abcd')
         self.assertEqual(h128.hexdigest(), '8d6b60383dfa90c21be79eecd1b1353d')
+
+    def test_patcher_rejects_small_signature_buffers(self):
+        p = Patcher(100)
+        header = bytearray([0xa5] * 11)
+        with self.assertRaises(RsyncError):
+            p.signature_header(header)
+        self.assertEqual(header, bytearray([0xa5] * 11))
+
+        block = bytearray([0xa5] * 19)
+        with self.assertRaises(RsyncError):
+            p.sign_block(b'block', block)
+        self.assertEqual(block, bytearray([0xa5] * 19))
+
+        output = bytearray(20)
+        self.assertEqual(p.sign_block(b'block', output), 20)
+        self.assertEqual(int.from_bytes(output[:8], 'little'), 0)
 
     @contextmanager
     def run_kitten(self, cmd, home_dir='', allow=True, cwd=''):

@@ -70,6 +70,118 @@ func TestAddText(t *testing.T) {
 	}, "abcd\nxy12\n34", "z", "abcd\nxy12\n34z")
 }
 
+func assertInputState(t *testing.T, got, want InputState) {
+	t.Helper()
+	if got.cursor != want.cursor {
+		t.Fatalf("Input cursor changed: got %+v, want %+v", got.cursor, want.cursor)
+	}
+	if len(got.lines) != len(want.lines) {
+		t.Fatalf("Input line count changed: got %d, want %d", len(got.lines), len(want.lines))
+	}
+	for i, line := range want.lines {
+		if got.lines[i] != line {
+			t.Fatalf("Input line %d changed: got %#v, want %#v", i, got.lines[i], line)
+		}
+	}
+}
+
+func TestEmptyBracketedPasteIsNoop(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		text   string
+		cursor Position
+	}{
+		{name: "empty initial buffer"},
+		{name: "middle cursor", text: "abcdef", cursor: Position{X: 3}},
+		{name: "end cursor", text: "abcdef", cursor: Position{X: 6}},
+		{name: "multiline current buffer", text: "alpha\nbeta\ngamma", cursor: Position{X: 2, Y: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rl := new_rl()
+			if tc.text != "" {
+				rl.add_text(tc.text)
+			}
+			rl.input_state.cursor = tc.cursor
+			rl.history.AddItem("retained history", 0)
+			rl.last_action = ActionYank
+			rl.kill_ring.add_new_item("retained yank")
+			completion_results := cli.NewCompletions()
+			rl.completions.current = completion{results: completion_results}
+
+			before_input := rl.input_state.copy()
+			before_history := append([]HistoryItem(nil), rl.history.items...)
+			if err := rl.OnText("", false, false); err != nil {
+				t.Fatalf("Empty end-of-paste callback failed: %s", err)
+			}
+			assertInputState(t, rl.input_state, before_input)
+			if diff := cmp.Diff(before_history, rl.history.items); diff != "" {
+				t.Fatalf("Empty paste changed history:\n%s", diff)
+			}
+			if rl.last_action != ActionYank || rl.kill_ring.yank() != "retained yank" {
+				t.Fatal("Empty paste changed the prior yank action state")
+			}
+			if rl.completions.current.results != completion_results {
+				t.Fatal("Empty paste cleared the current completion state")
+			}
+			if rl.text_to_be_added != "" || rl.bracketed_paste_buffer.Len() != 0 {
+				t.Fatal("Empty paste left staged text or paste-buffer contents")
+			}
+		})
+	}
+}
+
+func TestEmptyBracketedPasteDoesNotRecomputeHistorySearch(t *testing.T) {
+	rl := new_rl()
+	if err := rl.perform_action(ActionHistoryIncrementalSearchBackwards, 1); err != nil {
+		t.Fatalf("Starting history search failed: %s", err)
+	}
+	search := rl.history_search
+	if search == nil {
+		t.Fatal("History search did not start")
+	}
+	before_input := rl.input_state.copy()
+	if err := rl.OnText("", false, false); err != nil {
+		t.Fatalf("Empty end-of-paste callback failed: %s", err)
+	}
+	assertInputState(t, rl.input_state, before_input)
+	if rl.history_search != search || search.query != "" || search.tokens != nil || search.items != nil || search.current_idx != 0 {
+		t.Fatal("Empty paste recomputed the active history search")
+	}
+}
+
+func TestBracketedPasteStillInsertsNonemptyMultilineText(t *testing.T) {
+	rl := new_rl()
+	rl.add_text("leftRIGHT")
+	rl.input_state.cursor = Position{X: 4}
+	if err := rl.OnText("one\ntwo", false, true); err != nil {
+		t.Fatalf("Buffering bracketed paste failed: %s", err)
+	}
+	if rl.AllText() != "leftRIGHT" {
+		t.Fatalf("Bracketed paste was inserted before its terminator: %#v", rl.AllText())
+	}
+	if err := rl.OnText("", false, false); err != nil {
+		t.Fatalf("End-of-paste callback failed: %s", err)
+	}
+	if got, want := rl.AllText(), "leftone\ntwoRIGHT"; got != want {
+		t.Fatalf("Unexpected pasted text: got %#v, want %#v", got, want)
+	}
+	if got, want := rl.input_state.cursor, (Position{X: 3, Y: 1}); got != want {
+		t.Fatalf("Unexpected cursor after paste: got %+v, want %+v", got, want)
+	}
+	if rl.bracketed_paste_buffer.Len() != 0 {
+		t.Fatal("End-of-paste callback did not reset the paste buffer")
+	}
+}
+
+func TestAddTextEmptyIsNoop(t *testing.T) {
+	rl := new_rl()
+	rl.add_text("before\nafter")
+	rl.input_state.cursor = Position{X: 2, Y: 0}
+	before := rl.input_state.copy()
+	rl.add_text("")
+	assertInputState(t, rl.input_state, before)
+}
+
 func TestGetScreenLines(t *testing.T) {
 	rl := new_rl()
 
@@ -564,4 +676,24 @@ func TestReadlineCompletion(t *testing.T) {
 	ah("a2 ", "")
 	rl.perform_action(ActionCompleteBackward, 1)
 	ah("a11 ", "")
+}
+
+func TestOnTextIgnoresEmptyInputWithoutBracketedPaste(t *testing.T) {
+	rl := new_rl()
+	rl.add_text("existing line")
+	if err := rl.OnText("", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := rl.AllText(); got != "existing line" {
+		t.Fatalf("empty input changed the current line to %q", got)
+	}
+	if err := rl.OnText("paste", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := rl.OnText("", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := rl.AllText(); got != "existing linepaste" {
+		t.Fatalf("bracketed paste buffer was lost: %q", got)
+	}
 }

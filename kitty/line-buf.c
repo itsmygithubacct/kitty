@@ -464,6 +464,7 @@ as_ansi(LineBuf *self, PyObject *callback) {
         output.len = 0;
         line_as_ansi(&l, &s, 0, l.xnum, 0, true);
         if (output.len) break;
+        if (ylimit == 0) break;
         ylimit--;
     } while(ylimit > 0);
 

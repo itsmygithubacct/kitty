@@ -4,7 +4,7 @@
 from base64 import standard_b64decode, standard_b64encode
 
 from kitty.clipboard import WriteRequest
-from kitty.fast_data_types import StreamingBase64Decoder
+from kitty.fast_data_types import StreamingBase64Decoder, base64_decode
 
 from . import BaseTest
 
@@ -52,3 +52,10 @@ class TestClipboard(BaseTest):
         c2 = standard_b64encode(b'2' * 4096)
         self.ae(standard_b64decode(c1) + standard_b64decode(c2), d.decode(c1) + d.decode(c2))
         self.assertFalse(d.needs_more_data())
+
+    def test_base64_decode_rejects_malformed_padding(self):
+        self.ae(base64_decode('TQ'), b'M')
+        self.ae(base64_decode('TWE'), b'Ma')
+        for malformed in ('A', '=AAA', 'AA=A', 'AAAA=', 'AAAA==='):
+            with self.assertRaises(ValueError, msg=malformed):
+                base64_decode(malformed)

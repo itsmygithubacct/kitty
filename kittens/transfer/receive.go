@@ -250,22 +250,30 @@ func syscall_mode(i os.FileMode) (o uint32) {
 	return
 }
 
-func (self *remote_file) apply_metadata() {
+func (self *remote_file) apply_metadata() error {
 	t := unix.NsecToTimespec(int64(self.mtime))
+	var err error
 	for {
-		if err := unix.UtimesNanoAt(unix.AT_FDCWD, self.expanded_local_path, []unix.Timespec{t, t}, unix.AT_SYMLINK_NOFOLLOW); err == nil || !(errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN)) {
+		err = unix.UtimesNanoAt(unix.AT_FDCWD, self.expanded_local_path, []unix.Timespec{t, t}, unix.AT_SYMLINK_NOFOLLOW)
+		if err == nil || !(errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN)) {
 			break
 		}
 	}
+	if err != nil {
+		return fmt.Errorf("Failed to set modification time for %s: %w", self.expanded_local_path, err)
+	}
 	if self.ftype == FileType_symlink {
 		for {
-			if err := unix.Fchmodat(unix.AT_FDCWD, self.expanded_local_path, syscall_mode(self.permissions), unix.AT_SYMLINK_NOFOLLOW); err == nil || !(errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN)) {
+			if err = unix.Fchmodat(unix.AT_FDCWD, self.expanded_local_path, syscall_mode(self.permissions), unix.AT_SYMLINK_NOFOLLOW); err == nil || !(errors.Is(err, unix.EINTR) || errors.Is(err, unix.EAGAIN)) {
 				break
 			}
 		}
 	} else {
-		_ = os.Chmod(self.expanded_local_path, self.permissions)
+		if err = os.Chmod(self.expanded_local_path, self.permissions); err != nil {
+			return fmt.Errorf("Failed to set permissions for %s: %w", self.expanded_local_path, err)
+		}
 	}
+	return nil
 }
 
 func new_remote_file(opts *Options, ftc *FileTransmissionCommand, file_id uint64) (*remote_file, error) {
@@ -495,17 +503,18 @@ func (self *handler) do_error_quit(loop.IdType) error {
 }
 
 func (self *manager) finalize_transfer() (err error) {
-	self.transfer_done = true
 	rid_map := make(map[string]*remote_file)
 	for _, f := range self.files {
 		rid_map[f.remote_id] = f
 	}
+	directories := make([]*remote_file, 0)
 	for _, f := range self.files {
 		switch f.ftype {
 		case FileType_directory:
 			if err = os.MkdirAll(f.expanded_local_path, 0o755); err != nil {
 				return fmt.Errorf("Failed to create directory with error: %w", err)
 			}
+			directories = append(directories, f)
 		case FileType_link:
 			tgt, found := rid_map[f.remote_target]
 			if !found {
@@ -543,9 +552,34 @@ func (self *manager) finalize_transfer() (err error) {
 				return fmt.Errorf(`Failed to create symlink with error: %w`, err)
 			}
 		}
-		f.apply_metadata()
 	}
+	for _, f := range self.files {
+		if f.ftype == FileType_directory {
+			continue
+		}
+		if err = f.apply_metadata(); err != nil {
+			return err
+		}
+	}
+	slices.SortStableFunc(directories, func(a, b *remote_file) int {
+		depth_a := strings.Count(filepath.Clean(a.expanded_local_path), string(os.PathSeparator))
+		depth_b := strings.Count(filepath.Clean(b.expanded_local_path), string(os.PathSeparator))
+		return depth_b - depth_a
+	})
+	for _, f := range directories {
+		if err = f.apply_metadata(); err != nil {
+			return err
+		}
+	}
+	self.transfer_done = true
 	return
+}
+
+func (self *manager) finalize_if_no_files_to_transfer() (bool, error) {
+	if len(self.files_to_be_transferred) > 0 {
+		return false, nil
+	}
+	return true, self.finalize_transfer()
 }
 
 func (self *manager) on_file_transfer_response(ftc *FileTransmissionCommand) (err error) {
@@ -828,8 +862,20 @@ func (self *handler) start_transfer() {
 	for _, f := range self.manager.files {
 		self.max_name_length = utils.Max(6, self.max_name_length, wcswidth.Stringwidth(f.display_name))
 	}
+	if done, err := self.manager.finalize_if_no_files_to_transfer(); done {
+		if err != nil {
+			self.abort_with_error(err)
+		}
+		return
+	}
 	self.transmit_iterator = self.manager.request_files()
 	self.transmit_one()
+}
+
+func (self *handler) finish_transfer() error {
+	self.manager.send(FileTransmissionCommand{Action: Action_finish}, self.lp.QueueWriteString)
+	self.quit_after_write_code = 0
+	return self.refresh_progress(0)
 }
 
 func (self *handler) on_file_transfer_response(ftc *FileTransmissionCommand) (err error) {
@@ -886,11 +932,7 @@ func (self *handler) on_file_transfer_response(ftc *FileTransmissionCommand) (er
 		}
 	}
 	if self.manager.transfer_done {
-		self.manager.send(FileTransmissionCommand{Action: Action_finish}, self.lp.QueueWriteString)
-		self.quit_after_write_code = 0
-		if err = self.refresh_progress(0); err != nil {
-			return err
-		}
+		return self.finish_transfer()
 	} else if self.transmit_started {
 		if err = self.refresh_progress(0); err != nil {
 			return err
@@ -1039,6 +1081,9 @@ func (self *handler) on_text(text string, from_key_event, in_bracketed_paste boo
 		switch strings.ToLower(text) {
 		case "y":
 			self.start_transfer()
+			if self.manager.transfer_done {
+				return self.finish_transfer()
+			}
 			return nil
 		case "n":
 			self.abort_with_error(fmt.Errorf(`Canceled by user`))

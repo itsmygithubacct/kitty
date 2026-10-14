@@ -62,6 +62,9 @@ func (self *Readline) set_text(text string) {
 }
 
 func (self *Readline) add_text(text string) {
+	if text == "" {
+		return
+	}
 	new_lines := make([]string, 0, len(self.input_state.lines)+4)
 	new_lines = append(new_lines, self.input_state.lines[:self.input_state.cursor.Y]...)
 	var lines_after []string
@@ -647,6 +650,10 @@ func (self *Readline) _perform_action(ac Action, repeat_count uint) (err error, 
 	case ActionAddText:
 		text := strings.Repeat(self.text_to_be_added, int(repeat_count))
 		self.text_to_be_added = ""
+		if text == "" {
+			dont_set_last_action = true
+			return
+		}
 		if self.history_search != nil {
 			self.add_text_to_history_search(text)
 		} else {

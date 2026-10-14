@@ -383,6 +383,214 @@ class TestPtyBrokerIntegration(BaseTest):
         self.assertNotIn('KITTY_PTY_BROKER_STARTUP_SPEC', env)
         self.ae(env['COPIED'], 'yes')
 
+    def test_saved_launch_roundtrip_does_not_replay_login_startup_authority(self) -> None:
+        import shlex
+
+        from kitty.cli_stub import SaveAsSessionOptions
+        from kitty.launch import get_env
+        from kitty.pty_broker import STARTUP_SPEC_MARKER
+        from kitty.session import parse_session
+        from kitty.window import Window, WindowCreationSpec
+
+        authority = {'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32, STARTUP_SPEC_MARKER: '1',
+                     'KITTY_PTY_BROKER_STARTUP_TOKEN': 'b'*32, 'KITTY_PTY_BROKER_RECOVER_STARTUP': '1'}
+        ordinary = {'USER_SETTING': 'a value with spaces = yes', 'EMPTY_SETTING': '',
+                    'KITTY_PTY_BROKER_TRANSCRIPT': '1'}
+        original = dict(authority, **ordinary, KITTY_PIPE_DATA='ephemeral')
+        spec = WindowCreationSpec(cmd=['/usr/bin/env'], env=tuple(original.items()))
+        window = SimpleNamespace(
+            actions_on_close=[], actions_on_focus_change=[], actions_on_removal=[],
+            allow_remote_control=False, remote_control_passwords={}, creation_spec=spec,
+            user_vars={}, padding=Mock(as_launch_args=lambda: []),
+            margin=Mock(as_launch_args=lambda *a: []), override_title=None,
+            os_window_id=1, tab_id=2, id=3)
+        with patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None), \
+                patch('kitty.window.get_options', return_value=defaults):
+            command = Window.as_launch_command(window, SaveAsSessionOptions(), '/tmp/saved cwd')
+        with TemporaryDirectory() as directory:
+            saved = Path(directory, 'saved.session')
+            saved_text = shlex.join(command)+'\n'
+            saved.write_text(saved_text)
+            session, = parse_session(saved_text, defaults, environ={})
+        for key in authority:
+            self.assertNotIn(key, saved_text)
+        for value in ('a'*32, 'b'*32):
+            self.assertNotIn(value, saved_text)
+        loaded = session.tabs[0].windows[0].launch_spec
+        self.ae(loaded.args, ['/usr/bin/env'])
+        reloaded_env = get_env(loaded.opts)
+        self.ae(reloaded_env, ordinary)
+        self.ae(dict(spec.env), original)  # the live owned spec still has its role
+        opts = SimpleNamespace(term='xterm-kitty', terminfo_type='none', shell_integration={'disabled'})
+        boss = SimpleNamespace(encryption_public_key='test-key', listening_on='')
+        with patch('kitty.child.default_env', return_value={}), \
+                patch('kitty.child.fast_data_types.get_options', return_value=opts), \
+                patch('kitty.child.fast_data_types.get_boss', return_value=boss):
+            live, _ = Child(spec.cmd, '/', env=original).get_final_env()
+            reloaded, _ = Child(loaded.args, '/', env=reloaded_env).get_final_env()
+        self.ae(live['KITTY_PTY_BROKER_STARTUP_SESSION'], 'a'*32)
+        for key in authority:
+            self.assertNotIn(key, reloaded)
+        for key, value in ordinary.items():
+            self.ae(reloaded[key], value)
+
+    def test_saved_launch_roundtrip_does_not_replay_broker_attach_bindings(self) -> None:
+        import shlex
+
+        from kitty.cli_stub import SaveAsSessionOptions
+        from kitty.pty_broker import STARTUP_SPEC_MARKER, attach_command
+        from kitty.session import parse_session
+        from kitty.window import Window, WindowCreationSpec
+
+        session_id = 'abcdef0123456789'
+        ordinary = {
+            'USER_SETTING': 'a value with spaces = yes',
+            'KITTY_PTY_BROKER_AUTO_RECOVER': '0',
+            'KITTY_PTY_BROKER_TRANSCRIPT_DIR': '/tmp/private transcript dir',
+        }
+        cases = (
+            {
+                'KITTY_PTY_BROKER_STARTUP_SESSION': 'a'*32,
+                STARTUP_SPEC_MARKER: '1',
+                'KITTY_PTY_BROKER_STARTUP_TOKEN': 'b'*32,
+                'KITTY_PTY_BROKER_RECOVER_STARTUP': '1',
+                'KITTY_PTY_BROKER_BYPASS': '1',
+                'KITTY_PTY_BROKER_SESSION': session_id,
+                **ordinary,
+            },
+            {
+                'KITTY_PTY_BROKER_BYPASS': '1',
+                'KITTY_PTY_BROKER_SESSION': session_id,
+                **ordinary,
+            },
+        )
+        for env in cases:
+            spec = WindowCreationSpec(
+                cmd=attach_command('/x/broker', '/run/user/1/broker', session_id),
+                env=tuple(env.items()))
+            window = SimpleNamespace(
+                actions_on_close=[], actions_on_focus_change=[], actions_on_removal=[],
+                allow_remote_control=False, remote_control_passwords={}, creation_spec=spec,
+                user_vars={}, padding=Mock(as_launch_args=lambda: []),
+                margin=Mock(as_launch_args=lambda *a: []), override_title=None,
+                os_window_id=1, tab_id=2, id=3)
+            with patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None), \
+                    patch('kitty.window.get_options', return_value=defaults):
+                command = Window.as_launch_command(window, SaveAsSessionOptions(), '/tmp/saved cwd')
+            saved_text = shlex.join(command) + '\n'
+            for forbidden in ('KITTY_PTY_BROKER_BYPASS', 'KITTY_PTY_BROKER_SESSION',
+                              'attach', session_id, 'a'*32, 'b'*32):
+                self.assertNotIn(forbidden, saved_text)
+            for key, value in ordinary.items():
+                self.assertIn(f'--env={key}={value}', saved_text)
+            session, = parse_session(saved_text, defaults, environ={})
+            loaded = session.tabs[0].windows[0].launch_spec
+            self.assertNotIn(session_id, loaded.args)
+            self.assertNotIn('attach', loaded.args)
+            self.assertEqual({key: value for key, value in ordinary.items()},
+                             {key: value for key, value in env.items() if key in ordinary})
+
+    def saved_launch(self, cmd, env, title=None):
+        import shlex
+
+        from kitty.cli_stub import SaveAsSessionOptions
+        from kitty.session import parse_session
+        from kitty.window import Window, WindowCreationSpec
+
+        window = SimpleNamespace(
+            actions_on_close=[], actions_on_focus_change=[], actions_on_removal=[],
+            allow_remote_control=False, remote_control_passwords={},
+            creation_spec=WindowCreationSpec(cmd=cmd, env=tuple(env.items())),
+            user_vars={}, padding=Mock(as_launch_args=lambda: []),
+            margin=Mock(as_launch_args=lambda *a: []), override_title=title,
+            os_window_id=1, tab_id=2, id=3)
+        with patch('kitty.window.get_window_logo_settings_if_not_default', return_value=None), \
+                patch('kitty.window.get_options', return_value=defaults):
+            command = Window.as_launch_command(window, SaveAsSessionOptions(), '/tmp/saved cwd')
+        saved_text = shlex.join(command) + '\n'
+        session, = parse_session(saved_text, defaults, environ={})
+        return saved_text, session.tabs[0].windows[0].launch_spec
+
+    def test_saved_launch_keeps_bypass_for_a_pane_that_is_not_a_broker_attachment(self) -> None:
+        # The pane log viewer is launched with BYPASS and a viewer command. A reload must
+        # still keep it out of a new broker session, as on the base.
+        session_id = 'abcdef0123456789'
+        viewer = ['/k/kilix', 'transcript', 'view', session_id]
+        env = {'KITTY_PTY_BROKER_BYPASS': '1', 'KILIX_TRANSCRIPT_DIR': '/tmp/private transcript dir'}
+        text, loaded = self.saved_launch(viewer, env, title='Log: shell')
+        self.assertIn('--env=KITTY_PTY_BROKER_BYPASS=1', text)
+        self.assertIn('--env=KILIX_TRANSCRIPT_DIR=', text)
+        self.assertIn('--title=', text)
+        self.ae(loaded.args, viewer)
+        from kitty.launch import get_env
+        reloaded_env = get_env(loaded.opts)
+        self.ae(reloaded_env, env)
+        with patch('kitty.pty_broker.configuration', return_value=('/x/broker', '/run/user/1/broker')):
+            child = Child(loaded.args, '/', env=reloaded_env, use_pty_broker=True)
+        self.assertFalse(child.pty_broker_spawn)
+        # The same pane without BYPASS is what the r2 candidate produced, and it would be wrapped.
+        text, loaded = self.saved_launch(viewer, {})
+        self.assertNotIn('KITTY_PTY_BROKER_BYPASS', text)
+        with patch('kitty.pty_broker.configuration', return_value=('/x/broker', '/run/user/1/broker')):
+            self.assertTrue(Child(loaded.args, '/', env=get_env(loaded.opts), use_pty_broker=True).pty_broker_spawn)
+
+    def test_saved_launch_never_replays_a_session_binding_even_without_an_attach_command(self) -> None:
+        session_id = 'abcdef0123456789'
+        env = {'KITTY_PTY_BROKER_BYPASS': '1', 'KITTY_PTY_BROKER_SESSION': session_id, 'KEEP': 'yes'}
+        for cmd in (['/k/kilix', 'transcript', 'view', session_id], ['/bin/sh'],
+                    ['/x/broker', 'attach', session_id]):  # too short to be an attachment
+            text, loaded = self.saved_launch(cmd, env)
+            self.assertNotIn('KITTY_PTY_BROKER_SESSION', text)
+            self.assertNotIn('--env=KITTY_PTY_BROKER_SESSION', text)
+            self.assertIn('--env=KEEP=yes', text)
+            self.assertIn('--env=KITTY_PTY_BROKER_BYPASS=1', text)
+            self.assertEqual(loaded.args, cmd)
+
+    def test_saved_launch_does_not_save_the_recovery_title_placeholder_of_an_attachment(self) -> None:
+        from kitty.pty_broker import attach_command
+        session_id = 'abcdef0123456789'
+        attach = attach_command('/x/broker', '/run/user/1/broker', session_id)
+        env = {'KITTY_PTY_BROKER_BYPASS': '1', 'KITTY_PTY_BROKER_SESSION': session_id, 'KEEP': 'yes'}
+        text, loaded = self.saved_launch(attach, env, title='recovered:' + session_id[:8])
+        self.assertNotIn(session_id[:8], text)
+        self.assertNotIn('--title', text)
+        self.assertEqual(loaded.opts.window_title, None)
+        self.assertIn('--env=KEEP=yes', text)
+        # Exact provenance only: the placeholder of another session, a name the user chose,
+        # a suffix of the placeholder and a name that merely starts with the word are all kept.
+        for title in ('recovered:00000000', 'recovered:' + session_id[:7], 'recovered:' + session_id[:9],
+                      'Recovered:' + session_id[:8], 'build shell', 'recovered:'):
+            text, loaded = self.saved_launch(attach, env, title=title)
+            self.assertIn('--title=', text, title)
+            self.assertEqual(loaded.opts.window_title, title)
+
+    def test_saved_launch_keeps_a_placeholder_looking_title_on_a_pane_that_is_not_an_attachment(self) -> None:
+        session_id = 'abcdef0123456789'
+        text, loaded = self.saved_launch(['/bin/sh', '-c', session_id], {}, title='recovered:' + session_id[:8])
+        self.assertEqual(loaded.opts.window_title, 'recovered:' + session_id[:8])
+        text, loaded = self.saved_launch(
+            ['/k/kilix', 'transcript', 'view', session_id], {'KITTY_PTY_BROKER_BYPASS': '1'},
+            title='recovered:' + session_id[:8])
+        self.assertEqual(loaded.opts.window_title, 'recovered:' + session_id[:8])
+
+    def test_saved_launch_keeps_a_user_command_that_merely_ends_in_attach(self) -> None:
+        # Not a broker attachment: no bypass, so the command is the user's own and is saved as it is.
+        cmd = ['/usr/bin/tmux', '-L', 'work', 'attach', 'main']
+        text, loaded = self.saved_launch(cmd, {'USER_SETTING': 'x'}, title='recovered:abcdef01')
+        self.assertEqual(loaded.args, cmd)
+        self.assertEqual(loaded.opts.window_title, 'recovered:abcdef01')
+        self.assertNotIn('KITTY_PTY_BROKER_BYPASS', text)
+
+    def test_saved_launch_placeholder_comes_from_the_attach_command_not_the_environment(self) -> None:
+        from kitty.pty_broker import attach_command
+        session_id, other = 'abcdef0123456789', 'ffffffff00000000'
+        env = {'KITTY_PTY_BROKER_BYPASS': '1', 'KITTY_PTY_BROKER_SESSION': other}
+        attach = attach_command('/x/broker', '/run/user/1/broker', session_id)
+        text, loaded = self.saved_launch(attach, env, title='recovered:' + session_id[:8])
+        self.assertEqual(loaded.opts.window_title, None)
+        text, loaded = self.saved_launch(attach, env, title='recovered:' + other[:8])
+        self.assertEqual(loaded.opts.window_title, 'recovered:' + other[:8])
+
     def test_log_button_uses_clicked_pane_and_opens_a_separate_tab(self) -> None:
         boss = object.__new__(Boss)
         child = type('Child', (), {

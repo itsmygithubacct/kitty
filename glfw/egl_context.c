@@ -597,6 +597,8 @@ bool _glfwCreateContextEGL(_GLFWwindow* window,
         return false;
     }
 
+    window->context.destroy = destroyContextEGL;
+
     // Set up attributes for surface creation
     index = 0;
 

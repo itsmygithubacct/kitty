@@ -462,6 +462,7 @@ struct _GLFWwindow
     const bool                swaps_disallowed;
 #endif
     struct { GLFWDragOperationType preferred; int allowed, source_actions; } drop_operation;
+    uint64_t drop_callback_generation;
 
     struct {
         GLFWwindowposfun        pos;
@@ -830,6 +831,7 @@ void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos);
 void _glfwInputCursorEnter(_GLFWwindow* window, bool entered);
 // Platform functions for drop data reading
 void _glfwPlatformRequestDropUpdate(_GLFWwindow* window);
+#define _GLFW_DROP_SUPERSEDED SIZE_MAX
 size_t _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double xpos, double ypos, const char** mimes, size_t num_mimes, bool from_self);
 ssize_t _glfwPlatformReadAvailableDropData(GLFWwindow *w, GLFWDropEvent *ev, char *buffer, size_t sz);
 void _glfwPlatformEndDrop(GLFWwindow *w, GLFWDragOperationType op);
@@ -840,6 +842,7 @@ void _glfwPlatformCancelDrag(_GLFWwindow* window);
 void _glfwFreeDragSourceData(void);
 void _glfwPlatformFreeDragSourceData(void);
 void _glfwInputDragSourceRequest(_GLFWwindow* window, GLFWDragEvent *ev);
+bool _glfwDragSourceCurrent(GLFWid instance, GLFWid window_id);
 int _glfwPlatformDragDataReady(const char *mime_type, const char *data, size_t sz, int type);
 int _glfwPlatformChangeDragImage(const GLFWimage *thumbnail);
 

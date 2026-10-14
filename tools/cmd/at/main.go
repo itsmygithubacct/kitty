@@ -87,11 +87,7 @@ func get_pubkey(encoded_key string) (encryption_version string, pubkey []byte, e
 		err = fmt.Errorf("KITTY_PUBLIC_KEY has unknown version, if you are running on a remote system, update kitty on this system")
 		return
 	}
-	pubkey = make([]byte, base85.DecodedLen(len(encoded_key)))
-	n, err := base85.Decode(pubkey, []byte(encoded_key))
-	if err == nil {
-		pubkey = pubkey[:n]
-	}
+	pubkey, err = base85.DecodeString(encoded_key)
 	return
 }
 

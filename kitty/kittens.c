@@ -181,7 +181,13 @@ parse_input_from_terminal(PyObject *self UNUSED, PyObject *args) {
                     CALL(callback, start + 1, count);
                     state = NORMAL; start = pos + 1;
                     consumed += 2;
-                } else count += 2;
+                } else if (ch == 0x1b) {
+                    // Commit the previous ESC as payload; this ESC may start ST.
+                    count++;
+                } else {
+                    count += 2;
+                    state = ST;
+                }
                 break;
             case ST:
                 if (ch == 0x1b) { state = ESC_ST; }

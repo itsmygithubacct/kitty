@@ -37,6 +37,40 @@ from kitty.window_title_bar import (
 from . import BaseTest
 
 
+class TestNativeFileDrop(BaseTest):
+
+    def test_paths_are_quoted_without_an_enter_or_evaluation(self):
+        from urllib.parse import quote
+        from shlex import split
+        paths = ['/tmp/a space', '/tmp/é-你好', "/tmp/';$(touch NEVER)", '/tmp/percent%back\\slash']
+        payload = ('# comment\r\n' + '\r\n'.join('file://' + quote(p) for p in paths) + '\r\n').encode()
+        received = []
+        Window.on_drop(SimpleNamespace(paste_text=received.append), {'text/uri-list': payload})
+        self.ae(len(received), 1)
+        text = received[0]
+        self.ae(split(text), paths)
+        self.assertFalse(any(ord(c) < 32 or ord(c) == 127 for c in text))
+
+    def test_malformed_remote_or_binary_uri_drops_leave_buffer_untouched(self):
+        for payload in (b'file://remote/tmp/a', b'file:///tmp/%00', b'file:///tmp/%ff',
+                        b'file:///tmp/%zz', b'file:///tmp/a?query', b'file:///tmp/a#fragment',
+                        b'file:///tmp/a\x1b[31m', b'https://example.com/a', b'\xff',
+                        b'file:///tmp/a\r\nfile://remote/tmp/b'):
+            received = []
+            Window.on_drop(SimpleNamespace(paste_text=received.append), {'text/uri-list': payload})
+            self.ae(received, [])
+
+    def test_encoded_controls_refuse_the_entire_list(self):
+        for control in ('%0A', '%0D', '%09', '%00', '%1B', '%7F', '%C2%85'):
+            for lines in (['file:///tmp/valid', 'file:///tmp/bad' + control],
+                          ['file:///tmp/bad' + control, 'file:///tmp/valid']):
+                received = []
+                accepted = Window.on_drop(SimpleNamespace(paste_text=received.append),
+                    {'text/uri-list': ('\r\n'.join(lines) + '\r\n').encode()})
+                self.assertFalse(accepted)
+                self.ae(received, [])
+
+
 class TestRemoteEcho(BaseTest):
 
     def test_echo_preserves_numeric_ssh_canaries(self):

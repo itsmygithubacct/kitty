@@ -126,6 +126,7 @@ typedef struct _GLFWcontextGLX
 //
 typedef struct _GLFWlibraryGLX
 {
+    bool            initialized;
     int             major, minor;
     int             eventBase;
     int             errorBase;

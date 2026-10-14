@@ -16,6 +16,7 @@ from kitty.fast_data_types import (
     dnd_test_cleanup_fake_window,
     dnd_test_create_fake_window,
     dnd_test_drag_notify,
+    dnd_test_drag_finish,
     dnd_test_drop_update_mimes,
     dnd_test_fake_drop_data,
     dnd_test_fake_drop_event,
@@ -3095,6 +3096,36 @@ class TestDnDProtocol(BaseTest):
             self.ae(events[0]['meta'].get('x'), '4')  # FINISHED = type+1 = 4
             self.ae(events[0]['meta'].get('y'), '0')   # was_canceled = 0
 
+    def test_refused_action_notification_is_zero(self) -> None:
+        with dnd_test_window() as (screen, cap):
+            self._setup_drag_offer(screen, cap, 'text/plain')
+            dnd_test_force_drag_dropped(cap.window_id)
+            dnd_test_drag_notify(cap.window_id, 1, '', 0)
+            self.ae(self._get_events(cap)[0]['meta'].get('o'), '0')
+
+    def test_canceled_completion_cannot_report_move(self) -> None:
+        from kitty.fast_data_types import GLFW_DRAG_OPERATION_MOVE
+        with dnd_test_window() as (screen, cap):
+            self._setup_drag_offer(screen, cap, 'text/plain')
+            dnd_test_force_drag_dropped(cap.window_id)
+            dnd_test_drag_notify(cap.window_id, 3, '', GLFW_DRAG_OPERATION_MOVE, 1)
+            event = self._get_events(cap)[0]
+            self.ae(event['meta'].get('y'), '1')
+            self.ae(event['meta'].get('o'), '0')
+
+    def test_forced_drop_alone_makes_a_successful_finish_report_the_operation(self) -> None:
+        from kitty.fast_data_types import GLFW_DRAG_OPERATION_COPY, GLFW_DRAG_OPERATION_MOVE
+        # dnd_test_force_drag_dropped alone, with no DROPPED notification, must record
+        # the drop so that a successful finish reports the accepted operation.
+        for action, expected in ((GLFW_DRAG_OPERATION_MOVE, '2'), (GLFW_DRAG_OPERATION_COPY, '1')):
+            with dnd_test_window() as (screen, cap):
+                self._setup_drag_offer(screen, cap, 'text/plain')
+                dnd_test_force_drag_dropped(cap.window_id)
+                dnd_test_drag_notify(cap.window_id, 3, '', action, 0)
+                event = self._get_events(cap)[0]
+                self.ae(event['meta'].get('y'), '0')
+                self.ae(event['meta'].get('o'), expected)
+
     def test_remote_drag_children_freed_on_cleanup(self) -> None:
         """Remote drag with directories properly frees the children array on cleanup."""
         uri_list = b'file:///home/user/mydir\r\n'
@@ -3132,14 +3163,14 @@ class TestDnDProtocol(BaseTest):
     # ---- query tests --------------------------------------------------------
 
     def test_query_response(self) -> None:
-        """Sending t=q without a client_id yields a t=q response with no payload."""
+        """The query advertises completion-aware native XDND transport."""
         with dnd_test_window() as (screen, cap):
             parse_bytes(screen, client_query())
             events = self._get_events(cap)
             self.assertEqual(len(events), 1, events)
             ev = events[0]
             self.ae(ev['type'], 'q')
-            self.ae(ev['payload'], b'')
+            self.ae(ev['payload'], b'native=1')
             self.assertNotIn('i', ev['meta'])
 
     def test_query_response_with_client_id(self) -> None:
@@ -3152,7 +3183,7 @@ class TestDnDProtocol(BaseTest):
             ev = events[0]
             self.ae(ev['type'], 'q')
             self.ae(ev['meta'].get('i'), str(client_id))
-            self.ae(ev['payload'], b'')
+            self.ae(ev['payload'], b'native=1')
 
     def test_query_works_without_registration(self) -> None:
         """A query can be issued even without registering for drops."""
@@ -3224,3 +3255,75 @@ class TestDnDProtocol(BaseTest):
                 ['application/pdf', 'image/png'],
             )
             self.assertEqual(result, [])
+
+    def test_completion_always_reports_the_operation(self) -> None:
+        # The kitten tells "no o" (a terminal without the completion report) from o=0 (refusal), so the
+        # producer must always send o on x=4, and a drop notification must not forget the announced action.
+        from kitty.fast_data_types import GLFW_DRAG_OPERATION_COPY, GLFW_DRAG_OPERATION_MOVE
+        for announced, finish_action, canceled, expected in (
+                (GLFW_DRAG_OPERATION_MOVE, None, 0, '2'), (GLFW_DRAG_OPERATION_COPY, None, 0, '1'),
+                (GLFW_DRAG_OPERATION_MOVE, 0, 0, '0'), (GLFW_DRAG_OPERATION_MOVE, None, 1, '0')):
+            with self.subTest(announced=announced, finish_action=finish_action, canceled=canceled), dnd_test_window() as (screen, cap):
+                self._setup_drag_offer(screen, cap, 'text/plain')
+                dnd_test_force_drag_dropped(cap.window_id)
+                dnd_test_drag_notify(cap.window_id, 1, '', announced)
+                dnd_test_drag_notify(cap.window_id, 2)
+                self._get_events(cap)
+                if finish_action is None:
+                    dnd_test_drag_finish(cap.window_id, bool(canceled))
+                else:
+                    dnd_test_drag_notify(cap.window_id, 3, '', finish_action, bool(canceled))
+                finished = [e for e in self._get_events(cap) if e['meta'].get('x') == '4']
+                self.ae(len(finished), 1, finished)
+                self.ae(finished[0]['meta'].get('o'), expected)
+
+    def test_completion_of_a_drag_that_was_not_dropped_reports_zero(self) -> None:
+        # The producer names an action in the completion only for a dropped, uncanceled drag. A drag that
+        # ended without a drop reports o=0 whatever the target last announced (r5: pins the producer byte).
+        from kitty.fast_data_types import GLFW_DRAG_OPERATION_COPY, GLFW_DRAG_OPERATION_MOVE
+        for announced in (GLFW_DRAG_OPERATION_MOVE, GLFW_DRAG_OPERATION_COPY):
+            with self.subTest(announced=announced), dnd_test_window() as (screen, cap):
+                self._setup_drag_offer(screen, cap, 'text/plain')
+                dnd_test_force_drag_dropped(cap.window_id, False)  # offer is in the dropped state, but the platform never reported a drop
+                dnd_test_drag_notify(cap.window_id, 1, '', announced)
+                self._get_events(cap)
+                dnd_test_drag_notify(cap.window_id, 3, '', announced, 0)
+                finished = [e for e in self._get_events(cap) if e['meta'].get('x') == '4']
+                self.ae(len(finished), 1, finished)
+                self.ae(finished[0]['meta'].get('y'), '0')
+                self.ae(finished[0]['meta'].get('o'), '0')
+
+    def test_completion_only_ever_reports_zero_one_or_two(self) -> None:
+        # Whatever action value the platform layer hands over, the completion's o is 2 for Move, 1 for Copy
+        # and 0 for everything else, and never a negative or out-of-range number (r5).
+        from kitty.fast_data_types import GLFW_DRAG_OPERATION_COPY, GLFW_DRAG_OPERATION_MOVE
+        expected = {GLFW_DRAG_OPERATION_MOVE: '2', GLFW_DRAG_OPERATION_COPY: '1'}
+        for action in (0, 1, 2, 3, 4, 5, 8, 99, 255, -1, -2, -(2**31), 2**31 - 1):
+            with self.subTest(action=action), dnd_test_window() as (screen, cap):
+                self._setup_drag_offer(screen, cap, 'text/plain')
+                dnd_test_force_drag_dropped(cap.window_id)
+                dnd_test_drag_notify(cap.window_id, 3, '', action, 0)
+                finished = [e for e in self._get_events(cap) if e['meta'].get('x') == '4']
+                self.ae(len(finished), 1, finished)
+                self.ae(finished[0]['meta'].get('o'), expected.get(action, '0'))
+
+    def test_action_changed_only_ever_reports_zero_one_or_two(self) -> None:
+        from kitty.fast_data_types import GLFW_DRAG_OPERATION_COPY, GLFW_DRAG_OPERATION_MOVE
+        expected = {GLFW_DRAG_OPERATION_MOVE: '2', GLFW_DRAG_OPERATION_COPY: '1'}
+        for action in (0, 1, 2, 3, 4, 99, -1, -(2**31), 2**31 - 1):
+            with self.subTest(action=action), dnd_test_window() as (screen, cap):
+                self._setup_drag_offer(screen, cap, 'text/plain')
+                dnd_test_force_drag_dropped(cap.window_id)
+                self._get_events(cap)
+                dnd_test_drag_notify(cap.window_id, 1, '', action)
+                changed = [e for e in self._get_events(cap) if e['meta'].get('x') == '2']
+                self.ae(len(changed), 1, changed)
+                self.ae(changed[0]['meta'].get('o'), expected.get(action, '0'))
+
+    def test_completion_action_that_does_not_fit_an_int_is_rejected_before_the_writer(self) -> None:
+        with dnd_test_window() as (screen, cap):
+            self._setup_drag_offer(screen, cap, 'text/plain')
+            for action in (2**31, -(2**31) - 1, 2**63, 2**64):
+                with self.subTest(action=action), self.assertRaises(OverflowError):
+                    dnd_test_drag_notify(cap.window_id, 3, '', action, 0)
+            self.ae(self._get_events(cap), [])

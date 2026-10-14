@@ -58,6 +58,7 @@ func LongestCommon(next func() (string, bool), prefix bool) string {
 			return ""
 		}
 		if prefix {
+			xfix = xfix[:max_len]
 			for i := range max_len {
 				if xfix[i] != q[i] {
 					xfix = xfix[:i]
@@ -65,6 +66,8 @@ func LongestCommon(next func() (string, bool), prefix bool) string {
 				}
 			}
 		} else {
+			xfix = xfix[xfix_len-max_len:]
+			xfix_len = len(xfix)
 			for i := range max_len {
 				xi := xfix_len - i - 1
 				si := q_len - i - 1

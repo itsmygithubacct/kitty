@@ -228,6 +228,7 @@ signature_header(Patcher *self, PyObject *a2) {
     static const ssize_t header_size = 12;
     if (dest.len < header_size) {
         PyErr_SetString(RsyncError, "Output buffer is too small");
+        return NULL;
     }
     uint8_t *o = dest.buf;
     le16enc(o, 0); // version
@@ -247,6 +248,7 @@ sign_block(Patcher *self, PyObject *args) {
     if (PyObject_GetBuffer(a2, &dest, PyBUF_WRITEABLE) == -1) return NULL;
     if (dest.len < (ssize_t)signature_block_size) {
         PyErr_SetString(RsyncError, "Output buffer is too small");
+        return NULL;
     }
     self->rsync.hasher.reset(self->rsync.hasher.state);
     if (!self->rsync.hasher.update(self->rsync.hasher.state, src.buf, src.len)) { PyErr_SetString(PyExc_ValueError, "String hashing failed"); return NULL; }

@@ -282,7 +282,13 @@ static int blink_set(Cursor *self, PyObject *value, void UNUSED *closure) { if (
 
 static PyObject* text_blink_get(Cursor *self, void UNUSED *closure) { return Py_NewRef(self->sgr.blink ? Py_True : Py_False); }
 
-static int text_blink_set(Cursor *self, PyObject *value, void UNUSED *closure) { if (value == NULL) { PyErr_SetString(PyExc_TypeError, "Cannot delete attribute"); return -1; } self->sgr.blink = PyObject_IsTrue(value) ? false : true; return 0; }
+static int text_blink_set(Cursor *self, PyObject *value, void UNUSED *closure) {
+    if (value == NULL) { PyErr_SetString(PyExc_TypeError, "Cannot delete attribute"); return -1; }
+    int truth = PyObject_IsTrue(value);
+    if (truth < 0) return -1;
+    self->sgr.blink = truth != 0;
+    return 0;
+}
 
 
 #define SGR_UINT_GETSET(x) \

@@ -31,7 +31,8 @@ type uri_list_item struct {
 	path, uri, human_name string
 	file                  *os.File
 	metadata              os.FileInfo
-	was_sent              bool
+	was_requested         bool
+	transfer_completed    bool
 }
 
 type drag_source struct {
@@ -281,7 +282,7 @@ func (dnd *dnd) run_loop() (err error) {
 		case 'E':
 			return dnd.on_drag_error(cmd)
 		case 'e':
-			return dnd.on_drag_event(cmd.X, cmd.Y, cmd.Operation)
+			return dnd.on_drag_event(cmd.X, cmd.Y, drag_event_operation(cmd))
 		case 'k':
 			return dnd.on_drag_remote_data_request(cmd.X - 1)
 		}

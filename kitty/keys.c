@@ -217,8 +217,8 @@ kilix_synchronized_input_peer_ids(const id_type source_window_id) {
 }
 
 static void
-kilix_broadcast_key_to_synchronized_panes(Window *source, const GLFWkeyevent *ev) {
-    PyObject *peer_ids = kilix_synchronized_input_peer_ids(source->id);
+kilix_broadcast_key_to_synchronized_panes(id_type source_window_id, const GLFWkeyevent *ev) {
+    PyObject *peer_ids = kilix_synchronized_input_peer_ids(source_window_id);
     if (!peer_ids) return;
     PyObject *peers = PySequence_Fast(
         peer_ids, "kilix_synchronized_input_peer_ids() must return a sequence"
@@ -234,7 +234,7 @@ kilix_broadcast_key_to_synchronized_panes(Window *source, const GLFWkeyevent *ev
             continue;
         }
         Window *peer = window_for_window_id((id_type)raw_id);
-        if (peer && peer != source && peer->render_data.screen) {
+        if (peer && peer->id != source_window_id && peer->render_data.screen) {
             send_key_to_child(peer->id, peer->render_data.screen, ev);
         }
     }
@@ -267,21 +267,102 @@ kilix_broadcast_text_to_synchronized_panes(Window *source, const char *text) {
     Py_CLEAR(peers);
 }
 
+static void
+free_buffered_key_events(BufferedKeyEvent *events, size_t count) {
+    if (!events) return;
+    for (size_t i = 0; i < count; i++) free(events[i].text);
+    free(events);
+}
+
+void
+free_buffered_keys(Window *w) {
+    if (!w) return;
+    free_buffered_key_events(w->buffered_keys.key_data, w->buffered_keys.count);
+    zero_at_ptr(&w->buffered_keys);
+}
+
+static char*
+copy_buffered_key_text(const char *text) {
+    if (!text) return NULL;
+    size_t text_size = strlen(text);
+    if (text_size == SIZE_MAX) fatal("Key event text is too large to buffer");
+    char *ans = malloc(text_size + 1);
+    if (!ans) fatal("Out of memory buffering key event text");
+    memcpy(ans, text, text_size + 1);
+    return ans;
+}
+
+static void
+append_buffered_key_event(Window *w, const GLFWkeyevent *ev, char **event_text) {
+    char *owned_text = *event_text;
+    if (owned_text) *event_text = NULL;
+    else owned_text = copy_buffered_key_text(ev->text);
+
+    if (w->buffered_keys.count == SIZE_MAX) {
+        free(owned_text);
+        fatal("Too many buffered key events");
+    }
+    if (w->buffered_keys.capacity < w->buffered_keys.count + 1) {
+        size_t new_capacity = w->buffered_keys.capacity;
+        if (new_capacity > SIZE_MAX - 8) {
+            free(owned_text);
+            fatal("Too many buffered key events");
+        }
+        new_capacity = MAX((size_t)16, new_capacity + 8);
+        if (new_capacity > SIZE_MAX / sizeof(BufferedKeyEvent)) {
+            free(owned_text);
+            fatal("Too many buffered key events");
+        }
+        BufferedKeyEvent *new_events = realloc(
+            w->buffered_keys.key_data, new_capacity * sizeof(BufferedKeyEvent)
+        );
+        if (!new_events) {
+            free(owned_text);
+            fatal("Out of memory buffering key events");
+        }
+        w->buffered_keys.key_data = new_events;
+        w->buffered_keys.capacity = new_capacity;
+    }
+    BufferedKeyEvent *events = w->buffered_keys.key_data;
+    BufferedKeyEvent *buffered = events + w->buffered_keys.count++;
+    buffered->event = *ev;
+    buffered->text = owned_text;
+    buffered->event.text = owned_text;
+}
+
 void
 dispatch_buffered_keys(Window *w) {
     if (!w->render_data.screen || !w->buffered_keys.count) return;
-    GLFWkeyevent *keys = w->buffered_keys.key_data;
-    for (size_t i = 0; i < w->buffered_keys.count; i++) {
+    BufferedKeyEvent *events = w->buffered_keys.key_data;
+    const size_t count = w->buffered_keys.count;
+    const id_type window_id = w->id;
+    // Detach before calling out to Python. Reentrant input can then use a new queue
+    // without changing or redispatching this batch.
+    w->buffered_keys.key_data = NULL;
+    w->buffered_keys.count = w->buffered_keys.capacity = 0;
+    for (size_t i = 0; i < count; i++) {
+        Window *source = window_for_window_id(window_id);
+        if (!source || !source->render_data.screen) break;
         debug("Sending previously buffered key ");
-        send_key_to_child(w->id, w->render_data.screen, keys + i);
-        kilix_broadcast_key_to_synchronized_panes(w, keys + i);
+        send_key_to_child(window_id, source->render_data.screen, &events[i].event);
+        kilix_broadcast_key_to_synchronized_panes(window_id, &events[i].event);
     }
-    free(w->buffered_keys.key_data); zero_at_ptr(&w->buffered_keys);
+    free_buffered_key_events(events, count);
 }
 
 void
 on_key_input(const GLFWkeyevent *ev) {
     Window *w = active_window();
+    RAII_ALLOC(char, owned_event_text, NULL);
+    GLFWkeyevent event_with_owned_text;
+    if (w && w->buffered_keys.enabled && ev->ime_state == GLFW_IME_NONE && ev->text) {
+        // Snapshot callback-owned text before Python or other callbacks can re-enter
+        // the input path and reuse a producer's scratch buffer.
+        owned_event_text = copy_buffered_key_text(ev->text);
+        event_with_owned_text = *ev;
+        event_with_owned_text.text = owned_event_text;
+        ev = &event_with_owned_text;
+    }
     const int action = ev->action, mods = ev->mods;
     const uint32_t key = ev->key, native_key = ev->native_key;
     const char *text = ev->text ? ev->text : "";
@@ -361,19 +442,11 @@ on_key_input(const GLFWkeyevent *ev) {
         return;
     }
     if (w->buffered_keys.enabled) {
-        if (w->buffered_keys.capacity < w->buffered_keys.count + 1) {
-            w->buffered_keys.capacity = MAX(16u, w->buffered_keys.capacity + 8);
-            GLFWkeyevent *new = malloc(w->buffered_keys.capacity * sizeof(GLFWkeyevent));
-            if (!new) fatal("Out of memory");
-            memcpy(new, w->buffered_keys.key_data, w->buffered_keys.count * sizeof(new[0]));
-            w->buffered_keys.key_data = new;
-        }
-        GLFWkeyevent *k = w->buffered_keys.key_data;
-        k[w->buffered_keys.count++] = *ev;
+        append_buffered_key_event(w, ev, &owned_event_text);
         debug("buffering key until child is ready\n");
     } else {
-        send_key_to_child(w->id, screen, ev);
-        kilix_broadcast_key_to_synchronized_panes(w, ev);
+        send_key_to_child(active_window_id, screen, ev);
+        kilix_broadcast_key_to_synchronized_panes(active_window_id, ev);
     }
 #undef dispatch_key_event
 }
@@ -424,6 +497,10 @@ pyencode_key_for_tty(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     char output[KEY_BUFFER_SIZE+1] = {0};
     int num = encode_glfw_key_event(&ev, cursor_key_mode, key_encoding_flags, output);
     if (num == SEND_TEXT_TO_CHILD) return PyUnicode_FromString(text);
+    if (num == KEY_ENCODING_ERROR) {
+        PyErr_SetString(PyExc_OverflowError, "encoded key event exceeds the fixed output buffer");
+        return NULL;
+    }
     return PyUnicode_FromStringAndSize(output, MAX(0, num));
 }
 

@@ -241,7 +241,15 @@ func (self *Loop) handle_dnd(data []byte) error {
 		data = data[:idx]
 	}
 	cmd := DndCommand{Payload: payload}
+	operation_seen, operation_invalid := false, false
 	for field := range bytes.SplitSeq(data, []byte{':'}) {
+		if k, _, found := bytes.Cut(field, []byte{'='}); found && len(k) == 1 && k[0] == 'o' {
+			// Whatever the value, an "o" was reported. A value that does not parse
+			// stays zero, which the dnd kitten treats as a refusal.
+			cmd.Has_operation = true
+			if operation_seen { operation_invalid = true }
+			operation_seen = true
+		}
 		if k, v, found := bytes.Cut(field, []byte{'='}); found && len(k) == 1 && len(v) > 0 {
 			switch k[0] {
 			case 't':
@@ -251,7 +259,7 @@ func (self *Loop) handle_dnd(data []byte) error {
 			case 'o':
 				if val, err := strconv.Atoi(utils.UnsafeBytesToString(v)); err == nil {
 					cmd.Operation = val
-				}
+				} else { operation_invalid = true }
 			case 'x':
 				if val, err := strconv.Atoi(utils.UnsafeBytesToString(v)); err == nil {
 					cmd.X = val
@@ -271,6 +279,9 @@ func (self *Loop) handle_dnd(data []byte) error {
 			}
 		}
 	}
+	// Repeated explicit operations are ambiguous even if both values agree.
+	// Empty/malformed values are reports, never absent-operation fallback.
+	if operation_invalid { cmd.Operation = 0 }
 	if self.dnd_chunking.active {
 		self.dnd_chunking.metadata.Payload = cmd.Payload
 		self.dnd_chunking.metadata.Has_more = cmd.Has_more

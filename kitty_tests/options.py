@@ -2,6 +2,7 @@
 # License: GPL v3 Copyright: 2018, Kovid Goyal <kovid at kovidgoyal.net>
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -122,6 +123,16 @@ version
     t('-1 -v0', fails=True, version_called=True)
     t('-1 --version', fails=True, version_called=True)
     t('-f=3.142 --int 17', float=3.142, int=17)
+    t("--int=' -17 ' --float=' +2.5e1 '", int=-17, float=25.0)
+    t("--int=-9223372036854775808 --float=-1.25e2", int=-(1 << 63), float=-125.0)
+    for bad_integer in ('', '+', 'abc', '17tail', '   '):
+        with self.subTest(integer=bad_integer):
+            t('--int=' + shlex.quote(bad_integer), fails=True)
+    for bad_float in ('', '-', 'abc', '1.25tail', '   '):
+        with self.subTest(float=bad_float):
+            t('--float=' + shlex.quote(bad_float), fails=True)
+    t('--int=9223372036854775808', fails=True)
+    t('--float=1e9999', fails=True)
 
 
 def launcher(self):

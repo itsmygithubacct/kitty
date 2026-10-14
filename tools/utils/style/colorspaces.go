@@ -326,7 +326,7 @@ func splitColorComponents(spec string) []string {
 	var result []string
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		part = strings.TrimRight(part, "%,")
+		part = strings.TrimRight(part, ",")
 		if part != "" {
 			result = append(result, part)
 		}
