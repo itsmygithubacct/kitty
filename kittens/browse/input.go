@@ -1,3 +1,5 @@
+//go:build !windows
+
 package browse
 
 // Input translation (terminal → CDP) and the reserved-chord commands.

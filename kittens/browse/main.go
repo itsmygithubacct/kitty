@@ -1,3 +1,5 @@
+//go:build !windows
+
 package browse
 
 // kilix browse — Chrome in a kitty pane. See browse.go for the design.

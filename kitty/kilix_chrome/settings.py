@@ -1,6 +1,7 @@
 """Shared, live-reloaded settings for Kilix chrome."""
 
 import os
+import sys
 from collections.abc import Callable
 
 _cache_signature: tuple[object, ...] | None = None
@@ -54,6 +55,18 @@ def values() -> tuple[dict[str, str], bool]:
 
 
 def chrome_value(name: str, default: str = '1') -> str:
+    # These widgets invoke Linux desktop tools or read /proc and /sys. A
+    # Windows profile must not show controls that cannot perform their action.
+    if sys.platform == 'win32':
+        if name in {
+            'KILIX_CHROME_BATTERY', 'KILIX_CHROME_TEMPERATURE',
+            'KILIX_CHROME_VOLUME', 'KILIX_CHROME_NETWORK',
+            'KILIX_CHROME_CALENDAR', 'KILIX_CHROME_START_MENU',
+            'KILIX_CHROME_WINDOWS', 'KILIX_CHROME_SPEAK', 'KILIX_CHROME_DICTATE',
+        }:
+            return '0'
+        if name in {'KILIX_CHROME_PANE_CPU_MODE', 'KILIX_CHROME_PANE_MEMORY_MODE'}:
+            return 'off'
     settings, exists = values()
     return settings.get(name, default) if exists else os.environ.get(name, default)
 

@@ -1800,7 +1800,16 @@ set_mode_from_const(Screen *self, unsigned int mode, bool val) {
         case TOGGLE_ALT_SCREEN_2:
         case ALTERNATE_SCREEN:
             if (val && self->linebuf == self->main_linebuf) screen_toggle_screen_buffer(self, mode == ALTERNATE_SCREEN, mode == ALTERNATE_SCREEN);
-            else if (!val && self->linebuf != self->main_linebuf) screen_toggle_screen_buffer(self, mode == ALTERNATE_SCREEN, mode == ALTERNATE_SCREEN);
+            else if (!val && self->linebuf != self->main_linebuf) {
+                screen_toggle_screen_buffer(self, mode == ALTERNATE_SCREEN, mode == ALTERNATE_SCREEN);
+#ifdef _WIN32
+                // A full-screen program in a Windows pseudoconsole just switched
+                // back to the main screen. conhost withholds the shell's following
+                // output (its prompt) until it receives input, so ask the window to
+                // nudge the pseudoconsole and force a flush.
+                CALLBACK("windows_conpty_flush", NULL);
+#endif
+            }
             break;
         case 7727 << 5:
             log_error("Application escape mode is not supported, the extended keyboard protocol should be used instead");
@@ -1817,6 +1826,10 @@ set_mode_from_const(Screen *self, unsigned int mode, bool val) {
         case VISIBILITY_REPORTS:
             self->modes.mVISIBILITY_REPORTS = val;
             if (val) send_visibility_report(self);
+            break;
+        case 9001 << 5:
+            // win32-input-mode, enabled unconditionally by the Windows ConPTY.
+            // kitty uses the extended keyboard protocol instead, so ignore it.
             break;
         default:
             private = mode >= 1 << 5;
@@ -6412,6 +6425,7 @@ static PyMethodDef methods[] = {
     MND(start_selection, METH_VARARGS)
     MND(select_all, METH_NOARGS)
     MND(update_selection, METH_VARARGS)
+    MND(select_all, METH_NOARGS)
     {"clear_selection", (PyCFunction)clear_selection_, METH_NOARGS, ""},
     MND(reverse_index, METH_NOARGS)
     MND(mark_as_dirty, METH_NOARGS)

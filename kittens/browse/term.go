@@ -1,3 +1,5 @@
+//go:build !windows
+
 package browse
 
 // Terminal plumbing: raw mode, pixel-accurate size, and parsing of the

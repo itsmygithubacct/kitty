@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from . import BaseTest
+from . import BaseTest, is_windows
 
 _plat = sys.platform.lower()
 is_macos = 'darwin' in _plat
@@ -99,7 +99,9 @@ class TestGLFW(BaseTest):
             t(1217, 100, 1217, unit='pixels')
             t(1217 + metrics['width'], 100, 1217, unit='pixels', incremental=True)
 
-    @unittest.skipIf(is_macos, 'Skipping test on macOS because glfw-cocoa.so is not built with backend_utils')
+    # backend_utils is compiled into the x11 and wayland backends only, so
+    # neither glfw-cocoa.so nor glfw-win32.so exports what this exercises.
+    @unittest.skipIf(is_macos or is_windows, 'glfw-cocoa.so and glfw-win32.so are not built with backend_utils')
     def test_utf_8_strndup(self):
         import ctypes
 

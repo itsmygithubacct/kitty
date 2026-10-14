@@ -1,3 +1,5 @@
+//go:build !windows
+
 package browse
 
 // CDP over --remote-debugging-pipe: NUL-terminated JSON on the child's

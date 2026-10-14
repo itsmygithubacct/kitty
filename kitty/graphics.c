@@ -163,6 +163,15 @@ free_load_data(LoadData *ld) {
     free(ld->buf); ld->buf_used = 0; ld->buf_capacity = 0; ld->buf = NULL;
     if (ld->mapped_file) munmap(ld->mapped_file, ld->mapped_file_sz);
     ld->mapped_file = NULL; ld->mapped_file_sz = 0;
+#ifdef _WIN32
+    // Windows cannot unlink a file while a mapped view keeps it open.
+    if (ld->delete_after_unmap) {
+        if (global_state.boss) { call_boss(safe_delete_temp_file, "s", ld->delete_after_unmap); }
+        else unlink(ld->delete_after_unmap);
+        free(ld->delete_after_unmap);
+        ld->delete_after_unmap = NULL;
+    }
+#endif
     ld->loading_for = (const ImageAndFrame){0};
 }
 
@@ -378,9 +387,19 @@ set_command_failed_response(const char *code, const char *fmt, ...) {
 static bool
 mmap_img_file(GraphicsManager *self, int fd, size_t sz, off_t offset) {
     if (!sz) {
+#ifdef _WIN32
+        // fstat() reports st_size == 0 for these fds on Windows (they are opened
+        // with O_NONBLOCK), so ask the OS for the size directly, otherwise the image
+        // would map as zero bytes and fail to decode.
+        LARGE_INTEGER fsz;
+        HANDLE fh = (HANDLE)_get_osfhandle(fd);
+        if (fh == INVALID_HANDLE_VALUE || !GetFileSizeEx(fh, &fsz)) ABRT(EBADF, "Failed to get size of image file fd: %d", fd);
+        sz = (size_t)fsz.QuadPart;
+#else
         struct stat s;
         if (fstat(fd, &s) != 0) ABRT(EBADF, "Failed to fstat() the fd: %d file with error: [%d] %s", fd, errno, strerror(errno));
         sz = s.st_size;
+#endif
     }
     void *addr = mmap(0, sz, PROT_READ, MAP_SHARED, fd, offset);
     if (addr == MAP_FAILED) ABRT(EBADF, "Failed to map image file fd: %d at offset: %zd with size: %zu with error: [%d] %s", fd, offset, sz, errno, strerror(errno));
@@ -525,7 +544,7 @@ png_from_file_pointer(FILE *fp, const char *path_for_error_messages, uint8_t** d
 
 bool
 png_path_to_bitmap(const char* path, uint8_t** data, unsigned int* width, unsigned int* height, size_t* sz) {
-    FILE* fp = fopen(path, "r");
+    FILE* fp = fopen(path, "rb");  // binary: text mode corrupts PNG bytes on Windows
     if (fp == NULL) {
         log_error("The PNG image: %s could not be opened with error: %s", path, strerror(errno));
         return false;
@@ -653,8 +672,13 @@ load_image_data(GraphicsManager *self, Image *img, const GraphicsCommand *g, con
             load_data->loading_completed_successfully = mmap_img_file(self, fd, g->data_sz, g->data_offset);
             safe_close(fd, __FILE__, __LINE__);
             if (transmission_type == 't' && strstr(fname, "tty-graphics-protocol") != NULL) {
+#ifdef _WIN32
+                load_data->delete_after_unmap = strdup(fname);
+                if (!load_data->delete_after_unmap) ABRT("ENOMEM", "Out of memory");
+#else
                 if (global_state.boss) { call_boss(safe_delete_temp_file, "s", fname); }
                 else unlink(fname);
+#endif
             }
             else if (transmission_type == 's') shm_unlink(fname);
             if (!load_data->loading_completed_successfully) return NULL;

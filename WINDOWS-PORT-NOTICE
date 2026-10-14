@@ -1,0 +1,15 @@
+Windows platform code is adapted from ecstra/win-kitty:
+https://github.com/ecstra/win-kitty
+revision c024f6fa564072e1d040db019ee5fa00d8a90c87
+Windows delta base b6dd88d6e (full revision recorded in development evidence).
+
+The port is integrated onto the Kilix engine revision
+e48a502b92cb461b4cfc838e889a64b542fa1cfe, preserving Kilix-specific behavior.
+Existing copyright and license notices remain in their source files.
+Kitty and this Windows port are licensed under GPL-3.0-only; see LICENSE.
+Individual third-party components retain their included licenses.
+
+This is an integration in development. The donor fork targets Windows 11;
+Windows 10, WSL behavior, authentication, lifecycle, and Kilix integration
+require their own validation. Imported compatibility functions are not proof
+of supported platform behavior.

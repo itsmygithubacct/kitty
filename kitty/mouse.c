@@ -1175,6 +1175,34 @@ focus_in_event(void) {
     set_mouse_cursor(mouse_cursor_shape);
 }
 
+/* An application that repaints on mouse motion pops and pushes its pointer
+ * shape on every move: the mouse-demo kitten does exactly that, once per
+ * redraw. Applying each of those to the OS separately puts the fallback shape
+ * on screen in between, and whether that is visible depends on how the child's
+ * output happens to be split across reads. Under a Cygwin pty the pop and the
+ * push land in one batch and the fallback is overwritten before it is drawn,
+ * but conhost splits the stream on its own frame cadence, so on Windows it
+ * survives long enough to be seen as the pointer flashing back to the arrow.
+ *
+ * So record what the shape should be and apply it once per tick, after all
+ * input has been parsed. A pop followed by a push then costs one change rather
+ * than two, and the intermediate never reaches the screen. The OS window is
+ * remembered by id because callback_os_window is only set while a callback is
+ * running, and applying happens later. */
+static id_type pointer_shape_to_apply_for_os_window = 0;
+
+void
+apply_pending_mouse_pointer_shape(void) {
+    if (!pointer_shape_to_apply_for_os_window) return;
+    OSWindow *osw = os_window_for_id(pointer_shape_to_apply_for_os_window);
+    pointer_shape_to_apply_for_os_window = 0;
+    if (!osw) return;
+    OSWindow *orig = global_state.callback_os_window;
+    global_state.callback_os_window = osw;
+    set_mouse_cursor(mouse_cursor_shape);
+    global_state.callback_os_window = orig;
+}
+
 void
 update_mouse_pointer_shape(void) {
     mouse_cursor_shape = TEXT_POINTER;
@@ -1191,7 +1219,9 @@ update_mouse_pointer_shape(void) {
             set_mouse_cursor_for_screen(r.window->render_data.screen);
         }
     }
-    set_mouse_cursor(mouse_cursor_shape);
+    // Deferred to apply_pending_mouse_pointer_shape, see above.
+    pointer_shape_to_apply_for_os_window = global_state.callback_os_window ? global_state.callback_os_window->id : 0;
+    request_tick_callback();
 }
 
 void

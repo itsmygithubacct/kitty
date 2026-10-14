@@ -122,6 +122,9 @@ typedef struct {
 
     uint8_t *mapped_file;
     size_t mapped_file_sz;
+#ifdef _WIN32
+    char *delete_after_unmap;
+#endif
 
     size_t data_sz;
     uint8_t *data;
