@@ -212,8 +212,18 @@ def setup_powershell_env(env: dict[str, str], argv: list[str]) -> None:
         if a.lstrip('-/').lower() in non_interactive:
             return
     script = os.path.join(shell_integration_dir, 'powershell', 'kitty.ps1')
+    # Respect the effective policy of the new shell. In particular, an
+    # unsigned bundled script must not make every AllSigned/Restricted shell
+    # start with a security error. Do not change the user's execution policy.
+    script = script.replace("'", "''")
+    startup = (
+        "& { $policy = Get-ExecutionPolicy; "
+        "if ($policy -eq 'Restricted') { return }; "
+        f"if ($policy -eq 'AllSigned' -and (Get-AuthenticodeSignature -LiteralPath '{script}').Status -ne 'Valid') {{ return }}; "
+        f". '{script}' }}"
+    )
     # -Command must come last as its value is the remainder of the line.
-    argv.extend(('-NoExit', '-Command', f". '{script}'"))
+    argv.extend(('-NoExit', '-Command', startup))
 
 
 def setup_cmd_env(env: dict[str, str], argv: list[str]) -> None:
