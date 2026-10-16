@@ -415,17 +415,6 @@ handle_fast_commandline(CLISpec *cli_spec, const char *instance_group_prefix) {
         swap_cli_spec;
     }
     if (get_bool_cli_val(cli_spec, "help")) {
-#ifdef _WIN32
-        // Answer here rather than letting Python print the full option list.
-        // That path formats itself to the terminal width, which it reads with
-        // a TIOCGWINSZ ioctl that Windows does not have, so it died on a
-        // traceback. Even fixed, the full list is of little use from another
-        // terminal: kitty is a window, and its settings live in kitty.conf.
-        printf("kitty opens a terminal window. Run it with no arguments to start one.\n");
-        printf("Settings go in kitty.conf. The full list of command line options is at\n");
-        printf("https://sw.kovidgoyal.net/kitty/invocation/\n");
-        exit(0);
-#endif
         return;
     }
     if (get_bool_cli_val(cli_spec, "version")) {

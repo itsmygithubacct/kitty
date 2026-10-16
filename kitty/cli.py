@@ -11,7 +11,7 @@ from typing import Any, NoReturn, TypeVar, cast
 
 from .cli_stub import CLIOptions
 from .conf.utils import resolve_config
-from .constants import appname, clear_handled_signals, config_dir, default_pager_for_help, defconf, is_macos, str_version, website_url
+from .constants import appname, clear_handled_signals, config_dir, default_pager_for_help, defconf, is_macos, is_windows, str_version, website_url
 from .fast_data_types import parse_cli_from_spec, wcswidth
 from .options.types import Options as KittyOpts
 from .simple_cli_definitions import (
@@ -467,7 +467,7 @@ class PrintHelpForSeq:
                 a('')
 
         text = '\n'.join(blocks) + '\n\n' + version()
-        if print_help_for_seq.allow_pager and sys.stdout.isatty():
+        if print_help_for_seq.allow_pager and sys.stdout.isatty() and not is_windows:
             import subprocess
             try:
                 p = subprocess.Popen(default_pager_for_help, stdin=subprocess.PIPE, preexec_fn=clear_handled_signals)
