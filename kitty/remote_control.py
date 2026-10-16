@@ -196,6 +196,9 @@ def is_cmd_allowed(pcmd: dict[str, Any], window: Optional['Window'], from_socket
         return q
     auth_items = constant_time_lookup(get_options().remote_control_password, pw)
     if auth_items is None:
+        from .constants import is_windows
+        if is_windows and get_options().env.get('KILIX_WSL_CONTROL') == '1':
+            return False
         return None
     pa = password_authorizer(auth_items)
     return pa.is_cmd_allowed(pcmd, window, from_socket, extra_data)

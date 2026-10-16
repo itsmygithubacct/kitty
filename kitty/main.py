@@ -489,6 +489,18 @@ def setup_manpath(env: dict[str, str]) -> None:
 
 
 def setup_environment(opts: Options, cli_opts: CLIOptions) -> None:
+    if is_windows and opts.env.get('KILIX_WSL_CONTROL') == '1' and opts.allow_remote_control == 'password':
+        # One credential and loopback endpoint per native window. WSL clients
+        # use the native kitten via interop, so no LAN listener is needed.
+        import secrets
+        password = secrets.token_urlsafe(32)
+        opts.remote_control_password = {password: ()}
+        cli_opts.listen_on = 'tcp:127.0.0.1:0'
+        opts.env['KITTY_RC_PASSWORD'] = password
+        forwarded = ('KITTY_RC_PASSWORD', 'KITTY_LISTEN_ON', 'KITTY_PUBLIC_KEY', 'KITTY_WINDOW_ID', 'KILIX_WSL_CONTROL')
+        wslenv = opts.env.get('WSLENV', os.environ.get('WSLENV', '')).split(':')
+        names = {entry.split('/')[0] for entry in wslenv}
+        opts.env['WSLENV'] = ':'.join([entry for entry in wslenv if entry] + [name for name in forwarded if name not in names])
     from_config_file = False
     if not cli_opts.listen_on:
         cli_opts.listen_on = opts.listen_on

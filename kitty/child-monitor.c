@@ -2094,7 +2094,12 @@ start_talk_thread(ChildMonitor *self) {
 
 typedef struct pollfd PollFD;
 #define PEER_LIMIT 256
-#define nuke_socket(s) { shutdown(s, SHUT_RDWR); safe_close(s, __FILE__, __LINE__); }
+#ifdef _WIN32
+#define close_peer_socket(s) closesocket((SOCKET)(s))
+#else
+#define close_peer_socket(s) safe_close(s, __FILE__, __LINE__)
+#endif
+#define nuke_socket(s) { shutdown(s, SHUT_RDWR); close_peer_socket(s); }
 
 static id_type
 add_peer(int peer, bool is_remote_control_peer) {
@@ -2141,13 +2146,13 @@ accept_peer(int listen_fd, bool shutting_down, bool is_remote_control_peer) {
         if (!getpeerid(peer, &peer_uid, &peer_gid)) {
             log_error("Denying access to peer because failed to get uid and gid for peer: %d with error: %s", peer, strerror(errno));
             shutdown(peer, SHUT_RDWR);
-            safe_close(peer, __FILE__, __LINE__);
+            close_peer_socket(peer);
             return true;
         }
         if (peer_uid != geteuid()) {
             log_error("Denying access to peer because its uid (%d) does not match our uid (%d)", peer_uid, geteuid());
             shutdown(peer, SHUT_RDWR);
-            safe_close(peer, __FILE__, __LINE__);
+            close_peer_socket(peer);
             return true;
         }
     }
