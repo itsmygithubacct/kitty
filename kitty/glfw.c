@@ -1384,6 +1384,11 @@ toggle_fullscreen_for_os_window(OSWindow *w) {
         unsigned int flags = OPT(macos_fullscreen_ignore_safe_area_insets) ? 2u : 0u;
         return do_toggle_fullscreen(w, flags, true);
 #endif
+#ifdef _WIN32
+        // The Win32 backend restores WINDOWPLACEMENT, including maximized state
+        // and workspace coordinates. Generic client-size restoration loses it.
+        return do_toggle_fullscreen(w, 0, false);
+#endif
         return do_toggle_fullscreen(w, 0, true);
     }
     const GLFWLayerShellConfig *prev = glfwGetLayerShellConfig(w->handle);

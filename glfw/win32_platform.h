@@ -26,6 +26,9 @@ typedef struct _GLFWwindowWin32 {
     bool    frameAction;
     bool    iconified;
     bool    maximized;
+    bool    fullscreen;
+    DWORD   windowedStyle;
+    WINDOWPLACEMENT windowedPlacement;
     bool    transparent;      // whether framebuffer has an alpha channel
     bool    scaleToMonitor;
 

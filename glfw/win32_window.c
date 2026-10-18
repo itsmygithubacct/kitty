@@ -174,6 +174,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 
     switch (uMsg) {
         case WM_NCCALCSIZE: {
+            if (window->win32.fullscreen) return 0;
             // Reclaim the whole window as client area so the caption shares the
             // (acrylic) GL surface. Resize is provided by WM_NCHITTEST below.
             if (!wParam || !window->win32.customFrame) break;
@@ -200,6 +201,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             return DefWindowProcW(hWnd, uMsg, TRUE, -1);
 
         case WM_NCHITTEST: {
+            if (window->win32.fullscreen) return HTCLIENT;
             if (!window->win32.customFrame) break;
             RECT rc; GetWindowRect(hWnd, &rc);
             int x = GET_X_LPARAM(lParam) - rc.left, y = GET_Y_LPARAM(lParam) - rc.top;
@@ -404,11 +406,18 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             const float xscale = HIWORD(wParam) / 96.0f;
             const float yscale = LOWORD(wParam) / 96.0f;
             _glfwInputWindowContentScale(window, xscale, yscale);
+            if (window->win32.fullscreen) {
+                fitToMonitor(window);
+                return 0;
+            }
             RECT* r = (RECT*) lParam;
             SetWindowPos(hWnd, HWND_TOP, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOACTIVATE | SWP_NOZORDER);
             return 0;
         }
+        case WM_DISPLAYCHANGE:
+            if (window->win32.fullscreen) fitToMonitor(window);
+            break;
     }
     return DefWindowProcW(hWnd, uMsg, wParam, lParam);
 }
@@ -448,7 +457,7 @@ void _glfwUnregisterWindowClassWin32(void) {
 
 static DWORD windowStyle(const _GLFWwindow* window) {
     DWORD style = WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-    if (window->monitor) style |= WS_POPUP;
+    if (window->monitor || window->win32.fullscreen) style |= WS_POPUP;
     else if (window->decorated) {
         style |= WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         if (window->resizable) style |= WS_MAXIMIZEBOX | WS_THICKFRAME;
@@ -711,7 +720,7 @@ static void positionCaptionButtons(_GLFWwindow* window) {
     HWND overlay = window->win32.captionButtons;
     if (!overlay) return;
     HWND owner = window->win32.handle;
-    if (IsIconic(owner)) { ShowWindow(overlay, SW_HIDE); return; }
+    if (IsIconic(owner) || window->win32.fullscreen) { ShowWindow(overlay, SW_HIDE); return; }
     int strip = titlebarHeightPx(owner);
     int bw, bh, gap, pad; cbLayout(overlay, &bw, &bh, &gap, &pad);
     int W = pad * 2 + CB_COUNT * bw + (CB_COUNT - 1) * gap;
@@ -1073,8 +1082,46 @@ int _glfwPlatformWindowBell(_GLFWwindow* window) { (void) window; return Message
 void _glfwPlatformSetWindowMonitor(_GLFWwindow* window, _GLFWmonitor* monitor, int xpos, int ypos, int width, int height, int refreshRate) {
     (void) window; (void) monitor; (void) xpos; (void) ypos; (void) width; (void) height; (void) refreshRate;
 }
-bool _glfwPlatformToggleFullscreen(_GLFWwindow* w, unsigned int flags) { (void) w; (void) flags; return false; }
-bool _glfwPlatformIsFullscreen(_GLFWwindow* w, unsigned int flags) { (void) w; (void) flags; return false; }
+bool _glfwPlatformToggleFullscreen(_GLFWwindow* w, unsigned int flags) {
+    (void) flags;
+    HWND hwnd = w->win32.handle;
+    if (!w->win32.fullscreen) {
+        MONITORINFO mi = { .cbSize = sizeof(mi) };
+        WINDOWPLACEMENT placement = { .length = sizeof(placement) };
+        if (!GetWindowPlacement(hwnd, &placement) ||
+            !GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+            _glfwInputError(GLFW_PLATFORM_ERROR, "Win32: Cannot save window placement for fullscreen");
+            return false;
+        }
+        w->win32.windowedPlacement = placement;
+        w->win32.windowedStyle = GetWindowLongW(hwnd, GWL_STYLE);
+        // Remove maximized sizing constraints before covering the full monitor.
+        if (IsZoomed(hwnd) || IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+        w->win32.fullscreen = true;
+        SetWindowLongW(hwnd, GWL_STYLE,
+                      (w->win32.windowedStyle & ~(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE | WS_MINIMIZE)) | WS_POPUP);
+        if (SetWindowPos(hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                         mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                         SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+            positionCaptionButtons(w);
+            return true;
+        }
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Win32: Cannot size fullscreen window");
+        // A failed transition must leave a usable window with its old frame.
+    }
+    w->win32.fullscreen = false;
+    SetWindowLongW(hwnd, GWL_STYLE, w->win32.windowedStyle);
+    if (!SetWindowPlacement(hwnd, &w->win32.windowedPlacement))
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Win32: Cannot restore window placement after fullscreen");
+    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    positionCaptionButtons(w);
+    return false;
+}
+bool _glfwPlatformIsFullscreen(_GLFWwindow* w, unsigned int flags) {
+    (void) flags;
+    return w->win32.fullscreen;
+}
 
 int _glfwPlatformWindowFocused(_GLFWwindow* window) { return window->win32.handle == GetActiveWindow(); }
 int _glfwPlatformWindowOccluded(_GLFWwindow* window) { (void) window; return false; }
@@ -1119,7 +1166,13 @@ void _glfwPlatformGetKeyboardRepeatDelay(monotonic_t* delay, monotonic_t* interv
 bool _glfwPlatformSetLayerShellConfig(_GLFWwindow* window, const GLFWLayerShellConfig* value) { (void) window; (void) value; return false; }
 const GLFWLayerShellConfig* _glfwPlatformGetLayerShellConfig(_GLFWwindow* window) { (void) window; return NULL; }
 
-static void fitToMonitor(_GLFWwindow* window) { (void) window; }
+static void fitToMonitor(_GLFWwindow* window) {
+    MONITORINFO mi = { .cbSize = sizeof(mi) };
+    if (GetMonitorInfoW(MonitorFromWindow(window->win32.handle, MONITOR_DEFAULTTONEAREST), &mi))
+        SetWindowPos(window->win32.handle, NULL, mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_NOACTIVATE | SWP_NOZORDER);
+}
 
 // ---------------------------------------------------------------------------
 // Cursor
