@@ -59,7 +59,7 @@ def send(connection: object, kind: int, payload: bytes = b'') -> None:
 def status_bytes(data: dict) -> bytes:
     strings = [str(data[key]).encode('utf-8')[:limit - 1] for key, limit in
                (('id', 65), ('cwd', 4096), ('command', 512))]
-    return STATUS_DATA.pack(VERSION, data['broker_pid'], data['child_pid'], 0,
+    return STATUS_DATA.pack(VERSION, data['broker_pid'], data['child_pid'], -1,
                             data['started_millis'], data['journal_bytes'], data['journal_epoch'],
                             data['attached'], data['replay_complete'], data['rows'], data['columns'], *strings)
 

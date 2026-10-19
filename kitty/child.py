@@ -425,6 +425,7 @@ class Child:
             else (new_session_id() if self.pty_broker_spawn else '')
         )
         self._pty_broker_status_cache: tuple[float, dict[str, object]] = (0, {})
+        self._windows_broker_status_cache: tuple[float, dict[str, object]] = (0, {})
         self.startup_command_via_shell_integration = startup_command_via_shell_integration
         self.final_env: dict[str, str] = {}
         self.is_default_shell = bool(self.argv and self.argv[0] == shell_path)
@@ -685,7 +686,7 @@ class Child:
                 raise ValueError('Native persistence supports ConPTY programs; use kilix session inside WSL for Linux sessions')
             from .windows_pty_broker import prepare_child
             broker_cwd = self.cwd if os.path.isdir(self.cwd) else os.path.expanduser('~')
-            argv, relay_env, self.windows_persistent_session = prepare_child(
+            argv, relay_env, self.windows_persistent_session, self.windows_persistent_argv = prepare_child(
                 argv, exe, broker_cwd, self.final_env, rows, cols,
                 attach=attach_session, name=self.final_env.get('KILIX_NATIVE_SESSION_NAME', ''))
             # The helper was started before open_pty/spawn creates the relay's
@@ -739,7 +740,24 @@ class Child:
             ans = []
         if pid == self.pid and (not ans):
             ans = list(self.argv)
+        if not ans and getattr(self, 'windows_persistent_session', '') and pid == self.process_tree_root_pid:
+            ans = list(self.windows_persistent_argv)
         return ans
+
+    def windows_broker_status(self) -> dict[str, object]:
+        name = getattr(self, 'windows_persistent_session', '')
+        if not is_windows or not name:
+            return {}
+        now = monotonic()
+        cached_at, cached = self._windows_broker_status_cache
+        if now - cached_at < 1:
+            return cached
+        from .windows_pty_broker import runtime, status
+        answer: dict[str, object] = {}
+        with suppress(OSError, ValueError, EOFError):
+            answer = status(runtime(self.final_env), name)
+        self._windows_broker_status_cache = now, answer
+        return answer
 
     @property
     def is_pty_brokered(self) -> bool:
@@ -780,6 +798,9 @@ class Child:
 
     @property
     def process_tree_root_pid(self) -> int | None:
+        if getattr(self, 'windows_persistent_session', ''):
+            pid = self.windows_broker_status().get('child_pid')
+            return pid if isinstance(pid, int) and pid > 0 else None
         if self.is_pty_brokered:
             return self._pty_broker_child_pid() or self.pid
         return self.pid

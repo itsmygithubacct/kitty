@@ -402,7 +402,7 @@ def serve() -> int:
     try:
         process = ConPTY(spec)
         session = Session(spec, process)
-        write_record(record_path, {'id': name, 'pid': os.getpid(), 'token': spec['token']})
+        write_record(record_path, {'id': name, 'pid': os.getpid(), 'token': spec['token'], 'argv': spec['argv']})
         slots = threading.BoundedSemaphore(16)
 
         def accept():
@@ -477,11 +477,11 @@ def start_session(name: str, argv: list[str], exe: str, cwd: str, env: dict,
         if old.poll() is not None:
             del _servers[old_name]
     _servers[name] = process
-    return {'id': name, 'token': token, 'root': str(root)}
+    return {'id': name, 'token': token, 'root': str(root), 'argv': argv}
 
 
 def prepare_child(argv: list[str], exe: str, cwd: str, env: dict,
-                  rows: int, columns: int, attach: str = '', name: str = '') -> tuple[list[str], dict, str]:
+                  rows: int, columns: int, attach: str = '', name: str = '') -> tuple[list[str], dict, str, list[str]]:
     root = runtime(env)
     if attach:
         name = session_name(attach)
@@ -498,7 +498,10 @@ def prepare_child(argv: list[str], exe: str, cwd: str, env: dict,
         token = record['token']
     relay_env = {k: v for k, v in env.items() if k not in REQUEST_KEYS}
     relay_env.update({ROOT_KEY: str(root), ID_KEY: name, TOKEN_KEY: token})
-    return helper_command('_relay', name, str(rows), str(columns)), relay_env, name
+    original = record.get('argv', [])
+    if not isinstance(original, list) or not all(isinstance(arg, str) for arg in original):
+        original = []
+    return helper_command('_relay', name, str(rows), str(columns)), relay_env, name, original
 
 
 def relay(name: str, rows: int, columns: int) -> int:
