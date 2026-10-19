@@ -170,6 +170,14 @@ class WindowsRecoveryTest(BaseTest):
         with self.assertRaises(ValueError):
             self.broker.start_session('valid', [self.cmd], self.cmd, os.getcwd(), os.environ.copy())
         self.assertEqual(self.broker.status(self.root, 'valid')['child_pid'], original)
+        connection = connect(self.root, 'valid')
+        try:
+            self.broker.wire.send(connection, self.broker.wire.ATTACH, self.broker.wire.SIZE.pack(24, 80, 0, 0))
+            eventually(lambda: self.broker.status(self.root, 'valid')['attached'])
+            self.broker.wire.send(connection, self.broker.wire.RESIZE, self.broker.wire.SIZE.pack(0, 80, 0, 0))
+            eventually(lambda: not self.broker.status(self.root, 'valid')['attached'])
+        finally:
+            close_connection(connection)
         client = self.client(record)
         self.send(client, b'echo STILL_RUNNING\r\n')
         eventually(lambda: b'STILL_RUNNING' in client[1])

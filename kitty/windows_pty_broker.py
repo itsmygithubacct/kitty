@@ -343,6 +343,9 @@ class Session:
                 if kind == wire.INPUT and len(payload) <= 32768:
                     self.input.put_nowait((kind, payload))
                 elif kind == wire.RESIZE and len(payload) == wire.SIZE.size:
+                    rows, cols, _, _ = wire.SIZE.unpack(payload)
+                    if not 0 < rows <= 32767 or not 0 < cols <= 32767:
+                        break
                     self.input.put_nowait((kind, payload))
                 else:
                     break
