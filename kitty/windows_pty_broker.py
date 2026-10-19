@@ -239,6 +239,7 @@ class Session:
         self.spec, self.process = spec, process
         self.lock = threading.RLock()
         self.journal = wire.Journal()
+        self.queries = wire.TerminalQueries()
         self.attached: Attachment | None = None
         self.stopping = threading.Event()
         self.input: queue.Queue[tuple[int, bytes]] = queue.Queue(maxsize=32)
@@ -262,6 +263,7 @@ class Session:
     def broadcast(self, kind: int, payload: bytes):
         with self.lock:
             if kind == wire.OUTPUT:
+                self.queries.output.feed(payload)
                 self.journal.append(payload)
             attachment = self.attached
             if attachment:
@@ -271,10 +273,10 @@ class Session:
                     # A stalled renderer must not stop detached work or the control plane.
                     self.detach(attachment)
 
-    def sender(self, attachment, replay):
+    def sender(self, attachment, replay, replay_offset, unanswered):
         try:
             wire.send(attachment.connection, wire.RESET, b'\x1bc')
-            for chunk in replay:
+            for chunk in wire.TerminalQueries.replay(replay, replay_offset, unanswered):
                 wire.send(attachment.connection, wire.OUTPUT, chunk)
             wire.send(attachment.connection, wire.REPLAY_DONE)
             while not attachment.closed.is_set():
@@ -338,8 +340,10 @@ class Session:
                 attachment = Attachment(connection, native_exit=native_exit)
                 self.attached = attachment
                 replay = tuple(self.journal.chunks)
+                replay_offset = self.journal.total - self.journal.size
+                unanswered = frozenset(self.queries.pending.values())
                 self.input.put_nowait((wire.RESIZE, payload))
-            threading.Thread(target=self.sender, args=(attachment, replay), daemon=True).start()
+            threading.Thread(target=self.sender, args=(attachment, replay, replay_offset, unanswered), daemon=True).start()
             while not attachment.closed.is_set() and not self.stopping.is_set():
                 if not connection.poll(.1):
                     continue
@@ -347,7 +351,9 @@ class Session:
                 if kind == wire.DETACH and not payload:
                     break
                 if kind == wire.INPUT and len(payload) <= 32768:
-                    self.input.put_nowait((kind, payload))
+                    with self.lock:
+                        self.input.put_nowait((kind, payload))
+                        self.queries.input.feed(payload)
                 elif kind == wire.RESIZE and len(payload) == wire.SIZE.size:
                     rows, cols, _, _ = wire.SIZE.unpack(payload)
                     if not 0 < rows <= 32767 or not 0 < cols <= 32767:
@@ -553,7 +559,9 @@ def relay(name: str, rows: int, columns: int) -> int:
                             if decoder.pending:
                                 wire.send(connection, wire.INPUT, decoder.flush())
                             continue
-                        data = os.read(0, min(available.value, 32768))
+                        # A pending escape prefix joins this read into one INPUT
+                        # frame; keep the combined frame within the input bound.
+                        data = os.read(0, min(available.value, 32768 - len(decoder.pending)))
                         if not data:
                             return
                         for kind, payload in decoder.feed(data):
