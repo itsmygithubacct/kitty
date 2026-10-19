@@ -37,6 +37,22 @@ class TestConfParsing(BaseTest):
     def test_cli_parsing(self):
         cli_parsing(self)
 
+    def test_default_opacity_bindings(self):
+        from kitty.config import load_config
+        from kitty.options.utils import parse_map
+
+        opts = load_config()
+        trigger = next(parse_map('kitty_mod+a select_all')).resolve_and_copy(opts.kitty_mod).trigger
+        bindings = opts.keyboard_modes[''].keymap[trigger]
+        if is_windows:
+            self.ae([(d.definition, d.rest) for d in bindings], [('select_all', ())])
+        else:
+            self.ae(
+                {tuple(k.key for k in d.rest): d.definition for d in bindings},
+                {(ord(key),): f'set_background_opacity {value}' for key, value in
+                 (('m', '+0.1'), ('l', '-0.1'), ('1', '1'), ('d', 'default'))},
+            )
+
 
 def cli_parsing(self):
     from kitty.cli import CLIOptions, Options, parse_cmdline, parse_option_spec
@@ -142,9 +158,10 @@ def launcher(self):
         cp = subprocess.run([kexe, "+testing-launcher-code"] + args, env=env, stdout=subprocess.PIPE)
         self.assertEqual(cp.returncode, 0)
         ans = {}
-        # splitlines, not split('\n'): the launcher ends lines with \r\n on
-        # Windows, and a trailing \r survives into every \x1e separated value.
-        for line in cp.stdout.decode().splitlines():
+        # Preserve the \x1e field separators: splitlines() treats them as line
+        # endings too. Strip CRLF's carriage return separately on Windows.
+        for line in cp.stdout.decode().split('\n'):
+            line = line.removesuffix('\r')
             if not line:
                 continue
             try:

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 var _ = fmt.Print
@@ -91,7 +92,7 @@ func AtomicWriteFile(path string, data io.Reader, perm os.FileMode) (err error) 
 		// Clear the destination and retry, automating the "just delete the file"
 		// workaround. Gated on a permission error so a cross-device rename (which
 		// removing the destination could not fix) still surfaces its real error.
-		if errors.Is(err, fs.ErrPermission) {
+		if runtime.GOOS == "windows" && errors.Is(err, fs.ErrPermission) {
 			if st, statErr := os.Stat(path); statErr == nil && !st.IsDir() {
 				renameErr := err
 				os.Chmod(path, 0o600)

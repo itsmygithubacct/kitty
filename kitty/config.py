@@ -12,7 +12,7 @@ from .conf.utils import BadLine, parse_config_base
 from .conf.utils import load_config as _load_config
 from .constants import cache_dir, defconf, is_windows
 from .options.types import Options, defaults, option_names
-from .options.utils import KeyboardMode, KeyboardModeMap, KeyDefinition, MouseMap, MouseMapping, build_action_aliases, parse_mouse_map
+from .options.utils import KeyboardMode, KeyboardModeMap, KeyDefinition, MouseMap, MouseMapping, build_action_aliases, parse_map, parse_mouse_map
 from .types import FloatEdges
 from .typing_compat import TypedDict
 from .utils import log_error
@@ -28,6 +28,10 @@ if is_windows:
     # Windows apps do not prompt before closing a terminal window, so default to
     # no close confirmation. Users can still set confirm_os_window_close.
     defaults.confirm_os_window_close = (0, False)
+    # Keep the documented opacity shortcuts on Unix. Windows uses this prefix
+    # as a single select-all shortcut instead.
+    select_all = next(parse_map('--allow-fallback=shifted,ascii kitty_mod+a select_all'))
+    defaults.map = [m for m in defaults.map if m is None or m.trigger != select_all.trigger] + [select_all]
     # Windows Terminal and the GNOME terminals open a link on ctrl+click, so that
     # is what a Windows user reaches for first. Upstream only binds
     # ctrl+shift+left, which stays bound too. The press is discarded in grabbed
