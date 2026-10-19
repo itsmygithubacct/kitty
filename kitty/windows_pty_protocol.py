@@ -4,8 +4,9 @@
 Wire constants/layouts follow kitty-pty-broker (MIT, Copyright (c) 2026
 itsmygithubacct), revision 8cf3eb3671458370e57539be6b7bd6f4a1b8f615.
 See WINDOWS-PTY-BROKER-NOTICE. No Python objects are unpickled by this transport.
-Windows uses the same frame header, terminal messages and POSIX-style exit byte;
-v2 observer/resume requests are deliberately rejected until implemented here.
+Windows uses the same frame header and terminal messages. Native clients opt
+into a separate attach type for full DWORD exits; ordinary v1 clients retain
+POSIX wait-status semantics. V2 observer/resume requests are not implemented.
 """
 from __future__ import annotations
 
@@ -24,6 +25,12 @@ STATUS_DATA = struct.Struct('!I4xqqqQQQIIHH65s4096s512s3x')
 ATTACH, INPUT, RESIZE, DETACH, STATUS, TERMINATE = range(1, 7)
 OUTPUT, REPLAY_DONE, EXIT, ERROR, STATUS_REPLY, ACK = range(7, 13)
 RESET = 15
+# Private Windows extension, outside the KPB frame-type range. Payload is the
+# existing 8-byte winsize followed by uint32 version=1. Only clients requesting
+# it receive NATIVE_EXIT with the exact DWORD; v1 ATTACH is never reinterpreted.
+NATIVE_ATTACH = 0x8001
+NATIVE_EXIT = 0x8002
+NATIVE_VERSION = struct.Struct('!I')
 
 
 def encode(kind: int, payload: bytes = b'') -> bytes:

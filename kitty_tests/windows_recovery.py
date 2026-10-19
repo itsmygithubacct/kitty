@@ -159,3 +159,12 @@ class WindowsRecoveryTest(BaseTest):
         client = self.client(record)
         self.send(client, b'echo STILL_RUNNING\r\n')
         eventually(lambda: b'STILL_RUNNING' in client[1])
+
+    def test_native_exit_preserves_full_dword(self):
+        for code in (3010, 0xc000013a):
+            with self.subTest(code=code):
+                record = self.start('exit-' + str(code), [self.cmd, '/d', '/q'])
+                client = self.client(record)
+                signed = code if code < 0x80000000 else code - 0x100000000
+                self.send(client, f'exit {signed}\r\n'.encode())
+                self.assertEqual(client[0].wait(timeout=15), code)

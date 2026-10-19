@@ -184,8 +184,9 @@ class ConPTY:
 
 
 class Attachment:
-    def __init__(self, connection):
+    def __init__(self, connection, native_exit=False):
         self.connection = connection
+        self.native_exit = native_exit
         self.output: queue.Queue[tuple[int, bytes]] = queue.Queue(maxsize=64)
         self.closed = threading.Event()
 
@@ -244,8 +245,12 @@ class Session:
                     kind, payload = attachment.output.get(timeout=.1)
                 except queue.Empty:
                     continue
+                if kind == wire.NATIVE_EXIT and not attachment.native_exit:
+                    kind = wire.EXIT
+                    code = wire.EXIT_STATUS.unpack(payload)[0]
+                    payload = wire.EXIT_STATUS.pack((code & 255) << 8)
                 wire.send(attachment.connection, kind, payload)
-                if kind == wire.EXIT:
+                if kind in (wire.EXIT, wire.NATIVE_EXIT):
                     return
         except (OSError, EOFError, ValueError, TypeError):
             pass
@@ -280,7 +285,12 @@ class Session:
                 wire.send(connection, wire.ACK)
                 self.stopping.set()
                 return
-            if kind != wire.ATTACH or len(payload) != wire.SIZE.size:
+            native_exit = kind == wire.NATIVE_ATTACH
+            if native_exit:
+                if len(payload) != 12 or wire.NATIVE_VERSION.unpack(payload[8:])[0] != 1:
+                    raise ValueError('Unsupported native attach version')
+                payload = payload[:8]
+            if (kind not in (wire.ATTACH, wire.NATIVE_ATTACH) or len(payload) != wire.SIZE.size):
                 raise ValueError('Expected a protocol-v1 attach or control request')
             rows, cols, _, _ = wire.SIZE.unpack(payload)
             if not 0 < rows <= 32767 or not 0 < cols <= 32767:
@@ -288,7 +298,7 @@ class Session:
             with self.lock:
                 if self.attached is not None:
                     raise ValueError('Session is already attached')
-                attachment = Attachment(connection)
+                attachment = Attachment(connection, native_exit=native_exit)
                 self.attached = attachment
                 replay = tuple(self.journal.chunks)
                 self.input.put_nowait((wire.RESIZE, payload))
@@ -336,7 +346,7 @@ class Session:
                         break
                 if not data:
                     time.sleep(.005)
-            self.broadcast(wire.EXIT, wire.EXIT_STATUS.pack((code & 255) << 8))
+            self.broadcast(wire.NATIVE_EXIT, wire.EXIT_STATUS.pack(code & 0xffffffff))
             deadline = time.monotonic() + 2
             while self.attached and time.monotonic() < deadline:
                 time.sleep(.01)
@@ -480,7 +490,8 @@ def relay(name: str, rows: int, columns: int) -> int:
         stopped = threading.Event()
         try:
             write_record(context_path, identity)
-            wire.send(connection, wire.ATTACH, wire.SIZE.pack(rows, columns, 0, 0))
+            wire.send(connection, wire.NATIVE_ATTACH,
+                      wire.SIZE.pack(rows, columns, 0, 0) + wire.NATIVE_VERSION.pack(1))
 
             def input_worker():
                 import ctypes as C
@@ -517,8 +528,8 @@ def relay(name: str, rows: int, columns: int) -> int:
                 if kind in (wire.OUTPUT, wire.RESET):
                     while payload:
                         payload = payload[os.write(1, payload):]
-                elif kind == wire.EXIT:
-                    return (wire.EXIT_STATUS.unpack(payload)[0] >> 8) & 255
+                elif kind == wire.NATIVE_EXIT:
+                    return wire.EXIT_STATUS.unpack(payload)[0]
                 elif kind == wire.ERROR:
                     raise ValueError(payload.decode('utf-8', 'replace'))
                 elif kind != wire.REPLAY_DONE:
@@ -553,7 +564,12 @@ def main(args=None, remote=None) -> int:
     if args[:1] == ['_serve']:
         return serve()
     if args[:1] == ['_relay']:
-        return relay(session_name(args[1]), int(args[2]), int(args[3]))
+        code = relay(session_name(args[1]), int(args[2]), int(args[3]))
+        # CPython's SystemExit integer conversion is signed on Windows. Preserve
+        # NTSTATUS values as well as ordinary exit codes such as MSI's 3010.
+        from .windows_pty_ipc import ExitProcess
+        ExitProcess(code)
+        return code
     parser = argparse.ArgumentParser(prog='kilix session', description=(
         'Live native Windows sessions. New/attach/restore open tabs in the current Kilix instance. '
         'Closing a persistent pane detaches it; kill deliberately terminates its processes.'))

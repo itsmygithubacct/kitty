@@ -26,6 +26,7 @@ OpenProcess = api(kernel, 'OpenProcess', W.HANDLE, W.DWORD, W.BOOL, W.DWORD)
 GetCurrentProcess = api(kernel, 'GetCurrentProcess', W.HANDLE)
 WaitForSingleObject = api(kernel, 'WaitForSingleObject', W.DWORD, W.HANDLE, W.DWORD)
 TerminateProcess = api(kernel, 'TerminateProcess', W.BOOL, W.HANDLE, W.UINT)
+ExitProcess = api(kernel, 'ExitProcess', None, W.UINT)
 GetExitCodeProcess = api(kernel, 'GetExitCodeProcess', W.BOOL, W.HANDLE, C.POINTER(W.DWORD))
 GetProcessTimes = api(kernel, 'GetProcessTimes', W.BOOL, W.HANDLE,
                      *([C.POINTER(W.FILETIME)] * 4))
