@@ -34,6 +34,7 @@ class WindowsRecoveryTest(BaseTest):
         self.patch = patch.dict(os.environ, {broker.ROOT_KEY: str(self.root)})
         self.patch.start()
         self.clients = []
+        self.input_locks = {}
         self.addCleanup(self.cleanup)
         self.cmd = os.path.join(os.environ['SystemRoot'], 'System32', 'cmd.exe')
         self.powershell = os.path.join(os.environ['SystemRoot'], 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -73,11 +74,20 @@ class WindowsRecoveryTest(BaseTest):
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    creationflags=subprocess.CREATE_NO_WINDOW)
         output = bytearray()
+        self.input_locks[process.pid] = threading.Lock()
         self.clients.append((process, output))
         def reader():
+            pending = b''
             try:
                 while data := process.stdout.read1(65536):
                     output.extend(data)
+                    # ConPTY/PSReadLine can wait for a cursor-position report
+                    # after resize. A raw pipe reader must act like a terminal
+                    # here, including when the query spans separate reads.
+                    pending += data
+                    for _ in range(pending.count(b'\x1b[6n')):
+                        self.send((process, output), b'\x1b[1;1R')
+                    pending = pending[-3:]
             except (OSError, ValueError):
                 pass
         threading.Thread(target=reader, daemon=True).start()
@@ -85,8 +95,9 @@ class WindowsRecoveryTest(BaseTest):
         return process, output
 
     def send(self, client, data):
-        client[0].stdin.write(data)
-        client[0].stdin.flush()
+        with self.input_locks[client[0].pid]:
+            client[0].stdin.write(data)
+            client[0].stdin.flush()
 
     def test_native_powershell_survives_creator_and_relay_loss_with_same_state(self):
         from kitty.windows_pty_ipc import Process
