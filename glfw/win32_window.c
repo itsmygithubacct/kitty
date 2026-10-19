@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <ole2.h>
 #include <shellapi.h>
+#include <imm.h>
 
 #include "win32_acrylic.h"
 
@@ -65,6 +66,37 @@ static int getKeyMods(void) {
     if (GetKeyState(VK_CAPITAL) & 1) mods |= GLFW_MOD_CAPS_LOCK;
     if (GetKeyState(VK_NUMLOCK) & 1) mods |= GLFW_MOD_NUM_LOCK;
     return mods;
+}
+
+static bool isAltGr(int mods) {
+    return (mods & GLFW_MOD_CONTROL) && (GetKeyState(VK_RMENU) & 0x8000);
+}
+
+static void inputText(_GLFWwindow* window, uint32_t cp) {
+    if (cp < 0x20 || cp == 0x7f || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return;
+    int mods = getKeyMods();
+    if ((mods & GLFW_MOD_CONTROL) && !(mods & GLFW_MOD_ALT)) return;
+    // AltGr's synthetic Ctrl+Alt selects a character, not a terminal shortcut.
+    if (isAltGr(mods)) mods &= ~(GLFW_MOD_CONTROL | GLFW_MOD_ALT);
+    WCHAR utf16[2];
+    int n = 1;
+    if (cp >= 0x10000) {
+        utf16[0] = (WCHAR)(0xd800 + ((cp - 0x10000) >> 10));
+        utf16[1] = (WCHAR)(0xdc00 + ((cp - 0x10000) & 0x3ff));
+        n = 2;
+    } else utf16[0] = (WCHAR)cp;
+    char text[8] = {0};
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, utf16, n, text, sizeof(text) - 1, NULL, NULL) > 0) {
+        GLFWkeyevent ev = {.key = cp, .text = text, .action = GLFW_PRESS, .mods = mods};
+        _glfwInputKeyboard(window, &ev);
+    }
+}
+
+static void updateIMEPosition(_GLFWwindow* window) {
+    GLFWIMEUpdateEvent ev = {.type = GLFW_IME_UPDATE_CURSOR_POSITION};
+    if (_glfw.callbacks.get_ime_cursor_position &&
+        _glfw.callbacks.get_ime_cursor_position((GLFWwindow*)window, &ev))
+        _glfwPlatformUpdateIMEState(window, &ev);
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +265,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             _glfwInputWindowFocus(window, true);
             return 0;
         case WM_KILLFOCUS:
+            window->win32.highSurrogate = 0;
             _glfwInputWindowFocus(window, false);
             return 0;
 
@@ -356,7 +389,7 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             // to keep dead keys and layouts working. Forward everything else here:
             // functional keys (arrows, enter, tab...) and any key combined with a
             // shortcut modifier, so kitty can match bindings and encode ctrl+<key>.
-            if (key && (functional || shortcutMod)) {
+            if (key && (functional || (shortcutMod && !isAltGr(mods)))) {
                 GLFWkeyevent ev = {0};
                 ev.key = key;
                 ev.native_key = (int) wParam;
@@ -368,39 +401,36 @@ static LRESULT CALLBACK windowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
             return 0;
         }
 
-        case WM_CHAR: case WM_SYSCHAR: {
-            // Control chars (< 0x20) and pure-ctrl combos are encoded from the key
-            // event above; only genuine text reaches the child here.
-            if ((WCHAR) wParam < 0x20) return 0;
-            {
-                int m = getKeyMods();
-                if ((m & GLFW_MOD_CONTROL) && !(m & GLFW_MOD_ALT)) return 0;
-            }
+        case WM_SYSCHAR:
+            // Alt shortcuts were already dispatched by WM_SYSKEYDOWN.
+            if (!isAltGr(getKeyMods())) return 0;
+            // fall through
+        case WM_CHAR: {
             // wParam is a UTF-16 code unit; accumulate surrogate pairs.
-            WCHAR utf16[2]; int n = 0;
             WCHAR c = (WCHAR) wParam;
             if (c >= 0xd800 && c <= 0xdbff) { window->win32.highSurrogate = c; return 0; }
+            WCHAR high = window->win32.highSurrogate;
+            window->win32.highSurrogate = 0;
             if (c >= 0xdc00 && c <= 0xdfff) {
-                if (window->win32.highSurrogate) { utf16[0] = window->win32.highSurrogate; utf16[1] = c; n = 2; }
-                window->win32.highSurrogate = 0;
-            } else { utf16[0] = c; n = 1; }
-            if (n) {
-                char text[8] = {0};
-                int len = WideCharToMultiByte(CP_UTF8, 0, utf16, n, text, sizeof(text) - 1, NULL, NULL);
-                if (len > 0) {
-                    uint32_t cp = 0;
-                    if (n == 2) cp = 0x10000 + (((utf16[0] - 0xd800) << 10) | (utf16[1] - 0xdc00));
-                    else cp = utf16[0];
-                    GLFWkeyevent ev = {0};
-                    ev.key = cp;
-                    ev.text = text;
-                    ev.action = GLFW_PRESS;
-                    ev.mods = getKeyMods();
-                    _glfwInputKeyboard(window, &ev);
-                }
-            }
+                if (high) inputText(window, 0x10000 + (((high - 0xd800) << 10) | (c - 0xdc00)));
+            } else inputText(window, c);
             return 0;
         }
+
+        case WM_UNICHAR:
+            if (wParam == UNICODE_NOCHAR) return TRUE;
+            window->win32.highSurrogate = 0;
+            if (wParam <= 0x10ffff) inputText(window, (uint32_t)wParam);
+            return 0;
+
+        case WM_IME_STARTCOMPOSITION:
+            updateIMEPosition(window);
+            break; // DefWindowProc owns the system composition UI and commit.
+
+        case WM_IME_NOTIFY:
+            if (wParam == IMN_OPENCANDIDATE || wParam == IMN_CHANGECANDIDATE)
+                updateIMEPosition(window);
+            break;
 
         case WM_DPICHANGED: {
             const float xscale = HIWORD(wParam) / 96.0f;
@@ -1146,7 +1176,20 @@ void _glfwPlatformSetWindowOpacity(_GLFWwindow* window, float opacity) {
         SetLayeredWindowAttributes(window->win32.handle, 0, (BYTE)(255 * opacity), LWA_ALPHA);
     } else SetWindowLongW(window->win32.handle, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
 }
-void _glfwPlatformUpdateIMEState(_GLFWwindow* w, const GLFWIMEUpdateEvent* ev) { (void) w; (void) ev; }
+void _glfwPlatformUpdateIMEState(_GLFWwindow* w, const GLFWIMEUpdateEvent* ev) {
+    if (ev->type != GLFW_IME_UPDATE_CURSOR_POSITION) return;
+    HIMC context = ImmGetContext(w->win32.handle);
+    if (!context) return;
+    COMPOSITIONFORM composition = {.dwStyle = CFS_POINT,
+        .ptCurrentPos = {ev->cursor.left, ev->cursor.top}};
+    CANDIDATEFORM candidate = {.dwStyle = CFS_EXCLUDE,
+        .ptCurrentPos = {ev->cursor.left, ev->cursor.top + ev->cursor.height},
+        .rcArea = {ev->cursor.left, ev->cursor.top,
+                   ev->cursor.left + ev->cursor.width, ev->cursor.top + ev->cursor.height}};
+    ImmSetCompositionWindow(context, &composition);
+    ImmSetCandidateWindow(context, &candidate);
+    ImmReleaseContext(w->win32.handle, context);
+}
 
 int _glfwPlatformSetWindowBlur(_GLFWwindow* window, int value) {
     window->win32.blur = value;
