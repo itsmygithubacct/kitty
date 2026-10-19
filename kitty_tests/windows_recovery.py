@@ -168,3 +168,26 @@ class WindowsRecoveryTest(BaseTest):
                 signed = code if code < 0x80000000 else code - 0x100000000
                 self.send(client, f'exit {signed}\r\n'.encode())
                 self.assertEqual(client[0].wait(timeout=15), code)
+
+    def test_terminate_stays_responsive_with_unread_input_and_output(self):
+        from kitty.windows_pty_ipc import Process, close_connection, connect
+        record = self.start('pressure', [self.powershell, '-NoLogo', '-NoProfile', '-Command', 'Start-Sleep -Seconds 120'])
+        child = Process(self.broker.status(self.root, 'pressure')['child_pid'])
+        self.addCleanup(child.close)
+        connection = connect(self.root, record['id'])
+        self.addCleanup(lambda: close_connection(connection))
+        self.broker.wire.send(connection, self.broker.wire.ATTACH, self.broker.wire.SIZE.pack(24, 80, 0, 0))
+        def flood():
+            try:
+                for _ in range(256):
+                    self.broker.wire.send(connection, self.broker.wire.INPUT, b'x' * 32768)
+            except (OSError, EOFError, ValueError, TypeError):
+                pass
+        sender = threading.Thread(target=flood, daemon=True)
+        sender.start()
+        time.sleep(.5)
+        self.broker.request(self.root, 'pressure', self.broker.wire.TERMINATE)
+        eventually(lambda: child.poll() is not None, seconds=8)
+        close_connection(connection)
+        sender.join(timeout=3)
+        self.assertFalse(sender.is_alive())

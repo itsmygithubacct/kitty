@@ -141,6 +141,8 @@ class ConPTY:
         from . import fast_data_types as native
         from .windows_pty_ipc import Process
         self.native = native
+        self.lock = threading.Lock()
+        self.closed = False
         self.read_fd, self.write_fd, self.pty = native.open_pty(spec['columns'], spec['rows'])
         try:
             self.pid = native.spawn(self.pty, spec['exe'], spec['cwd'], tuple(spec['argv']),
@@ -163,22 +165,51 @@ class ConPTY:
         return os.read(self.read_fd, min(32768, available.value)) if available.value else None
 
     def input(self, kind: int, payload: bytes):
+        import ctypes as C
+        from ctypes import wintypes as W
+        import msvcrt
+        from .windows_pty_ipc import CloseHandle, GetCurrentProcess, api, checked, kernel
         if kind == wire.RESIZE:
             rows, cols, _, _ = wire.SIZE.unpack(payload)
             if not 0 < rows <= 32767 or not 0 < cols <= 32767:
                 raise ValueError('Invalid terminal dimensions')
-            self.native.resize_pty(self.pty, cols, rows)
+            with self.lock:
+                if not self.closed:
+                    self.native.resize_pty(self.pty, cols, rows)
         else:
-            while payload:
-                count = os.write(self.write_fd, payload)
-                if count <= 0:
-                    raise OSError('ConPTY input closed')
-                payload = payload[count:]
+            duplicate = api(kernel, 'DuplicateHandle', W.BOOL, W.HANDLE, W.HANDLE,
+                            W.HANDLE, C.POINTER(W.HANDLE), W.DWORD, W.BOOL, W.DWORD)
+            write = api(kernel, 'WriteFile', W.BOOL, W.HANDLE, W.LPVOID, W.DWORD,
+                        C.POINTER(W.DWORD), W.LPVOID)
+            handle = W.HANDLE()
+            with self.lock:
+                if self.closed:
+                    return
+                checked(duplicate(GetCurrentProcess(), msvcrt.get_osfhandle(self.write_fd),
+                                  GetCurrentProcess(), C.byref(handle), 0, False, 2))
+            try:
+                # Avoid the CRT fd lock: a blocked os.write would prevent
+                # close_pty's _close before it can shut down ConPTY. The worker
+                # owns this duplicate until WriteFile completes/cancels; closing
+                # ConPTY breaks the pipe without reusing an in-flight handle.
+                while payload:
+                    count = W.DWORD()
+                    buffer = C.create_string_buffer(payload)
+                    checked(write(handle, buffer, len(payload), C.byref(count), None))
+                    if not count.value:
+                        raise OSError('ConPTY input closed')
+                    payload = payload[count.value:]
+            finally:
+                CloseHandle(handle)
 
     def poll(self):
         return self.process.poll()
 
     def close(self):
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
         self.native.close_pty(self.pty)
         self.process.close()
 
