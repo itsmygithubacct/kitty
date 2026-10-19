@@ -90,11 +90,13 @@ class WindowsRecoveryTest(BaseTest):
 
     def test_native_powershell_survives_creator_and_relay_loss_with_same_state(self):
         from kitty.windows_pty_ipc import Process
-        record = self.start('powershell', [self.powershell, '-NoLogo', '-NoProfile'])
+        record = self.start('powershell', [self.powershell, '-NoLogo', '-NoProfile', '-NoExit',
+                                          '-Command', "function prompt { 'KILIX_TEST_PROMPT> ' }"])
         original = self.broker.status(self.root, 'powershell')['child_pid']
         handle = Process(original)
         self.addCleanup(handle.close)
         first = self.client(record)
+        eventually(lambda: b'KILIX_TEST_PROMPT>' in first[1])
         self.send(first, b"$state='retained'; $n=0; while ($true) { $n++; Write-Output ('TICK:'+$n); Start-Sleep -Milliseconds 100 }\r")
         eventually(lambda: b'TICK:3' in first[1])
         first[0].kill()
@@ -108,8 +110,9 @@ class WindowsRecoveryTest(BaseTest):
         self.send(second, b'\x1b[8;37;111t')
         eventually(lambda: self.broker.status(self.root, 'powershell')['columns'] == 111)
         self.assertEqual(self.broker.status(self.root, 'powershell')['child_pid'], original)
+        before_interrupt = len(second[1])
         self.send(second, b'\x03')
-        time.sleep(.3)
+        eventually(lambda: b'KILIX_TEST_PROMPT>' in second[1][before_interrupt:])
         self.send(second, b"Write-Output ('MEMENTO:'+$state+':'+$n+':'+$PID)\r")
         eventually(lambda: re.search(rb'MEMENTO:retained:[0-9]+:' + str(original).encode(), second[1]))
         with patch.dict(os.environ, {self.broker.ID_KEY: 'powershell', self.broker.TOKEN_KEY: record['token'],
