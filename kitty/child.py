@@ -402,6 +402,7 @@ class Child:
         self.argv = list(argv)
         self.pass_fds = pass_fds
         self.remote_control_fd = remote_control_fd
+        self.native_persistence_allowed = use_pty_broker
         if cwd_from:
             try:
                 cwd = cwd_from.modify_argv_for_launch_with_cwd(self.argv, env, hold_after_ssh=hold_after_ssh) or cwd
@@ -673,6 +674,25 @@ class Child:
             # shell's escape codes through untouched (the mintty architecture).
             argv = bridge + ['--rows', str(rows), '--cols', str(cols), '--'] + argv
             exe = argv[0]
+            use_pty = False
+            resize_with_escape = True
+        persistent = self.native_persistence_allowed and self.final_env.get('KILIX_NATIVE_PERSIST') == '1'
+        attach_session = self.final_env.get('KILIX_NATIVE_ATTACH', '')
+        if attach_session and not self.native_persistence_allowed:
+            raise ValueError('Native recovery attaches only to regular terminal panes')
+        if persistent or attach_session:
+            if not use_pty or os.path.basename(exe).lower() == 'wsl.exe':
+                raise ValueError('Native persistence supports ConPTY programs; use kilix session inside WSL for Linux sessions')
+            from .windows_pty_broker import prepare_child
+            broker_cwd = self.cwd if os.path.isdir(self.cwd) else os.path.expanduser('~')
+            argv, relay_env, self.windows_persistent_session = prepare_child(
+                argv, exe, broker_cwd, self.final_env, rows, cols,
+                attach=attach_session, name=self.final_env.get('KILIX_NATIVE_SESSION_NAME', ''))
+            # The helper was started before open_pty/spawn creates the relay's
+            # job. Closing this pane kills only the relay, never the broker job.
+            exe = argv[0]
+            env = tuple(f'{k}={v}' for k, v in relay_env.items())
+            self.final_env = relay_env
             use_pty = False
             resize_with_escape = True
         self.uses_conpty = use_pty

@@ -1,0 +1,161 @@
+# License: GPL v3
+"""Native owned-process recovery; kitty-console.exe +launch test.py --module windows_recovery."""
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import patch
+
+from . import BaseTest, is_windows
+
+
+def eventually(function, seconds=15):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        result = function()
+        if result:
+            return result
+        time.sleep(.03)
+    raise AssertionError('Timed out waiting for native recovery condition')
+
+
+@unittest.skipUnless(is_windows, 'Requires the bundled Windows ConPTY runtime')
+class WindowsRecoveryTest(BaseTest):
+    def setUp(self):
+        from kitty import windows_pty_broker as broker
+        self.broker = broker
+        self.temporary = tempfile.TemporaryDirectory(prefix='kilix-native-recovery-')
+        self.root = Path(self.temporary.name) / 'sessions'
+        self.patch = patch.dict(os.environ, {broker.ROOT_KEY: str(self.root)})
+        self.patch.start()
+        self.clients = []
+        self.addCleanup(self.cleanup)
+        self.cmd = os.path.join(os.environ['SystemRoot'], 'System32', 'cmd.exe')
+        self.powershell = os.path.join(os.environ['SystemRoot'], 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+
+    def cleanup(self):
+        for process, output in self.clients:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream:
+                    stream.close()
+        if self.root.exists():
+            for item in self.broker.sessions(self.root):
+                self.broker.request(self.root, item['id'], self.broker.wire.TERMINATE)
+            eventually(lambda: not self.broker.sessions(self.root))
+        self.patch.stop()
+        self.temporary.cleanup()
+
+    def start(self, name, argv):
+        # The creating process exits before any attachment: the broker must be
+        # independent of both the creator and every subsequent renderer/relay.
+        from kitty.constants import kitten_host_exe
+        code = ('import json,os,sys; from kitty.windows_pty_broker import start_session; '
+                'a=json.loads(sys.argv[2]); print(json.dumps(start_session('
+                'sys.argv[1], a, a[0], os.getcwd(), os.environ.copy())))')
+        result = subprocess.run([kitten_host_exe(), '+runpy', code, name, json.dumps(argv)],
+                                capture_output=True, text=True, timeout=25)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def client(self, record, pane='101'):
+        env = dict(os.environ, **{self.broker.ID_KEY: record['id'], self.broker.TOKEN_KEY: record['token'],
+                                  'KITTY_WINDOW_ID': pane, 'KITTY_RC_PASSWORD': 'test-context-' + pane,
+                                  'KITTY_LISTEN_ON': 'tcp:127.0.0.1:12345', 'KITTY_PUBLIC_KEY': 'test-key'})
+        process = subprocess.Popen(self.broker.helper_command('_relay', record['id'], '24', '80'), env=env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+        output = bytearray()
+        self.clients.append((process, output))
+        def reader():
+            try:
+                while data := process.stdout.read1(65536):
+                    output.extend(data)
+            except (OSError, ValueError):
+                pass
+        threading.Thread(target=reader, daemon=True).start()
+        eventually(lambda: self.broker.status(self.root, record['id'])['attached'])
+        return process, output
+
+    def send(self, client, data):
+        client[0].stdin.write(data)
+        client[0].stdin.flush()
+
+    def test_native_powershell_survives_creator_and_relay_loss_with_same_state(self):
+        from kitty.windows_pty_ipc import Process
+        record = self.start('powershell', [self.powershell, '-NoLogo', '-NoProfile'])
+        original = self.broker.status(self.root, 'powershell')['child_pid']
+        handle = Process(original)
+        self.addCleanup(handle.close)
+        first = self.client(record)
+        self.send(first, b"$state='retained'; $n=0; while ($true) { $n++; Write-Output ('TICK:'+$n); Start-Sleep -Milliseconds 100 }\r")
+        eventually(lambda: b'TICK:3' in first[1])
+        first[0].kill()
+        first[0].wait(timeout=5)
+        eventually(lambda: not self.broker.status(self.root, 'powershell')['attached'])
+        before = self.broker.status(self.root, 'powershell')['journal_bytes']
+        eventually(lambda: self.broker.status(self.root, 'powershell')['journal_bytes'] > before + 20)
+        self.assertIsNone(handle.poll())
+        second = self.client(record, '202')
+        eventually(lambda: b'TICK:3' in second[1])
+        self.send(second, b'\x1b[8;37;111t')
+        eventually(lambda: self.broker.status(self.root, 'powershell')['columns'] == 111)
+        self.assertEqual(self.broker.status(self.root, 'powershell')['child_pid'], original)
+        self.send(second, b'\x03')
+        time.sleep(.3)
+        self.send(second, b"Write-Output ('MEMENTO:'+$state+':'+$n+':'+$PID)\r")
+        eventually(lambda: re.search(rb'MEMENTO:retained:[0-9]+:' + str(original).encode(), second[1]))
+        with patch.dict(os.environ, {self.broker.ID_KEY: 'powershell', self.broker.TOKEN_KEY: record['token'],
+                                     'KITTY_WINDOW_ID': 'stale', 'KITTY_RC_PASSWORD': 'stale'}):
+            self.broker.refresh_environment()
+            self.assertEqual(os.environ['KITTY_WINDOW_ID'], '202')
+            self.assertEqual(os.environ['KITTY_RC_PASSWORD'], 'test-context-202')
+        self.broker.detach(self.root, 'powershell')
+        second[0].wait(timeout=5)
+        eventually(lambda: not self.broker.status(self.root, 'powershell')['attached'])
+        self.assertIsNone(handle.poll())
+        self.broker.request(self.root, 'powershell', self.broker.wire.TERMINATE)
+        eventually(lambda: handle.poll() is not None)
+
+    def test_native_cmd_reconnect_preserves_environment_and_exact_exit_status(self):
+        record = self.start('command', [self.cmd, '/d', '/q'])
+        first = self.client(record)
+        original = self.broker.status(self.root, 'command')['child_pid']
+        self.send(first, b'set KILIX_MEMORY=kept\r\necho INITIAL_%KILIX_MEMORY%\r\n')
+        eventually(lambda: b'INITIAL_kept' in first[1])
+        self.broker.detach(self.root, 'command')
+        first[0].wait(timeout=5)
+        eventually(lambda: not self.broker.status(self.root, 'command')['attached'])
+        second = self.client(record, '203')
+        self.send(second, b'echo RESTORED_%KILIX_MEMORY%\r\n')
+        eventually(lambda: b'RESTORED_kept' in second[1])
+        self.assertEqual(self.broker.status(self.root, 'command')['child_pid'], original)
+        self.send(second, b'exit 17\r\n')
+        self.assertEqual(second[0].wait(timeout=15), 17)
+        eventually(lambda: not self.broker.sessions(self.root))
+
+    def test_bad_frames_and_duplicate_names_do_not_terminate_live_session(self):
+        from kitty.windows_pty_ipc import close_connection, connect
+        record = self.start('valid', [self.cmd, '/d', '/q'])
+        original = self.broker.status(self.root, 'valid')['child_pid']
+        connection = connect(self.root, 'valid')
+        try:
+            connection.send_bytes(b'not a broker frame')
+            self.assertTrue(connection.poll(3))
+            kind, payload = self.broker.wire.receive(connection)
+            self.assertEqual(kind, self.broker.wire.ERROR)
+        finally:
+            close_connection(connection)
+        with self.assertRaises(ValueError):
+            self.broker.start_session('valid', [self.cmd], self.cmd, os.getcwd(), os.environ.copy())
+        self.assertEqual(self.broker.status(self.root, 'valid')['child_pid'], original)
+        client = self.client(record)
+        self.send(client, b'echo STILL_RUNNING\r\n')
+        eventually(lambda: b'STILL_RUNNING' in client[1])
