@@ -558,8 +558,35 @@ output_test_data(RunData *rd) {
     output_for_testing(rd->cli_spec);
 }
 
+#ifdef _WIN32
+int
+wmain(int argc_, wchar_t *wide_argv[]) {
+    // The narrow CRT argv uses the Windows code page, but the parser and
+    // embedded Python consume UTF-8. Convert the wide CRT arguments before
+    // parsing, keeping its quoting rules and empty arguments unchanged.
+    if (argc_ < 1 || !wide_argv) return 1;
+    size_t bytes = 0;
+    for (int i = 0; i < argc_; i++) {
+        int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, NULL, 0, NULL, NULL);
+        if (n <= 0) { fprintf(stderr, "Failed to encode command-line argument as UTF-8\n"); return 1; }
+        bytes += (size_t)n;
+    }
+    RAII_ALLOC(char, utf8_bytes, malloc(bytes));
+    RAII_ALLOC(char*, utf8_argv, calloc((size_t)argc_ + 1, sizeof(char*)));
+    if (!utf8_bytes || !utf8_argv) { fprintf(stderr, "Out of memory encoding command line\n"); return 1; }
+    char *next = utf8_bytes;
+    for (int i = 0; i < argc_; i++) {
+        int capacity = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, NULL, 0, NULL, NULL);
+        int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, next, capacity, NULL, NULL);
+        if (n <= 0) { fprintf(stderr, "Failed to encode command-line argument as UTF-8\n"); return 1; }
+        utf8_argv[i] = next;
+        next += n;
+    }
+    char **argv_ = utf8_argv;
+#else
 int
 main(int argc_, char *argv_[], char* envp[]) {
+#endif
     if (argc_ < 1 || !argv_) { fprintf(stderr, "Invalid argc/argv\n"); return 1; }
     if (argc_ > 1 && strcmp(argv_[1], "+testing-launcher-code") == 0) {
         being_tested = true;

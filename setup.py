@@ -1667,6 +1667,9 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
     link_targets.append(os.path.abspath(dest))
     desc = f'Linking {emphasis("launcher")} ...'
     win_libs = '-lws2_32 -ladvapi32 -luser32 -lshell32'.split() if is_windows else []
+    if is_windows:
+        # Use the wide CRT entry point for both GUI and console launchers.
+        ldflags.append('-municode')
     # A GUI terminal must be a GUI-subsystem binary. As a console-subsystem
     # executable, Windows allocates a console for kitty and the ConPTY child
     # attaches to it instead of staying headless inside the pseudoconsole.
