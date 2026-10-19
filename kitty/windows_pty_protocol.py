@@ -98,7 +98,12 @@ class Journal:
 
 
 class ResizeDecoder:
-    """The existing engine pipe-bridge resize escape, including split writes."""
+    """Extract pipe-bridge resizes without fragmenting other VT input.
+
+    ConPTY can interpret a lone ESC write as an Escape key. Keep CSI replies
+    and keys together even when reads split them; callers time out pending
+    input so an actual Escape key is not held indefinitely.
+    """
     def __init__(self):
         self.pending = b''
 
@@ -106,29 +111,47 @@ class ResizeDecoder:
         data = self.pending + data
         self.pending = b''
         result = []
-        while data:
-            at = data.find(b'\x1b')
+        ordinary = bytearray()
+        position = 0
+        while position < len(data):
+            at = data.find(b'\x1b', position)
             if at < 0:
-                result.append((INPUT, data))
+                ordinary.extend(data[position:])
                 break
-            if at:
-                result.append((INPUT, data[:at]))
-                data = data[at:]
-            match = re.match(rb'\x1b\[8;([0-9]{1,5});([0-9]{1,5})t', data)
-            if match:
+            ordinary.extend(data[position:at])
+            if at + 1 == len(data):
+                self.pending = data[at:]
+                break
+            end = at + 2
+            if data[at + 1] == ord('['):
+                while end < len(data) and 0x20 <= data[end] <= 0x3f:
+                    end += 1
+                if end == len(data):
+                    if len(data) - at <= 256:
+                        self.pending = data[at:]
+                    else:
+                        ordinary.extend(data[at:])
+                    break
+                if 0x40 <= data[end] <= 0x7e:
+                    end += 1
+            elif data[at + 1] == ord('O'):
+                if end == len(data):
+                    self.pending = data[at:]
+                    break
+                end += 1
+            sequence = data[at:end]
+            match = re.fullmatch(rb'\x1b\[8;([0-9]{1,5});([0-9]{1,5})t', sequence)
+            if match and all(0 < int(value) <= 32767 for value in match.groups()):
                 rows, cols = map(int, match.groups())
-                if 0 < rows <= 32767 and 0 < cols <= 32767:
-                    result.append((RESIZE, SIZE.pack(rows, cols, 0, 0)))
-                else:
-                    result.append((INPUT, match[0]))
-                data = data[match.end():]
-            elif (len(data) < 18 and (b'\x1b[8;'.startswith(data)
-                                      or re.fullmatch(rb'\x1b\[8;[0-9;]*', data))):
-                self.pending = data
-                break
+                if ordinary:
+                    result.append((INPUT, bytes(ordinary)))
+                    ordinary.clear()
+                result.append((RESIZE, SIZE.pack(rows, cols, 0, 0)))
             else:
-                result.append((INPUT, data[:1]))
-                data = data[1:]
+                ordinary.extend(sequence)
+            position = end
+        if ordinary:
+            result.append((INPUT, bytes(ordinary)))
         return result
 
     def flush(self) -> bytes:
