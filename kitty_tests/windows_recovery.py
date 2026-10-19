@@ -54,14 +54,18 @@ class WindowsRecoveryTest(BaseTest):
         self.patch.stop()
         self.temporary.cleanup()
 
-    def start(self, name, argv):
+    def start(self, name, argv, ignore_ctrl_c=False):
         # The creating process exits before any attachment: the broker must be
         # independent of both the creator and every subsequent renderer/relay.
         from kitty.constants import kitten_host_exe
         code = ('import json,os,sys; from kitty.windows_pty_broker import start_session; '
+                'from ctypes import wintypes as W; from kitty.windows_pty_ipc import api,checked,kernel; '
+                'reset=api(kernel,"SetConsoleCtrlHandler",W.BOOL,W.LPVOID,W.BOOL); '
+                'checked(reset(None,True)) if sys.argv[3]=="ignore" else None; '
                 'a=json.loads(sys.argv[2]); print(json.dumps(start_session('
                 'sys.argv[1], a, a[0], os.getcwd(), os.environ.copy())))')
-        result = subprocess.run([kitten_host_exe(), '+runpy', code, name, json.dumps(argv)],
+        result = subprocess.run([kitten_host_exe(), '+runpy', code, name, json.dumps(argv),
+                                 'ignore' if ignore_ctrl_c else 'normal'],
                                 capture_output=True, text=True, timeout=25)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
@@ -102,7 +106,7 @@ class WindowsRecoveryTest(BaseTest):
     def test_native_powershell_survives_creator_and_relay_loss_with_same_state(self):
         from kitty.windows_pty_ipc import Process
         record = self.start('powershell', [self.powershell, '-NoLogo', '-NoProfile', '-NoExit',
-                                          '-Command', "function prompt { 'KILIX_TEST_PROMPT> ' }"])
+                                          '-Command', "function prompt { 'KILIX_TEST_PROMPT> ' }"], ignore_ctrl_c=True)
         original = self.broker.status(self.root, 'powershell')['child_pid']
         handle = Process(original)
         self.addCleanup(handle.close)

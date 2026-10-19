@@ -138,13 +138,19 @@ def refresh_environment() -> None:
 
 class ConPTY:
     def __init__(self, spec: dict):
+        from ctypes import wintypes as W
         from . import fast_data_types as native
-        from .windows_pty_ipc import Process
+        from .windows_pty_ipc import Process, api, checked, kernel
         self.native = native
         self.lock = threading.Lock()
         self.closed = False
         self.read_fd, self.write_fd, self.pty = native.open_pty(spec['columns'], spec['rows'])
         try:
+            # A launcher may have disabled Ctrl-C for its own console children.
+            # That flag is inherited even across GUI/no-window processes. Start
+            # this independent interactive console with normal Ctrl-C handling.
+            reset_control = api(kernel, 'SetConsoleCtrlHandler', W.BOOL, W.LPVOID, W.BOOL)
+            checked(reset_control(None, False))
             self.pid = native.spawn(self.pty, spec['exe'], spec['cwd'], tuple(spec['argv']),
                                     tuple(f'{k}={v}' for k, v in spec['env'].items()))
             self.process = Process(self.pid)
