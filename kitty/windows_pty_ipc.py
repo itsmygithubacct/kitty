@@ -223,7 +223,10 @@ def connect(root, name):
 def attachment_lock(root, name):
     security = Security()
     try:
-        handle = checked(CreateMutex(C.byref(security), False, 'Global\\' + namespace(root) + '-' + name))
+        # Pipe names and metadata filenames are case-insensitive on Windows;
+        # kernel mutex names are case-sensitive. Share one attachment lock for
+        # every spelling of the same session before publishing its context.
+        handle = checked(CreateMutex(C.byref(security), False, 'Global\\' + namespace(root) + '-' + name.lower()))
     finally:
         security.close()
     acquired = False

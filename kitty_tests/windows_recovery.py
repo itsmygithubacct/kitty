@@ -213,3 +213,19 @@ class WindowsRecoveryTest(BaseTest):
         close_connection(connection)
         sender.join(timeout=3)
         self.assertFalse(sender.is_alive())
+
+    def test_case_variants_share_one_attachment_lock(self):
+        from kitty.windows_pty_ipc import attachment_lock
+        result = []
+        def contender():
+            try:
+                with attachment_lock(self.root, 'case'):
+                    result.append('acquired')
+            except ValueError:
+                result.append('blocked')
+        with attachment_lock(self.root, 'Case'):
+            thread = threading.Thread(target=contender, daemon=True)
+            thread.start()
+            thread.join(timeout=3)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result, ['blocked'])
