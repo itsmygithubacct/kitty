@@ -488,6 +488,21 @@ class TestPtyBrokerIntegration(BaseTest):
     def test_session_close_keeps_refusing_pane_and_closes_the_rest(self):
         self.check_explicit_group_close('close_windows_no_confirm', refuses=True)
 
+    def test_new_error_overlay_is_not_a_close_target(self):
+        for method in ('close_tab_no_confirm', 'close_windows_no_confirm'):
+            with self.subTest(method=method):
+                boss, tab, events = self.close_fixture()
+                refused = tab[0]
+                refused.child.terminate_pty_broker = lambda: False
+                tab[:] = [refused]
+                overlay = SimpleNamespace(id=4, child=SimpleNamespace(is_pty_brokered=False))
+                with patch.object(boss, 'show_error', side_effect=lambda *args: tab.append(overlay)) as error, \
+                        patch.object(boss, 'mark_window_for_close') as close:
+                    getattr(boss, method)(tab)
+                error.assert_called_once()
+                close.assert_not_called()
+                self.ae(list(tab), [refused, overlay])
+
     def test_tab_close_keeps_existing_confirmation(self):
         boss, tab, events = self.close_fixture()
         boss.os_window_map = {7: [tab]}
