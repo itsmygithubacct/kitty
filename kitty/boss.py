@@ -1156,6 +1156,13 @@ class Boss:
         self.mark_window_for_close(window)
         return True
 
+    def close_window_explicitly_with_error(self, window: Window) -> None:
+        if not self.close_window_explicitly(window):
+            self.show_error(
+                _('Could not close persistent pane'),
+                _('The PTY broker did not acknowledge termination. The pane '
+                  'was left attached so its processes are not lost.'))
+
     def recover_pty_broker_sessions(self) -> None:
         if getattr(self, '_pty_broker_recovery_done', False):
             return
@@ -1287,12 +1294,7 @@ class Boss:
         window = self.window_id_map.get(window_id)
         if window is None:
             return
-        if not self.close_window_explicitly(window):
-            self.show_error(
-                _('Could not close persistent pane'),
-                _('The PTY broker did not acknowledge termination. The pane '
-                  'was left attached so its processes are not lost.'))
-            return
+        self.close_window_explicitly_with_error(window)
 
     def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None = None) -> tuple[str, int]:
         num_running_programs = 0
@@ -1814,14 +1816,14 @@ class Boss:
     def close_tab_no_confirm(self, tab: Tab) -> None:
         if self.current_visual_select is not None and self.current_visual_select.tab_id == tab.id:
             self.cancel_current_visual_select()
-        for window in tab:
-            self.mark_window_for_close(window)
+        for window in tuple(tab):
+            self.close_window_explicitly_with_error(window)
 
     def close_windows_no_confirm(self, windows: Sequence[Window]) -> None:
         if self.current_visual_select is not None:
             self.cancel_current_visual_select()
-        for window in windows:
-            self.mark_window_for_close(window)
+        for window in tuple(windows):
+            self.close_window_explicitly_with_error(window)
 
     @ac('win', 'Toggle the fullscreen status of the active OS Window')
     def toggle_fullscreen(self, os_window_id: int = 0) -> None:
