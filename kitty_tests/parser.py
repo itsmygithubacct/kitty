@@ -3,6 +3,7 @@
 
 from binascii import hexlify
 from functools import partial
+from kitty.window import process_remote_print
 
 from kitty.fast_data_types import (
     CURSOR_BLOCK,
@@ -22,6 +23,15 @@ def cnv(x):
     if isinstance(x, memoryview):
         x = str(x, 'utf-8')
     return x
+
+
+class RemotePrintTest(BaseTest):
+
+    def test_malformed_remote_print_does_not_interrupt_valid_output(self):
+        for malformed in (b'!', b'a', b'abc$', b'\xff'):
+            self.ae(process_remote_print(memoryview(malformed)), '')
+        self.ae(process_remote_print(memoryview(b'aGVsbG8K')), 'hello\n')
+        self.ae(process_remote_print(memoryview(b'aGVsbG8bd29ybGQ=')), 'hello␛world')
 
 
 class CmdDump(list):

@@ -543,7 +543,13 @@ def cmd_output(screen: Screen, which: CommandOutput = CommandOutput.last_run, as
 
 
 def process_remote_print(msg: memoryview) -> str:
-    return replace_c0_codes_except_nl_space_tab(base64_decode(msg)).decode('utf-8', 'replace')
+    try:
+        decoded = base64_decode(msg)
+    except ValueError:
+        # Child output can contain a truncated or malformed DCS message.
+        # Discard that message rather than raising into the window callback.
+        return ''
+    return replace_c0_codes_except_nl_space_tab(decoded).decode('utf-8', 'replace')
 
 
 def transparent_background_color_control(cp: ColorProfile, responses: dict[str, str], index: int, key: str, sep: str, val: str) -> None:
