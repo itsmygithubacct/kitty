@@ -435,6 +435,108 @@ class TestPtyBrokerIntegration(BaseTest):
             self.assertTrue(boss.close_window_explicitly(window))
             mark.assert_called_once_with(window)
 
+    def close_fixture(self):
+        boss = object.__new__(Boss)
+        boss.current_visual_select = None
+        events = []
+        windows = []
+        for wid, brokered, succeeds in ((1, True, True), (2, False, True), (3, True, True)):
+            def terminate(wid=wid, succeeds=succeeds):
+                events.append(('terminate', wid))
+                return succeeds
+            child = SimpleNamespace(is_pty_brokered=brokered, terminate_pty_broker=terminate,
+                                    pty_broker_runtime='/private/broker', pty_broker_session_id=str(wid))
+            windows.append(SimpleNamespace(id=wid, child=child))
+
+        class Tab(list):
+            id = 9
+            active_window = windows[0]
+            confirm_close_window_id = 0
+
+        return boss, Tab(windows), events
+
+    def check_explicit_group_close(self, method, refuses=False):
+        boss, tab, events = self.close_fixture()
+        if refuses:
+            tab[0].child.terminate_pty_broker = lambda: events.append(('terminate', 1)) or False
+        with patch.object(boss, 'mark_window_for_close', side_effect=lambda w: events.append(('mark', w.id))), \
+                patch('kitty.pty_broker.forget_titles', side_effect=lambda runtime, sid: events.append(('forget', int(sid)))), \
+                patch.object(boss, 'show_error') as error:
+            getattr(boss, method)(tab)
+        expected = [('terminate', 1)]
+        if not refuses:
+            expected += [('forget', 1), ('mark', 1)]
+        expected += [('mark', 2), ('terminate', 3), ('forget', 3), ('mark', 3)]
+        self.ae(events, expected)
+        if refuses:
+            error.assert_called_once_with(
+                'Could not close persistent pane',
+                'The PTY broker did not acknowledge termination. The pane '
+                'was left attached so its processes are not lost.')
+        else:
+            error.assert_not_called()
+
+    def test_tab_close_terminates_every_broker_before_frontend(self):
+        self.check_explicit_group_close('close_tab_no_confirm')
+
+    def test_session_close_terminates_every_broker_before_frontend(self):
+        self.check_explicit_group_close('close_windows_no_confirm')
+
+    def test_tab_close_keeps_refusing_pane_and_closes_the_rest(self):
+        self.check_explicit_group_close('close_tab_no_confirm', refuses=True)
+
+    def test_session_close_keeps_refusing_pane_and_closes_the_rest(self):
+        self.check_explicit_group_close('close_windows_no_confirm', refuses=True)
+
+    def test_tab_close_keeps_existing_confirmation(self):
+        boss, tab, events = self.close_fixture()
+        boss.os_window_map = {7: [tab]}
+        with patch.object(Boss, 'active_tab', new_callable=PropertyMock, return_value=tab), \
+                patch.object(boss, 'close_windows_with_confirmation_msg', return_value=('Busy', 3)), \
+                patch('kitty.boss.get_options', return_value=SimpleNamespace(confirm_os_window_close=(1, False))), \
+                patch.object(boss, 'confirm', return_value=SimpleNamespace(id=99)) as confirm, \
+                patch.object(boss, 'close_tab_no_confirm') as close:
+            boss.window_id_map = {}
+            boss.confirm_tab_close(tab)
+            confirm.assert_called_once()
+            close.assert_not_called()
+            boss.handle_close_tab_confirmation(False, tab.id)
+            close.assert_not_called()
+            boss.handle_close_tab_confirmation(True, tab.id)
+            close.assert_called_once_with(tab)
+        self.ae(events, [])
+
+    def test_group_close_cancels_visual_selection(self):
+        for method in ('close_tab_no_confirm', 'close_windows_no_confirm'):
+            with self.subTest(method=method):
+                boss, tab, events = self.close_fixture()
+                boss.current_visual_select = SimpleNamespace(tab_id=tab.id)
+                with patch.object(boss, 'cancel_current_visual_select') as cancel, \
+                        patch.object(boss, 'close_window_explicitly', return_value=True), \
+                        patch.object(boss, 'mark_window_for_close'):
+                    getattr(boss, method)(tab)
+                cancel.assert_called_once()
+
+    def test_frontend_loss_and_quit_do_not_terminate_brokers(self):
+        boss, tab, events = self.close_fixture()
+        boss.child_monitor = Mock()
+        boss.os_window_map = {7: [tab]}
+        boss.mark_window_for_close(tab[0])
+        boss.child_monitor.mark_for_close.assert_called_once_with(1)
+        with patch.object(Boss, 'active_window', new_callable=PropertyMock, return_value=tab[0]), \
+                patch.object(boss, 'close_windows_with_confirmation_msg', return_value=('', 0)), \
+                patch('kitty.boss.get_options', return_value=SimpleNamespace(confirm_os_window_close=(0, False))), \
+                patch.object(boss, '_call_on_quit_watchers', return_value=True), \
+                patch('kitty.boss.set_application_quit_request') as quit_request:
+            boss.quit()
+            quit_request.assert_called_once()
+        manager = Mock()
+        boss.os_window_map = {7: manager}
+        with patch.object(boss, 'set_update_check_process'), patch('kitty.boss.destroy_global_data'):
+            boss.destroy()
+        manager.destroy.assert_called_once()
+        self.ae(events, [])
+
     def test_configuration_requires_explicit_absolute_paths(self) -> None:
         self.ae(configuration({}), ('', ''))
         self.ae(configuration({
