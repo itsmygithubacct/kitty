@@ -5,16 +5,16 @@ package utils
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
-var _ = fmt.Print
-
 type CachedValues[T any] struct {
-	Name string
-	Opts T
+	Name      string
+	Opts      T
+	loadError error
 }
 
 func (self *CachedValues[T]) Path() string {
@@ -22,12 +22,39 @@ func (self *CachedValues[T]) Path() string {
 }
 
 func (self *CachedValues[T]) Load() T {
-	raw, err := os.ReadFile(self.Path())
-	if err == nil {
-		json.Unmarshal(raw, self.Opts)
+	self.loadError = nil
+	path := self.Path()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			self.loadError = fmt.Errorf("read cached values %q: %w", path, err)
+		}
+		return self.Opts
 	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		self.loadError = fmt.Errorf("decode cached values %q: expected a non-null JSON value", path)
+		return self.Opts
+	}
+	defaults, err := json.Marshal(self.Opts)
+	if err != nil {
+		self.loadError = fmt.Errorf("copy defaults for cached values %q: %w", path, err)
+		return self.Opts
+	}
+	var loaded T
+	if err = json.Unmarshal(defaults, &loaded); err == nil {
+		err = json.Unmarshal(raw, &loaded)
+	}
+	if err != nil {
+		self.loadError = fmt.Errorf("decode cached values %q: %w", path, err)
+		return self.Opts
+	}
+	self.Opts = loaded
 	return self.Opts
 }
+
+// LoadError returns the read or decode error from the most recent Load call.
+// A failed load leaves Opts unchanged.
+func (self *CachedValues[T]) LoadError() error { return self.loadError }
 
 func (self *CachedValues[T]) Save() {
 	raw, err := json.Marshal(self.Opts)

@@ -379,7 +379,7 @@ patch_color_table(const char *key, PyObject *profiles, PyObject *spec, size_t wh
         color_type color = PyLong_AsUnsignedLong(v); \
         for (Py_ssize_t j = 0; j < PyTuple_GET_SIZE(profiles); j++) { \
             ColorProfile *self = (ColorProfile*)PyTuple_GET_ITEM(profiles, j); \
-            self->array[i] = color; \
+            self->array[i - 1] = color; \
             self->dirty = true; \
 } } }
 
@@ -551,6 +551,20 @@ as_dict(ColorProfile *self, PyObject *args UNUSED) {
     D(default_fg, foreground); D(default_bg, background);
     D(cursor_color, cursor); D(cursor_text_color, cursor_text); D(highlight_fg, selection_foreground);
     D(highlight_bg, selection_background); D(visual_bell_color, visual_bell_color);
+#define M(which, array, i) { \
+    char key[32]; \
+    snprintf(key, sizeof(key), "mark%zu_" #which, (i) + 1); \
+    PyObject *val = PyLong_FromUnsignedLong(self->array[i]); \
+    if (!val) return NULL; \
+    int ret = PyDict_SetItemString(ans, key, val); \
+    Py_DECREF(val); \
+    if (ret != 0) return NULL; \
+}
+    for (size_t i = 0; i < MARK_MASK; i++) {
+        M(background, mark_backgrounds, i)
+        M(foreground, mark_foregrounds, i)
+    }
+#undef M
     RAII_PyObject(transparent_background_colors, PyList_New(0));
     if (!transparent_background_colors) return NULL;
     for (size_t i = 0; i < arraysz(self->overriden_transparent_colors); i++) {
@@ -1125,7 +1139,11 @@ parse_double_intensity(char *s, double *out, double percentage_divider) {
 static double clamp(const double f) { return MAX(0, MIN(f, 1)); }
 
 static double
-linear_to_srgb(double c) { return c <= 0.0031308 ? c * 12.92 : (1.055 * pow(c, (1 / 2.4)) - 0.055); }
+linear_to_srgb(double c) {
+    const double sign = copysign(1.0, c);
+    c = fabs(c);
+    return sign * (c <= 0.0031308 ? c * 12.92 : (1.055 * pow(c, (1 / 2.4)) - 0.055));
+}
 
 static double degrees_to_radians(double degrees) { return degrees * (M_PI / 180); }
 static double radians_to_degrees(double radians) { return 180 * radians / M_PI; }
@@ -1150,10 +1168,16 @@ oklch_to_srgb(double l, double c, double h, double *r, double *g, double *b) {
     const double g_lin = -1.2684380046 * l_lin + 2.6097574011 * m_lin - 0.3413193965 * s_lin;
     const double b_lin = -0.0041960863 * l_lin - 0.7034186147 * m_lin + 1.7076147010 * s_lin;
 
-    *r = linear_to_srgb(clamp(r_lin)); *g = linear_to_srgb(clamp(g_lin)); *b = linear_to_srgb(clamp(b_lin));
+    // Keep extended sRGB values intact for gamut and deltaE decisions.
+    *r = linear_to_srgb(r_lin); *g = linear_to_srgb(g_lin); *b = linear_to_srgb(b_lin);
 }
 
-static double srgb_to_linear(double c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+static double
+srgb_to_linear(double c) {
+    const double sign = copysign(1.0, c);
+    c = fabs(c);
+    return sign * (c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4));
+}
 
 
 static void
@@ -1193,26 +1217,51 @@ oklch_to_srgb_gamut_map(double l, double c, double h, double *r, double *g, doub
     static const double MIN_CONVERGENCE = 0.0001;  // Binary search precision (0.01% chroma)
     static const double EPSILON = 0.00001;  // Small value for doubleing point comparisons
 
-    // If chroma is very small, color is essentially achromatic
-    if (c < EPSILON) { *r = linear_to_srgb(l); *g = *r; *b = *r; return; }
+    // If chroma is very small, color is essentially achromatic. In neutral
+    // OKLab, linear RGB is L cubed, not L.
+    if (c < EPSILON) { *r = linear_to_srgb(l * l * l); *g = *r; *b = *r; return; }
     // Try the original color first
     oklch_to_srgb(l, c, h, r, g, b);
 #define in_gamut(r,g,b) (0. <= r && r <= 1. && 0. <= g && g <= 1. && 0. <= b && b <= 1.)
     if (in_gamut(*r,*g,*b)) return;
+    // Keep the most recent finite clipped candidate for the final result.
+    double r_clipped = 0., g_clipped = 0., b_clipped = 0.;
+    // CSS Color 4 first accepts a simple clip when its perceptual difference
+    // from the original color is below the JND threshold.
+    if (isfinite(*r) && isfinite(*g) && isfinite(*b)) {
+        r_clipped = clamp(*r); g_clipped = clamp(*g); b_clipped = clamp(*b);
+        double l_original, a_original, lb_original, l_clipped, a_clipped, lb_clipped;
+        srgb_to_oklab(*r, *g, *b, &l_original, &a_original, &lb_original);
+        srgb_to_oklab(r_clipped, g_clipped, b_clipped, &l_clipped, &a_clipped, &lb_clipped);
+        if (distance(l_original, a_original, lb_original, l_clipped, a_clipped, lb_clipped) < JND) {
+            *r = r_clipped; *g = g_clipped; *b = b_clipped;
+            return;
+        }
+    }
     // Binary search for maximum in-gamut chroma
-    double low_chroma = 0, high_chroma = c, r_test, g_test, b_test, r_clipped, g_clipped, b_clipped;
+    double low_chroma = 0, high_chroma = c, r_test, g_test, b_test;
+    bool min_in_gamut = true;
 
-    // Convert original color to OKLab for deltaE calculations
+    // Refine the chroma against the local-MINDE threshold until convergence.
     while ((high_chroma - low_chroma) > MIN_CONVERGENCE) {
         double mid_chroma = (high_chroma + low_chroma) * 0.5;
         // Try this chroma value
         oklch_to_srgb(l, mid_chroma, h, &r_test, &g_test, &b_test);
-        // Check if in gamut (before clipping)
-        if (in_gamut(r_test, g_test, b_test)) {
+        // Very large but finite input chroma can overflow during conversion.
+        // Treat such a midpoint as out of gamut and continue reducing it.
+        if (!isfinite(r_test) || !isfinite(g_test) || !isfinite(b_test)) {
+            // Reject a non-finite midpoint at the upper bound; it does not
+            // change min_in_gamut because it cannot advance the lower bound.
+            high_chroma = mid_chroma;
+            continue;
+        }
+        // While min_in_gamut is true, an in-gamut midpoint advances the lower
+        // bound directly. Otherwise compare the clipped midpoint using local-MINDE.
+        if (min_in_gamut && in_gamut(r_test, g_test, b_test)) {
             // In gamut - try higher chroma
             low_chroma = mid_chroma;
         } else {
-            // Out of gamut - clip and check deltaE
+            // Clip and check deltaE, including when a later midpoint is in gamut.
             r_clipped = clamp(r_test); g_clipped = clamp(g_test); b_clipped = clamp(b_test);
 
             // Convert both to OKLab for comparison
@@ -1224,17 +1273,21 @@ oklch_to_srgb_gamut_map(double l, double c, double h, double *r, double *g, doub
             double de = distance(l_test, a_test, lb_test, l_clipped, a_clipped, lb_clipped);
 
             if (de < JND) {
+                if ((JND - de) < MIN_CONVERGENCE) {
+                    *r = r_clipped; *g = g_clipped; *b = b_clipped;
+                    return;
+                }
                 // Difference is imperceptible - accept this chroma
                 low_chroma = mid_chroma;
+                min_in_gamut = false;
             } else {
                 // Difference is noticeable - reduce chroma more
                 high_chroma = mid_chroma;
             }
         }
     }
-    // Use the final chroma value and clip to ensure in-gamut
-    oklch_to_srgb(l, low_chroma, h, r, g, b);
-    *r = clamp(*r); *g = clamp(*g); *b = clamp(*b);
+    // CSS Color 4 returns the last clipped midpoint at loop termination.
+    *r = r_clipped; *g = g_clipped; *b = b_clipped;
 #undef in_gamut
 }
 
@@ -1250,19 +1303,25 @@ lab_to_oklch(double l, double a, double b, double *okl, double *c, double *h) {
     const double y = (l + 16.) / 116.;
     const double x = a / 500. + y;
     const double z = y - b / 200.;
-    const double x_val = 0.95047 * f_inv(x);
-    const double y_val = f_inv(y);
-    const double z_val = 1.08883 * f_inv(z);
+    // CSS lab() uses a D50 reference white. Adapt XYZ to D65 before converting
+    // to sRGB so that out-of-gamut information is preserved through OKLab.
+    // CSS Color 4 derives D50 from its chromaticity, rather than rounded XYZ.
+    const double x50 = (0.3457 / 0.3585) * f_inv(x);
+    const double y50 = f_inv(y);
+    const double z50 = ((1. - 0.3457 - 0.3585) / 0.3585) * f_inv(z);
+    const double x65 = 0.955473421488075 * x50 - 0.02309845494876471 * y50 + 0.06325924320057072 * z50;
+    const double y65 = -0.0283697093338637 * x50 + 1.0099953980813041 * y50 + 0.021041441191917323 * z50;
+    const double z65 = 0.012314014864481998 * x50 - 0.020507649298898964 * y50 + 1.330365926242124 * z50;
 
-    // XYZ to Linear sRGB (don't clip here to preserve out-of-gamut info)
-    const double r_lin = +3.2404542 * x_val - 1.5371385 * y_val - 0.4985314 * z_val;
-    const double g_lin = -0.9692660 * x_val + 1.8760108 * y_val + 0.0415560 * z_val;
-    const double b_lin = +0.0556434 * x_val - 0.2040259 * y_val + 1.0572252 * z_val;
+    // XYZ D65 to linear sRGB (do not clip out-of-gamut channels).
+    const double r_lin = +3.2409699419 * x65 - 1.5373831776 * y65 - 0.4986107603 * z65;
+    const double g_lin = -0.9692436363 * x65 + 1.8759675015 * y65 + 0.0415550574 * z65;
+    const double b_lin = +0.0556300797 * x65 - 0.2039769589 * y65 + 1.0569715142 * z65;
 
-    // Convert linear sRGB to sRGB gamma
-    const double r_srgb = r_lin >= 0 ? linear_to_srgb(r_lin) : 0;
-    const double g_srgb = g_lin >= 0 ? linear_to_srgb(g_lin) : 0;
-    const double b_srgb = b_lin >= 0 ? linear_to_srgb(b_lin) : 0;
+    // Extended sRGB companding keeps negative/out-of-range channels intact.
+    const double r_srgb = linear_to_srgb(r_lin);
+    const double g_srgb = linear_to_srgb(g_lin);
+    const double b_srgb = linear_to_srgb(b_lin);
 
     // Convert to OKLab
     double a_ok, b_ok;

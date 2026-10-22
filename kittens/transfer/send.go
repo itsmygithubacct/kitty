@@ -359,15 +359,13 @@ func (self *SendManager) start_transfer() string {
 	return FileTransmissionCommand{Action: Action_send, Bypass: self.bypass}.Serialize()
 }
 
-func (self *SendManager) initialize() {
+func (self *SendManager) initialize() error {
 	if self.bypass != "" {
 		q, err := encode_bypass(self.request_id, self.bypass)
-		if err == nil {
-			self.bypass = q
-		} else {
-			fmt.Fprintln(os.Stderr, "Ignoring password because of error:", err)
+		if err != nil {
+			return err
 		}
-
+		self.bypass = q
 	}
 	self.fid_map = make(map[string]*File, len(self.files))
 	for _, f := range self.files {
@@ -384,6 +382,7 @@ func (self *SendManager) initialize() {
 		}
 	}
 	self.progress_tracker.total_bytes_to_transfer = self.progress_tracker.total_size_of_all_files
+	return nil
 }
 
 type SendHandler struct {
@@ -1050,11 +1049,13 @@ func (self *SendHandler) start_transfer() (err error) {
 }
 
 func (self *SendHandler) initialize() error {
-	self.manager.initialize()
+	if err := self.manager.initialize(); err != nil {
+		return err
+	}
 	self.spinner = tui.NewSpinner("dots")
 	self.ctx = markup.New(true)
 	self.send_payload(self.manager.start_transfer())
-	if self.opts.PermissionsBypass != "" {
+	if self.manager.bypass != "" {
 		// dont wait for permission, not needed with a bypass and avoids a roundtrip
 		self.send_file_metadata()
 	}

@@ -838,6 +838,10 @@ void _glfwPlatformTerminate(void)
         _glfw.x11.eventLoopData.fds[0].fd = -1;
     }
 
+    if (_glfw.x11.dnd_fixes.handle) {
+        _glfw_dlclose(_glfw.x11.dnd_fixes.handle);
+        _glfw.x11.dnd_fixes.handle = NULL;
+    }
     if (_glfw.x11.xcursor.handle)
     {
         _glfw_dlclose(_glfw.x11.xcursor.handle);

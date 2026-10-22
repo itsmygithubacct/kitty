@@ -4,6 +4,7 @@ package style
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -48,5 +49,24 @@ func TestANSIStyleSprint(t *testing.T) {
 	expected := "\x1b[4:3;58:5:6m\x1b]8;;http://moo.com\x1b\\___\x1b]8;;\x1b\\\x1b[4:0;59m"
 	if actual != expected {
 		t.Fatalf("Formatting URL failed expected != actual: %#v != %#v", expected, actual)
+	}
+}
+
+func TestParseColorRejectsMalformedRGBWidths(t *testing.T) {
+	for _, input := range []string{
+		"rgb:1/22/3",
+		"rgb:12/1/12",
+		"rgb:12345/12345/12345",
+		"rgb:/1/1",
+	} {
+		t.Run(input, func(t *testing.T) {
+			_, err := ParseColor(input)
+			if err == nil {
+				t.Fatalf("ParseColor(%q) unexpectedly succeeded", input)
+			}
+			if !strings.Contains(err.Error(), "width") {
+				t.Fatalf("ParseColor(%q) error = %v, want a component-width error", input, err)
+			}
+		})
 	}
 }

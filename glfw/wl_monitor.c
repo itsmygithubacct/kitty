@@ -342,63 +342,142 @@ GLFWAPI struct wl_output* glfwGetWaylandMonitor(GLFWmonitor* handle)
     return monitor->wl.output;
 }
 
+static _GLFWmonitor* findWaylandMonitor(uint32_t name)
+{
+    if (!name)
+        return NULL;
+
+    for (int i = 0; i < _glfw.monitorCount; i++)
+    {
+        if (_glfw.monitors[i]->wl.name == name)
+            return _glfw.monitors[i];
+    }
+
+    return NULL;
+}
+
+static uint32_t findWaylandMonitorName(_GLFWmonitor* candidate)
+{
+    for (int i = 0; i < _glfw.monitorCount; i++)
+    {
+        if (_glfw.monitors[i] == candidate)
+            return _glfw.monitors[i]->wl.name;
+    }
+
+    return 0;
+}
+
+static uint32_t findFocusedWaylandMonitorName(void)
+{
+    GLFWid focus_ids[2] = { _glfw.wl.keyboardFocusId, _glfw.wl.lastKeyboardFocusId };
+    for (int i = 0; i < 2; i++)
+    {
+        if (!focus_ids[i])
+            continue;
+
+        _GLFWwindow* window = _glfwWindowForId(focus_ids[i]);
+        if (window && window->wl.monitorsCount > 0)
+        {
+            uint32_t name = findWaylandMonitorName(window->wl.monitors[0]);
+            if (name)
+                return name;
+        }
+    }
+
+    return 0;
+}
+
+static uint32_t findPrimaryWaylandMonitorName(monotonic_t deadline)
+{
+    for (;;)
+    {
+        uint32_t first_name = 0;
+        uint32_t origin_name = 0;
+        bool geometry_pending = false;
+
+        for (int i = 0; i < _glfw.monitorCount; i++)
+        {
+            _GLFWmonitor* monitor = _glfw.monitors[i];
+            if (!first_name)
+                first_name = monitor->wl.name;
+
+            if (!monitor->wl.xdg_output)
+                continue;
+
+            if (!(monitor->wl.xdg_size_received && monitor->wl.xdg_position_received))
+            {
+                geometry_pending = true;
+                continue;
+            }
+
+            if (!origin_name && monitor->wl.x == 0 && monitor->wl.y == 0)
+                origin_name = monitor->wl.name;
+        }
+
+        if (!geometry_pending)
+            return origin_name ? origin_name : first_name;
+
+        monotonic_t remaining = deadline - monotonic();
+        if (remaining <= 0)
+            return first_name;
+
+        // Dispatch may remove outputs and free their monitor objects.  Keep
+        // only registry names across the wait, then restart from the live list.
+        _glfwPlatformWaitEventsTimeout(remaining);
+    }
+}
+
 GLFWAPI double glfwGetWaylandCurrentMonitorFractionalScale(void)
 {
     _GLFW_REQUIRE_INIT_OR_RETURN(1.0);
     if (!_glfw.wl.xdg_output_manager || _glfw.monitorCount == 0)
         return 1.0;
 
-    // Use the monitor of the currently focused window, then the most recently
-    // focused window, then fall back to the primary monitor.
-    _GLFWmonitor *monitor = NULL;
-    GLFWid focus_ids[2] = { _glfw.wl.keyboardFocusId, _glfw.wl.lastKeyboardFocusId };
-    for (int i = 0; i < 2 && !monitor; i++) {
-        if (!focus_ids[i]) continue;
-        _GLFWwindow *window = _glfwWindowForId(focus_ids[i]);
-        if (window && window->wl.monitorsCount > 0)
-            monitor = window->wl.monitors[0];
-    }
-    if (!monitor) {
-        // No focused window to key off of (typically the first window at
-        // startup). Prefer the output at the logical origin (0, 0): the
-        // compositor's top-left/primary output is a better guess for where a
-        // new window will be placed than registry order. Fall back to the
-        // first output if no output reports position (0, 0).
-        //
-        // xdg_output geometry arrives asynchronously and x/y remain zero until
-        // it does, so wait for every monitor's logical geometry before trusting
-        // the reported positions (otherwise an as-yet-unpositioned output would
-        // spuriously match (0, 0)).
-        for (int i = 0; i < _glfw.monitorCount; i++) {
-            _GLFWmonitor *m = _glfw.monitors[i];
-            while (m->wl.xdg_output &&
-                   !(m->wl.xdg_size_received && m->wl.xdg_position_received)) {
-                if (wl_display_roundtrip(_glfw.wl.display) < 0) break;
-            }
-        }
-        for (int i = 0; i < _glfw.monitorCount; i++) {
-            _GLFWmonitor *m = _glfw.monitors[i];
-            if (m->wl.xdg_output && m->wl.xdg_size_received &&
-                m->wl.xdg_position_received &&
-                m->wl.x == 0 && m->wl.y == 0) { monitor = m; break; }
-        }
-        if (!monitor)
-            monitor = _glfw.monitors[0];
-    }
+    // Output geometry normally arrives with the first roundtrip.  Bound the
+    // acquisition to the same 300 ms window used for Wayland window creation.
+    const monotonic_t deadline = monotonic() + ms_to_monotonic_t(300ll);
 
-    if (!monitor->wl.xdg_output)
-        return monitor->wl.scale > 0 ? (double)monitor->wl.scale : 1.0;
-
-    // Block until the compositor has delivered xdg_output logical size and position.
-    while (!(monitor->wl.xdg_size_received && monitor->wl.xdg_position_received))
+    for (;;)
     {
-        if (wl_display_roundtrip(_glfw.wl.display) < 0) break;
+        // Use the focused or most recently focused window first.  For startup,
+        // wait for logical positions and prefer the output at (0, 0).
+        uint32_t name = findFocusedWaylandMonitorName();
+        if (!name)
+            name = findPrimaryWaylandMonitorName(deadline);
+        if (!name)
+            return 1.0;
+
+        _GLFWmonitor* monitor = findWaylandMonitor(name);
+        if (!monitor)
+            continue;
+
+        while (monitor->wl.xdg_output &&
+               !(monitor->wl.xdg_size_received && monitor->wl.xdg_position_received))
+        {
+            monotonic_t remaining = deadline - monotonic();
+            if (remaining <= 0)
+                break;
+
+            _glfwPlatformWaitEventsTimeout(remaining);
+
+            // Re-find by the registry's stable output name after dispatch.
+            // The callback may have disconnected and freed the old monitor.
+            monitor = findWaylandMonitor(name);
+            if (!monitor)
+                break;
+        }
+
+        if (!monitor)
+            continue;
+
+        if (!monitor->wl.xdg_output)
+            return monitor->wl.scale > 0 ? (double)monitor->wl.scale : 1.0;
+
+        if (monitor->wl.fractional_scale <= 0.0)
+            computeXdgFractionalScale(monitor);
+
+        return monitor->wl.fractional_scale > 0.0
+               ? monitor->wl.fractional_scale
+               : (monitor->wl.scale > 0 ? (double)monitor->wl.scale : 1.0);
     }
-
-    if (monitor->wl.fractional_scale <= 0.0)
-        computeXdgFractionalScale(monitor);
-
-    return monitor->wl.fractional_scale > 0.0
-           ? monitor->wl.fractional_scale
-           : (monitor->wl.scale > 0 ? (double)monitor->wl.scale : 1.0);
 }

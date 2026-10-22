@@ -130,3 +130,14 @@ func TestPathMappingSend(t *testing.T) {
 		ae(f.file_type, FileType_link)
 	})
 }
+
+func TestSendManagerInitializeRejectsUnencryptedBypass(t *testing.T) {
+	t.Setenv("KITTY_PUBLIC_KEY", "")
+	manager := SendManager{request_id: "request", bypass: "secret"}
+	if err := manager.initialize(); err == nil {
+		t.Fatal("initialize accepted a bypass password without an encryption key")
+	}
+	if manager.bypass != "secret" {
+		t.Fatalf("failed initialization changed the bypass password: %q", manager.bypass)
+	}
+}

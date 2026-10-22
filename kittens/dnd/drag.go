@@ -6,6 +6,7 @@ import (
 	"image"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,6 +52,13 @@ type drag_status struct {
 	dir_handle_counter     int
 	remote_item_write_id   loop.IdType
 	remote_data_requests   []int
+	deferred_finish        *drag_finish_event
+}
+
+// drag_finish_event is a successful terminal finish event that arrived before
+// the write-completion callback for the last queued URI terminator.
+type drag_finish_event struct {
+	canceled, operation int
 }
 
 func find_drag_image(drag_sources map[string]*drag_source) image.Image {
@@ -154,10 +162,20 @@ func (dnd *dnd) set_drag_image() (err error) {
 	return nil
 }
 
+func (dnd *dnd) reset_uri_transfer_tracking() {
+	if ds := dnd.drag_sources["text/uri-list"]; ds != nil {
+		for i := range ds.uri_list {
+			ds.uri_list[i].was_requested = false
+			ds.uri_list[i].transfer_completed = false
+		}
+	}
+}
+
 func (dnd *dnd) on_potential_drag_start(cell_x, cell_y int) (err error) {
 	if !dnd.allow_drags || dnd.drag_status.active {
 		return
 	}
+	dnd.reset_uri_transfer_tracking()
 	mimes := slices.Collect(maps.Keys(dnd.drag_sources))
 	actions := 3
 	if dnd.copy_button_region.has(cell_x, cell_y) {
@@ -214,42 +232,124 @@ func (dnd *dnd) reset_drag() {
 	dnd.drag_status = drag_status{}
 }
 
+// all_requested_uri_transfers_completed includes pending URI entries and the
+// write-completion callback for the last queued entry terminator.
+func (dnd *dnd) all_requested_uri_transfers_completed() bool {
+	if dnd.drag_status.remote_item_write_id != 0 || len(dnd.drag_status.remote_data_requests) > 0 ||
+		len(dnd.drag_status.remote_items) > 0 || dnd.drag_status.current_remote_file != nil {
+		return false
+	}
+	if ds := dnd.drag_sources["text/uri-list"]; ds != nil {
+		for _, item := range ds.uri_list {
+			if item.was_requested && !item.transfer_completed {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// only_final_write_pending reports whether every requested URI byte has been
+// queued and the only thing outstanding is the write-completion callback of the
+// last terminator, which marks the final requested transfer complete.
+func (dnd *dnd) only_final_write_pending() bool {
+	ds := &dnd.drag_status
+	return ds.remote_item_write_id != 0 && ds.current_remote_file == nil &&
+		len(ds.remote_items) == 0 && len(ds.remote_data_requests) == 1
+}
+
+// on_drag_finished handles the cancellation marker and final operation from
+// the terminal's completion event; accepted_operation remains status only.
+func (dnd *dnd) on_drag_finished(canceled, operation int) (err error) {
+	operation = reported_operation(operation)
+	was_dropped := dnd.drag_status.dropped
+	operation_succeeded := operation == copy_on_drop || operation == move_on_drop
+	if was_dropped && canceled == 0 && operation_succeeded && dnd.only_final_write_pending() {
+		// The tty reader and the writer's write-done are separate channels, so a
+		// finish can be handled just before the callback for a write that has
+		// already reached the terminal. Decide when that callback arrives.
+		dnd.drag_status.deferred_finish = &drag_finish_event{canceled: canceled, operation: operation}
+		return nil
+	}
+	// A held finish returns above: retain its marks until the final write callback.
+	defer dnd.reset_uri_transfer_tracking()
+	transfers_completed := dnd.all_requested_uri_transfers_completed()
+	success := was_dropped && canceled == 0 && operation_succeeded && transfers_completed
+	was_move := success && operation == move_on_drop && dnd.drag_status.accepted_operation == move_on_drop
+	dnd.reset_drag()
+	if success && dnd.has_exit_on("drag-finish") {
+		dnd.lp.Quit(0)
+	}
+	if was_move {
+		if ds := dnd.drag_sources["text/uri-list"]; ds != nil {
+			for _, item := range ds.uri_list {
+				if item.was_requested && item.transfer_completed {
+					if item.metadata.IsDir() {
+						err = os.RemoveAll(item.path)
+					} else {
+						err = os.Remove(item.path)
+					}
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+		dnd.drag_sources = nil
+		dnd.allow_drags = false
+		dnd.lp.StopOfferingDrags()
+		if !dnd.allow_drops {
+			dnd.lp.Quit(0)
+		}
+	}
+	return nil
+}
+
+// operation_not_reported is passed to on_drag_event when the terminal's
+// message had no "o" key at all. It is not the same as o=0, which is an
+// explicit report that there was no successful action. It is deliberately not
+// -1: a terminal can send o=-1, and no value the wire can carry may be read as
+// "unreported" (see drag_event_operation).
+const operation_not_reported = math.MinInt
+
+// drag_event_operation is the operation of a t=e message as on_drag_event takes
+// it. Only a message with no "o" key at all is unreported. A reported value is
+// 0 (refusal), 1 (copy) or 2 (move); anything else a terminal could send, such as
+// -1, 3, 99, the most negative int or a number too large to parse, is a bogus
+// report and is read as a refusal. The result never equals
+// operation_not_reported for a message that had an "o" key, or a bogus explicit
+// report would take the legacy fallback and could delete sources.
+func drag_event_operation(cmd loop.DndCommand) int {
+	if !cmd.Has_operation {
+		return operation_not_reported
+	}
+	return reported_operation(cmd.Operation)
+}
+
+func reported_operation(operation int) int {
+	if operation < 0 || operation > 2 {
+		return 0
+	}
+	return operation
+}
+
 func (dnd *dnd) on_drag_event(x, y, operation int) (err error) {
 	switch x {
 	case 1:
 		dnd.drag_status.accepted_mime = y
 	case 2:
-		dnd.drag_status.accepted_operation = operation
+		dnd.drag_status.accepted_operation = reported_operation(operation)
 	case 3:
 		dnd.drag_status.dropped = true
 	case 4:
-		was_dropped := dnd.drag_status.dropped
-		was_move := dnd.drag_status.accepted_operation == 2
-		dnd.reset_drag()
-		if was_dropped && dnd.has_exit_on("drag-finish") {
-			dnd.lp.Quit(0)
+		// Only absent o may inherit the last accepted operation. Explicit invalid o is refusal.
+		if operation == operation_not_reported {
+			operation = dnd.drag_status.accepted_operation
+		} else {
+			operation = reported_operation(operation)
 		}
-		if was_dropped && was_move {
-			if ds := dnd.drag_sources["text/uri-list"]; ds != nil {
-				for _, item := range ds.uri_list {
-					if item.was_sent {
-						if item.metadata.IsDir() {
-							err = os.RemoveAll(item.path)
-						} else {
-							err = os.Remove(item.path)
-						}
-						if err != nil {
-							return err
-						}
-					}
-				}
-			}
-			dnd.drag_sources = nil
-			dnd.allow_drags = false
-			dnd.lp.StopOfferingDrags()
-			if !dnd.allow_drops {
-				dnd.lp.Quit(0)
-			}
+		if err = dnd.on_drag_finished(y, operation); err != nil {
+			return err
 		}
 	case 5:
 		if err = dnd.handle_data_request(y); err != nil {
@@ -260,6 +360,7 @@ func (dnd *dnd) on_drag_event(x, y, operation int) (err error) {
 }
 
 func (dnd *dnd) finish_drag(errname string) {
+	dnd.reset_uri_transfer_tracking()
 	if errname == "" { // cancel drag
 		dnd.lp.QueueDnDData(DC{Type: 'E', Y: -1})
 	} else {
@@ -334,8 +435,23 @@ func (dnd *dnd) on_send_done(id loop.IdType) (err error) {
 	if id == dnd.drag_status.remote_item_write_id {
 		dnd.drag_status.remote_item_write_id = 0
 		err = dnd.send_next_file_chunk()
+		if err == nil {
+			err = dnd.resolve_deferred_finish()
+		}
 	}
 	return
+}
+
+// resolve_deferred_finish decides a finish event held by on_drag_finished now
+// that the write it was waiting for has completed.
+func (dnd *dnd) resolve_deferred_finish() error {
+	event := dnd.drag_status.deferred_finish
+	if event == nil {
+		return nil
+	}
+	// on_drag_finished either resets the drag status, which drops the held event,
+	// or holds a new one.
+	return dnd.on_drag_finished(event.canceled, event.operation)
 }
 
 func (dnd *dnd) on_data_request_finished(i int) (err error) {
@@ -447,6 +563,12 @@ func (dnd *dnd) send_next_file_chunk() (err error) {
 func (dnd *dnd) next_remote_item() (err error) {
 	if len(dnd.drag_status.remote_items) < 1 {
 		// current remote data request finished
+		if len(dnd.drag_status.remote_data_requests) > 0 {
+			i := dnd.drag_status.remote_data_requests[0]
+			if ds := dnd.drag_sources["text/uri-list"]; ds != nil && i >= 0 && i < len(ds.uri_list) && ds.uri_list[i].was_requested {
+				ds.uri_list[i].transfer_completed = true
+			}
+		}
 		dnd.drag_status.remote_data_requests = dnd.drag_status.remote_data_requests[1:]
 		if len(dnd.drag_status.remote_data_requests) > 0 {
 			return dnd.send_next_remote_data_request()
@@ -491,7 +613,8 @@ func (dnd *dnd) on_drag_remote_data_request(idx int) (err error) {
 		dnd.finish_drag("EINVAL")
 		return fmt.Errorf("terminal asked for drag data from URI list with out of bounds index: %d", idx)
 	}
-	ds.uri_list[idx].was_sent = true
+	ds.uri_list[idx].was_requested = true
+	ds.uri_list[idx].transfer_completed = false
 	dnd.drag_status.remote_data_requests = append(dnd.drag_status.remote_data_requests, idx)
 	if len(dnd.drag_status.remote_data_requests) == 1 {
 		err = dnd.send_next_remote_data_request()

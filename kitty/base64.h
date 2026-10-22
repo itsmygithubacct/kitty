@@ -29,10 +29,12 @@ base64_decode_stream(base64_state *state, const uint8_t *src, size_t src_sz, uin
 static inline bool
 base64_decode8(const uint8_t *src, size_t src_sz, uint8_t *dest, size_t *dest_sz) {
     if (*dest_sz < required_buffer_size_for_base64_decode(src_sz)) return false;
-    // we ignore the return value of base64_decode as it returns non-zero when it is
-    // waiting for padding bytes
-    base64_decode((const char*)src, src_sz, (char*)dest, dest_sz, 0);
-    return true;
+    base64_state state;
+    base64_init_stream_decoder(&state);
+    if (base64_stream_decode(&state, (const char*)src, src_sz, (char*)dest, dest_sz) != 1) return false;
+    // A one-shot decode may end with two or three unpadded symbols, but not a
+    // single symbol or padding that still needs another '='.
+    return state.bytes == 0 || (state.eof == 0 && (state.bytes == 2 || state.bytes == 3));
 }
 
 static inline bool

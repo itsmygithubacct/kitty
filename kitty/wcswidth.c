@@ -91,6 +91,10 @@ wcswidth_step(WCSState *state, const char_type ch) {
                 case '|':
                 case '}':
                 case '~':
+                    state->parser_state = NORMAL;
+                    state->prev_width = 0;
+                    state->can_combine = false;
+                    grapheme_segmentation_reset(&state->seg);
                     break;
                 default:
                     zero_at_ptr(state);

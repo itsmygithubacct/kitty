@@ -65,18 +65,24 @@ func (self RGBA) AsRGBSharp() string {
 func (self *RGBA) parse_rgb_strings(r string, g string, b string) bool {
 	var rv, gv, bv uint64
 	var err error
-	if len(r) == 1 {
+	width := len(r)
+	if width < 1 || width > 4 || len(g) != width || len(b) != width {
+		return false
+	}
+	if width == 1 {
 		r += r
 		g += g
 		b += b
+		width = 2
 	}
-	if rv, err = strconv.ParseUint(r[:min(len(r), 2)], 16, 8); err != nil {
+	width = min(width, 2)
+	if rv, err = strconv.ParseUint(r[:width], 16, 8); err != nil {
 		return false
 	}
-	if gv, err = strconv.ParseUint(g[:min(len(r), 2)], 16, 8); err != nil {
+	if gv, err = strconv.ParseUint(g[:width], 16, 8); err != nil {
 		return false
 	}
-	if bv, err = strconv.ParseUint(b[:min(len(r), 2)], 16, 8); err != nil {
+	if bv, err = strconv.ParseUint(b[:width], 16, 8); err != nil {
 		return false
 	}
 	self.Red, self.Green, self.Blue = uint8(rv), uint8(gv), uint8(bv)
@@ -163,6 +169,13 @@ func parse_rgb(color string) (ans RGBA, err error) {
 	colors := strings.Split(color, "/")
 	if len(colors) != 3 {
 		return RGBA{}, fmt.Errorf("length not a multiple of 3")
+	}
+	width := len(colors[0])
+	if width < 1 || width > 4 {
+		return RGBA{}, fmt.Errorf("unsupported rgb component width %d (expected 1 to 4)", width)
+	}
+	if len(colors[1]) != width || len(colors[2]) != width {
+		return RGBA{}, fmt.Errorf("rgb components must have equal widths")
 	}
 	if ans.parse_rgb_strings(colors[0], colors[1], colors[2]) {
 		return

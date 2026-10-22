@@ -149,7 +149,7 @@ ColorPair resolve_extra_cursor_colors(vec3 cell_bg, vec3 cell_fg, ColorPair main
         resolve_dynamic_color(extra_cursor_fg, cell_bg, main_cursor.fg)
     );
     ColorPair special = resolve_extra_cursor_colors_for_special_cursor(cell_bg, cell_fg);
-    return if_one_then_pair(zero_or_one(abs(float(extra_cursor_bg & BYTE_MASK) - COLOR_IS_SPECIAL)), ans, special);
+    return if_one_then_pair(zero_or_one(abs(float((extra_cursor_bg >> 24) & BYTE_MASK) - COLOR_IS_SPECIAL)), ans, special);
 }
 
 uvec3 to_sprite_coords(uint idx) {

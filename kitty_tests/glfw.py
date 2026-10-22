@@ -145,3 +145,23 @@ class TestGLFW(BaseTest):
         test('∮ E⋅da = Q,  n → ∞, 𐍈∑ f(i) = ∏ g(i)')
         self.ae(utf_8_strndup(b'\xf0\x9f\x98\xb8', 3).value, b'')
         self.ae(utf_8_strndup(b'\xc3\xb6\xf0\x9f\x98\xb8', 4).value, b'\xc3\xb6')
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'X11 selection property validation')
+    def test_x11_multiple_property_shape(self):
+        root = Path(__file__).resolve().parents[1]
+        compiler = shlex.split(os.environ.get('CC', 'cc'))
+        if not compiler or not shutil.which(compiler[0]):
+            self.skipTest('C compiler is unavailable')
+        flags = subprocess.run(['pkg-config', '--cflags', 'x11'], capture_output=True, text=True, timeout=30)
+        if flags.returncode != 0:
+            self.skipTest('X11 headers are unavailable')
+        with tempfile.TemporaryDirectory() as directory:
+            executable = str(Path(directory) / 'x11-selection-shape-test')
+            build = subprocess.run(
+                [*compiler, '-D_GNU_SOURCE', '-UNDEBUG', *shlex.split(flags.stdout),
+                 str(root / 'kitty_tests/x11_selection_shape.c'), '-o', executable],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.ae(build.returncode, 0, build.stderr)
+            result = subprocess.run([executable], capture_output=True, text=True, timeout=10)
+            self.ae(result.returncode, 0, result.stderr)

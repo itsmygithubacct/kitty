@@ -3,9 +3,89 @@ package command_palette
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kovidgoyal/kitty/tools/utils"
 )
+
+func useCommandPaletteCacheTestDir(t *testing.T) string {
+	t.Helper()
+	cacheDir := t.TempDir()
+	previous := utils.CacheDir
+	utils.CacheDir = func() string { return cacheDir }
+	t.Cleanup(func() { utils.CacheDir = previous })
+	return cacheDir
+}
+
+func TestLoadCachedSettings(t *testing.T) {
+	t.Run("missing file keeps default", func(t *testing.T) {
+		useCommandPaletteCacheTestDir(t)
+		cv, err := loadCachedSettings()
+		if err != nil {
+			t.Fatalf("load missing cache: %v", err)
+		}
+		if !cv.Opts.ShowUnmapped {
+			t.Fatal("missing cache changed the ShowUnmapped default")
+		}
+	})
+
+	t.Run("valid cache is applied", func(t *testing.T) {
+		cacheDir := useCommandPaletteCacheTestDir(t)
+		cachePath := filepath.Join(cacheDir, "command-palette.json")
+		if err := os.WriteFile(cachePath, []byte(`{"show_unmapped":false}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cv, err := loadCachedSettings()
+		if err != nil {
+			t.Fatalf("load valid cache: %v", err)
+		}
+		if cv.Opts.ShowUnmapped {
+			t.Fatal("valid cache value was not applied")
+		}
+	})
+
+	for name, badBytes := range map[string][]byte{
+		"malformed": []byte(`{"show_unmapped":`),
+		"null":      []byte("null\n"),
+	} {
+		t.Run(name+" cache is preserved", func(t *testing.T) {
+			cacheDir := useCommandPaletteCacheTestDir(t)
+			cachePath := filepath.Join(cacheDir, "command-palette.json")
+			if err := os.WriteFile(cachePath, badBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cv, err := loadCachedSettings()
+			if err == nil || cv != nil {
+				t.Fatalf("load invalid cache returned cv=%v, error=%v; want nil cache and an error", cv, err)
+			}
+			got, readErr := os.ReadFile(cachePath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(got) != string(badBytes) {
+				t.Fatalf("invalid cache bytes changed: got %q, want %q", got, badBytes)
+			}
+		})
+	}
+
+	t.Run("read error is returned", func(t *testing.T) {
+		cacheDir := useCommandPaletteCacheTestDir(t)
+		cachePath := filepath.Join(cacheDir, "command-palette.json")
+		if err := os.Mkdir(cachePath, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		cv, err := loadCachedSettings()
+		if err == nil || cv != nil {
+			t.Fatalf("load unreadable cache returned cv=%v, error=%v; want nil cache and an error", cv, err)
+		}
+		if info, statErr := os.Stat(cachePath); statErr != nil || !info.IsDir() {
+			t.Fatalf("read-error cache path changed: info=%v, error=%v", info, statErr)
+		}
+	})
+}
 
 // testBinding creates a Binding where Action, ActionDisplay, and Definition all
 // equal action. Covers 90% of test bindings.

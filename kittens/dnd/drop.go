@@ -885,11 +885,20 @@ func (dnd *dnd) on_drop_data(cmd DC) error {
 		return dnd.on_remote_drop_data(cmd)
 	}
 	idx := cmd.X - 1
-	if idx < 0 || idx > len(drop_status.offered_mimes) {
-		return fmt.Errorf("terminal sent drop data for an index (%d) outside the list of accepted MIMEs (length: %d)", idx, len(drop_status.offered_mimes))
+	if idx < 0 || idx >= len(drop_status.offered_mimes) {
+		return fmt.Errorf("terminal sent drop data for an index (%d) outside the offered MIMEs list (length: %d)", idx, len(drop_status.offered_mimes))
 	}
 	mime := drop_status.offered_mimes[idx]
+	if !drop_status.reading_data || !slices.Contains(drop_status.accepted_mimes, mime) {
+		return fmt.Errorf("terminal sent drop data for MIME %q without an active accepted drop", mime)
+	}
 	dest := dnd.drop_dests[mime]
+	if dest == nil {
+		return fmt.Errorf("terminal sent drop data for MIME %q with no accepted destination", mime)
+	}
+	if dest.completed {
+		return fmt.Errorf("terminal sent additional drop data for completed MIME %q", mime)
+	}
 	if cmd.Xp == 1 && mime == "text/uri-list" {
 		drop_status.is_remote_client = true
 	}

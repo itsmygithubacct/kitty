@@ -105,6 +105,7 @@ type Scanner interface {
 	Start()
 	Cancel()
 	AddListener(chan bool)
+	RemoveListener(chan bool)
 	Len() int
 	Batch(offset *CollectionIndex) []ResultItem
 	Finished() bool
@@ -135,6 +136,20 @@ func (fss *FileSystemScanner) AddListener(x chan bool) {
 		close(x)
 	} else {
 		fss.listeners = append(fss.listeners, x)
+	}
+}
+
+func (fss *FileSystemScanner) RemoveListener(x chan bool) {
+	fss.lock()
+	defer fss.unlock()
+	for i, listener := range fss.listeners {
+		if listener == x {
+			// Scanner completion closes the remaining listeners; removal does not.
+			copy(fss.listeners[i:], fss.listeners[i+1:])
+			fss.listeners[len(fss.listeners)-1] = nil
+			fss.listeners = fss.listeners[:len(fss.listeners)-1]
+			return
+		}
 	}
 }
 
@@ -222,9 +237,12 @@ func (fss *FileSystemScanner) worker() {
 			qerr := parallel.Format_stacktrace_on_panic(r, 1)
 			fss.err = qerr
 		}
+		// Serialize notification with registration, removal, and final close.
+		// The sends are nonblocking, so consumers can wait for Batch safely.
 		for _, l := range fss.listeners {
 			close(l)
 		}
+		fss.listeners = nil
 	}()
 	root_dir, _ := filepath.Abs(fss.root_dir)
 	if !strings.HasSuffix(root_dir, string(os.PathSeparator)) {
@@ -382,14 +400,13 @@ func (fss *FileSystemScanner) worker() {
 			i.ignore_files = ignore_files
 			idx++
 		}
-		listeners := fss.listeners
-		fss.unlock()
-		for _, l := range listeners {
+		for _, l := range fss.listeners {
 			select {
 			case l <- true:
 			default:
 			}
 		}
+		fss.unlock()
 		ignore_files = nil
 		if relpath, ignf := fss.collection.NextDir(pos); relpath != "" {
 			base = relpath + string(os.PathSeparator)
@@ -417,6 +434,7 @@ type FileSystemScorer struct {
 	sorted_results                  *SortedResults
 	on_results                      func(error, bool)
 	current_worker_wait             *sync.WaitGroup
+	current_worker_cancel           chan struct{}
 	scorer                          *fzf.FuzzyMatcher
 	dir_reader                      func(path string) ([]fs.DirEntry, error)
 	file_reader                     func(path string) ([]byte, error)
@@ -437,6 +455,7 @@ func (fss *FileSystemScorer) unlock() { fss.mutex.Unlock() }
 
 func (fss *FileSystemScorer) Start() {
 	on_results := make(chan bool)
+	worker_cancel := make(chan struct{})
 	fss.is_complete.Store(false)
 	fss.keep_going.Store(true)
 	if fss.scanner == nil {
@@ -462,9 +481,18 @@ func (fss *FileSystemScorer) Start() {
 	} else {
 		fss.scanner.AddListener(on_results)
 	}
+	scanner := fss.scanner
 	fss.current_worker_wait = &sync.WaitGroup{}
 	fss.current_worker_wait.Add(1)
-	go fss.worker(on_results, fss.current_worker_wait)
+	fss.current_worker_cancel = worker_cancel
+	go fss.worker(scanner, on_results, worker_cancel, fss.current_worker_wait)
+}
+
+func (fss *FileSystemScorer) stop_current_worker() {
+	if fss.current_worker_cancel != nil {
+		close(fss.current_worker_cancel)
+		fss.current_worker_cancel = nil
+	}
 }
 
 func (fss *FileSystemScorer) Change_query(query string) {
@@ -473,9 +501,7 @@ func (fss *FileSystemScorer) Change_query(query string) {
 	}
 	fss.keep_going.Store(false)
 	if fss.current_worker_wait != nil {
-		if fss.scanner != nil {
-			fss.scanner.Cancel()
-		}
+		fss.stop_current_worker()
 		fss.current_worker_wait.Wait()
 	}
 	fss.lock()
@@ -488,6 +514,7 @@ func (fss *FileSystemScorer) Change_query(query string) {
 func (fss *FileSystemScorer) change_scanner_setting(callback func()) {
 	fss.keep_going.Store(false)
 	if fss.current_worker_wait != nil {
+		fss.stop_current_worker()
 		if fss.scanner != nil {
 			fss.scanner.Cancel()
 		}
@@ -526,8 +553,9 @@ func (fss *FileSystemScorer) Change_sort_by_last_modified(val bool) {
 	}
 }
 
-func (fss *FileSystemScorer) worker(on_results chan bool, worker_wait *sync.WaitGroup) {
+func (fss *FileSystemScorer) worker(scanner Scanner, on_results chan bool, worker_cancel <-chan struct{}, worker_wait *sync.WaitGroup) {
 	defer func() {
+		scanner.RemoveListener(on_results)
 		fss.is_complete.Store(true)
 		defer worker_wait.Done()
 		if r := recover(); r != nil {
@@ -537,12 +565,12 @@ func (fss *FileSystemScorer) worker(on_results chan bool, worker_wait *sync.Wait
 			}
 		} else {
 			if fss.keep_going.Load() {
-				fss.on_results(fss.scanner.Error(), true)
+				fss.on_results(scanner.Error(), true)
 			}
 		}
 	}()
 	handle_batch := func(results []ResultItem) (err error) {
-		if err = fss.scanner.Error(); err != nil {
+		if err = scanner.Error(); err != nil {
 			return
 		}
 		var rp []*ResultItem
@@ -594,17 +622,27 @@ func (fss *FileSystemScorer) worker(on_results chan bool, worker_wait *sync.Wait
 	}
 
 	offset := &CollectionIndex{}
-	for range on_results {
-		if !fss.keep_going.Load() {
-			break
+
+wait_for_scanner:
+	for {
+		select {
+		case <-worker_cancel:
+			return
+		case _, ok := <-on_results:
+			if !ok {
+				break wait_for_scanner
+			}
 		}
-		results := fss.scanner.Batch(offset)
-		if len(results) > 0 || fss.scanner.Error() != nil {
+		if !fss.keep_going.Load() {
+			return
+		}
+		results := scanner.Batch(offset)
+		if len(results) > 0 || scanner.Error() != nil {
 			fss.on_results(handle_batch(results), false)
 		}
 	}
 	for fss.keep_going.Load() {
-		b := fss.scanner.Batch(offset)
+		b := scanner.Batch(offset)
 		if len(b) == 0 {
 			break
 		}
@@ -620,7 +658,10 @@ func (fss *FileSystemScorer) Results() (ans *SortedResults, is_finished bool) {
 
 func (fss *FileSystemScorer) Cancel() {
 	fss.keep_going.Store(false)
-	fss.scanner.Cancel()
+	fss.stop_current_worker()
+	if fss.scanner != nil {
+		fss.scanner.Cancel()
+	}
 }
 
 type Settings interface {

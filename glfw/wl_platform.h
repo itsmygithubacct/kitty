@@ -460,10 +460,13 @@ typedef struct _GLFWlibraryWayland
             const char *mime_type;
             int fd;
             GLFWid watch_id;
+            uint64_t generation;
+            bool polling;
             char *pending_data;
             size_t sz, offset;
         } *data_requests;
         size_t count, capacity;
+        uint64_t request_generation;
         GLFWDragOperationType action;
     } drag;
 } _GLFWlibraryWayland;

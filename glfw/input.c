@@ -412,7 +412,8 @@ void _glfwInputCursorEnter(_GLFWwindow* window, bool entered)
 // callback can sort/filter in-place without touching the backend's canonical
 // storage.  The return value is ev.num_mimes after the callback returns,
 // i.e. the number of accepted (possibly reordered) mimes starting at
-// mimes[0].
+// mimes[0].  _GLFW_DROP_SUPERSEDED means a newer callback owns the result;
+// callers must leave its acceptance and working MIME list intact.
 size_t _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double xpos, double ypos, const char** mimes, size_t num_mimes, bool from_self) {
     if (!window->callbacks.drop_event) return 0;
     if (num_mimes > 1) {
@@ -448,7 +449,11 @@ size_t _glfwInputDropEvent(_GLFWwindow *window, GLFWDropEventType type, double x
         .operation.allowed = window->drop_operation.allowed, .operation.preferred = window->drop_operation.preferred,
         .operation.source_actions = window->drop_operation.source_actions,
     };
+    GLFWid window_id = window->id;
+    uint64_t generation = ++window->drop_callback_generation;
     window->callbacks.drop_event((GLFWwindow*)window, &ev);
+    window = _glfwWindowForId(window_id);
+    if (!window || window->drop_callback_generation != generation) return _GLFW_DROP_SUPERSEDED;
     window->drop_operation.preferred = ev.operation.preferred; window->drop_operation.allowed = ev.operation.allowed;
     return ev.num_mimes;
 }
@@ -1191,17 +1196,28 @@ GLFWAPI GLFWdragsourcefun glfwSetDragSourceCallback(GLFWwindow* handle, GLFWdrag
     return cbfun;
 }
 
+static void
+free_drag_items(GLFWDragSourceItem *items, size_t count) {
+    if (!items) return;
+    for (size_t i = 0; i < count; i++) {
+        free((void*)items[i].mime_type);
+        free((void*)items[i].optional_data);
+    }
+    free(items);
+}
+
+bool
+_glfwDragSourceCurrent(GLFWid instance, GLFWid window_id) {
+    return _glfw.drag.instance_id == instance && _glfw.drag.window_id == window_id;
+}
+
 void
 _glfwFreeDragSourceData(void) {
     GLFWid drag_window_id = _glfw.drag.window_id;
+    GLFWid instance = _glfw.drag.instance_id;
     _glfwPlatformFreeDragSourceData();
-    if (_glfw.drag.items) {
-        for (size_t i = 0; i < _glfw.drag.item_count; i++) {
-            free((void*)_glfw.drag.items[i].mime_type);
-            free((void*)_glfw.drag.items[i].optional_data);
-        }
-        free(_glfw.drag.items);
-    }
+    if (!_glfwDragSourceCurrent(instance, drag_window_id)) return;
+    free_drag_items(_glfw.drag.items, _glfw.drag.item_count);
     GLFWid iid = _glfw.drag.instance_id;
     memset(&_glfw.drag, 0, sizeof(_glfw.drag));
     _glfw.drag.instance_id = iid;
@@ -1224,30 +1240,38 @@ glfwStartDrag(GLFWwindow* handle, const GLFWDragSourceItem *items, size_t item_c
     if (operations == -1) return _glfwPlatformDragDataReady(items[0].mime_type, items[0].optional_data, items[0].data_size, items[0].type);
     if (operations == -2) return _glfwPlatformChangeDragImage(thumbnail);
     if (operations == -3) { _glfwPlatformCancelDrag(window); return 0; }
-    _glfwFreeDragSourceData();
-    _glfw.drag.instance_id++;
-    if (!items || !item_count) return 0;
-    _glfw.drag.items = calloc(item_count, sizeof(_glfw.drag.items[0]));
-    if (!_glfw.drag.items) return ENOMEM;
-    _glfw.drag.item_count = item_count;
-    for (size_t i = 0; i < item_count; i++) {
-        if (!items[i].mime_type || !items[i].mime_type[0]) {
-            _glfwFreeDragSourceData(); return EINVAL;
+    // The old drag's release/mouse callbacks can destroy the pane that owns
+    // the caller's MIME/data pointers. Snapshot them before invoking cleanup.
+    GLFWDragSourceItem *retained = NULL;
+    if (items && item_count) {
+        retained = calloc(item_count, sizeof(*retained));
+        if (!retained) return ENOMEM;
+        for (size_t i = 0; i < item_count; i++) {
+            if (!items[i].mime_type || !items[i].mime_type[0]) { free_drag_items(retained, item_count); return EINVAL; }
+            retained[i] = items[i];
+            retained[i].mime_type = NULL; retained[i].optional_data = NULL;
+            retained[i].mime_type = _glfw_strdup(items[i].mime_type);
+            if (!retained[i].mime_type) { free_drag_items(retained, item_count); return ENOMEM; }
+            if (items[i].optional_data) {
+                retained[i].optional_data = malloc(items[i].data_size ? items[i].data_size : 1);
+                if (!retained[i].optional_data) { free_drag_items(retained, item_count); return ENOMEM; }
+                memcpy((void*)retained[i].optional_data, items[i].optional_data, items[i].data_size);
+            }
         }
-        _glfw.drag.items[i].mime_type = _glfw_strdup(items[i].mime_type);
-        if (!_glfw.drag.items[i].mime_type) { _glfwFreeDragSourceData(); return ENOMEM; }
-        if (items[i].optional_data) {
-            _glfw.drag.items[i].optional_data = malloc(items[i].data_size);
-            if (!_glfw.drag.items[i].optional_data) { _glfwFreeDragSourceData(); return ENOMEM; }
-            memcpy((void*)_glfw.drag.items[i].optional_data, items[i].optional_data, items[i].data_size);
-        }
-        _glfw.drag.items[i].data_size = items[i].data_size;
-        _glfw.drag.items[i].is_remote_client = items[i].is_remote_client;
     }
+    GLFWid instance = _glfw.drag.instance_id, window_id = window->id;
+    _glfwFreeDragSourceData();
+    window = _glfwWindowForId(window_id);
+    if (_glfw.drag.instance_id != instance || !window) { free_drag_items(retained, item_count); return ECANCELED; }
+    _glfw.drag.instance_id++;
+    if (!retained) return 0;
+    _glfw.drag.items = retained;
+    _glfw.drag.item_count = item_count;
     _glfw.drag.window_id = window->id;
     _glfw.drag.operations = operations;
     _glfw.drag.needs_toplevel_on_wayland = needs_toplevel_on_wayland;
     int ans = _glfwPlatformStartDrag(window, thumbnail);
+    if (_glfw.drag.instance_id != instance + 1) return ECANCELED;
     if (ans != 0) _glfwFreeDragSourceData();
     return ans;
 }

@@ -274,6 +274,21 @@ static void matchCallback(void* context UNUSED,
                             (int) CFArrayGetCount(axes),
                             (int) CFArrayGetCount(buttons),
                             (int) CFArrayGetCount(hats));
+    if (!js)
+    {
+        for (i = 0;  i < CFArrayGetCount(axes);  i++)
+            free((void*) CFArrayGetValueAtIndex(axes, i));
+        CFRelease(axes);
+
+        for (i = 0;  i < CFArrayGetCount(buttons);  i++)
+            free((void*) CFArrayGetValueAtIndex(buttons, i));
+        CFRelease(buttons);
+
+        for (i = 0;  i < CFArrayGetCount(hats);  i++)
+            free((void*) CFArrayGetValueAtIndex(hats, i));
+        CFRelease(hats);
+        return;
+    }
 
     js->ns.device  = device;
     js->ns.axes    = axes;

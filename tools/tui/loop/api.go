@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -48,6 +49,10 @@ type DndCommand struct {
 	Operation    int
 	X, Y, Xp, Yp int
 	Payload      []byte
+
+	// Has_operation records that an "o" key was present, so that an absent
+	// operation can be told apart from an explicit o=0.
+	Has_operation bool
 }
 
 type Loop struct {
@@ -375,28 +380,51 @@ func (self *Loop) DebugPrintln(args ...any) {
 	}
 }
 
-func (self *Loop) Run() (err error) {
+type panic_recovery_terminal interface {
+	RestoreAndClose() error
+	DebugPrintln(...any)
+	Read([]byte) (int, error)
+}
+
+func run_with_panic_recovery(
+	run func() error,
+	is_terminal func() bool,
+	stderr, stdout io.Writer,
+	open_term func() (panic_recovery_terminal, error),
+) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = parallel.Format_stacktrace_on_panic(r, 1)
-			is_terminal := tty.IsTerminal(os.Stderr.Fd())
-			if is_terminal {
-				os.Stderr.WriteString("\x1b]\x1b\\\x1bc\x1b[H\x1b[2J") // reset terminal
+			recovered_err := parallel.Format_stacktrace_on_panic(r, 1)
+			err = recovered_err
+			terminal := is_terminal()
+			if terminal {
+				_, _ = io.WriteString(stderr, "\x1b]\x1b\\\x1bc\x1b[H\x1b[2J") // reset terminal
 			}
-			os.Stderr.WriteString(err.Error())
-			os.Stderr.WriteString("\n")
-			if is_terminal {
-				if term, err := tty.OpenControllingTerm(tty.SetRaw); err != nil {
-					defer term.RestoreAndClose()
-					term.DebugPrintln(err.Error())
-					fmt.Println("Press any key to exit.\r")
-					buf := make([]byte, 16)
-					_, _ = term.Read(buf)
-				}
+			_, _ = io.WriteString(stderr, recovered_err.Error()+"\n")
+			if !terminal {
+				return
 			}
+			term, open_err := open_term()
+			if open_err != nil || term == nil {
+				return
+			}
+			defer term.RestoreAndClose()
+			term.DebugPrintln(recovered_err.Error())
+			_, _ = fmt.Fprintln(stdout, "Press any key to exit.\r")
+			_, _ = term.Read(make([]byte, 16))
 		}
 	}()
-	return self.run()
+	return run()
+}
+
+func (self *Loop) Run() error {
+	return run_with_panic_recovery(
+		self.run,
+		func() bool { return tty.IsTerminal(os.Stderr.Fd()) },
+		os.Stderr,
+		os.Stdout,
+		func() (panic_recovery_terminal, error) { return tty.OpenControllingTerm(tty.SetRaw) },
+	)
 }
 
 func (self *Loop) WakeupMainThread() bool {

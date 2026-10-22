@@ -1222,6 +1222,26 @@ class TestScreen(BaseTest):
         self.ae('2', s.hyperlink_at(1, 3))
         self.ae(s.current_url_text(), 'Z Z')
 
+    def test_active_hyperlink_survives_collection(self):
+        s = self.create_screen()
+
+        def set_link(url=None, id=None):
+            parse_bytes(s, '\x1b]8;id={};{}\x1b\\'.format(id or '', url or '').encode('utf-8'))
+
+        set_link('drawn-url')
+        s.draw('A')
+        set_link('active-url')
+        s.garbage_collect_hyperlink_pool()
+        s.draw('B')
+        self.ae(s.hyperlink_at(0, 0), 'drawn-url')
+        self.ae(s.hyperlink_at(1, 0), 'active-url')
+
+        s = self.create_screen()
+        for i in range(8193):
+            set_link(f'periodic-{i}')
+        s.draw('P')
+        self.ae(s.hyperlink_at(0, 0), 'periodic-8192')
+
     def test_text_cache_garbage_collection(self):
         # unique multi-codepoint cell texts, single width base + combining mark
         def unique_text(i):
@@ -1813,6 +1833,22 @@ class TestScreen(BaseTest):
         self.assertTrue(s.color_profile.palette_color_is_generated(213))
         self.assertFalse(s.color_profile.palette_color_is_generated(114))
         q({'213': '?'}, {'213': Color(216, 125, 215)})
+
+    def test_mark_color_patches_keep_their_named_slots(self):
+        from kitty.fast_data_types import patch_color_profiles
+        profile = ColorProfile(self.set_options())
+        colors = {
+            'mark1_background': 0x102030,
+            'mark2_background': 0x405060,
+            'mark3_background': 0x708090,
+            'mark1_foreground': 0x91a2b3,
+            'mark2_foreground': 0xc4d5e6,
+            'mark3_foreground': 0xf1e2d3,
+        }
+        patch_color_profiles(colors, (), (profile,), False)
+        current = profile.as_dict()
+        for name, value in colors.items():
+            self.ae(current[name], value)
 
 
     def test_multi_cursors(self):

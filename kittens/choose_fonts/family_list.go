@@ -38,7 +38,7 @@ func (self *FamilyList) Next(delta int, allow_wrapping bool) bool {
 		return false
 	}
 	idx := self.current_idx + delta
-	if !allow_wrapping && (idx < 0 || idx > l()) {
+	if !allow_wrapping && (idx < 0 || idx >= l()) {
 		return false
 	}
 	for idx < 0 {

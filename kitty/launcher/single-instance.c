@@ -177,7 +177,7 @@ static void
 read_till_eof(FILE *f, membuf *m) {
     while (!feof(f)) {
         ensure_space_for(m, data, char, m->used + 8192, capacity, 4*8192, false);
-        m->used += fread(m->data, 1, m->capacity - m->used, f);
+        m->used += fread(m->data + m->used, 1, m->capacity - m->used, f);
         if (ferror(f)) { fclose(f); fail_on_errno("Failed to read from session file"); }
     }
     // ensure NULL termination

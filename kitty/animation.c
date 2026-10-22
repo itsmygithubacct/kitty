@@ -109,7 +109,7 @@ sample_derivative_x(const BezierParameters *p, double t) {
 static double
 solve_curve_x(const BezierParameters *p, double x, double epsilon) {
     // Given an x value, find a parametric value it came from.
-    double t0 = 0.0, t1 = 0.0, t2 = x, x2 = 0.0, d2 = 0.0;
+    double t0 = 0.0, t1 = 1.0, t2 = x, x2 = 0.0, d2 = 0.0;
 
     // Linear interpolation of spline curve for initial guess.
     static const size_t num_samples = arraysz(p->spline_samples);
@@ -133,15 +133,15 @@ solve_curve_x(const BezierParameters *p, double x, double epsilon) {
         if (fabs(d2) < bezier_epsilon) break;
         t2 = t2 - x2 / d2;
     }
+    x2 = sample_curve_x(p, t2) - x;
     if (fabs(x2) < epsilon) return t2;
 
-    t0 = 0.0, t1 = 0.0, t2 = x, x2 = 0.0;
+    t2 = (t0 + t1) * .5;
     // Fall back to the bisection method for reliability.
-    unsigned iteration = 0;
-    while (t0 < t1 && iteration++ < max_bisection_iterations) {
-        x2 = sample_curve_x(p, t2);
-        if (fabs(x2 - x) < epsilon) return t2;
-        if (x > x2) t0 = t2;
+    for (unsigned iteration = 0; iteration < max_bisection_iterations; iteration++) {
+        x2 = sample_curve_x(p, t2) - x;
+        if (fabs(x2) < epsilon) return t2;
+        if (x2 < 0.0) t0 = t2;
         else t1 = t2;
         t2 = (t1 + t0) * .5;
     }
@@ -233,7 +233,7 @@ add_cubic_bezier_animation(Animation *a, double y_at_start, double y_at_end, dou
     else p->end_gradient = 0;
 
     size_t num_samples = arraysz(p->spline_samples);
-    double delta = 1. / num_samples;
+    double delta = 1. / (num_samples - 1);
     for (size_t i = 0; i < num_samples; i++) p->spline_samples[i] = sample_curve_x(p, i * delta);
     animation_function *f = init_function(a, y_at_start, y_at_end, cubic_bezier_easing_curve);
     f->params = p;

@@ -5,8 +5,10 @@ package at
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/kovidgoyal/kitty"
 	"github.com/kovidgoyal/kitty/tools/crypto"
 	"github.com/kovidgoyal/kitty/tools/utils"
+	"github.com/kovidgoyal/kitty/tools/utils/base85"
 	"testing"
 )
 
@@ -100,5 +102,12 @@ func TestRCSerialization(t *testing.T) {
 	}
 	if ec.Version != ver {
 		t.Fatal("Incorrect version in encrypted command: ", ec.Version)
+	}
+}
+
+func TestGetPubkeyRejectsImpossibleBase85Length(t *testing.T) {
+	_, _, err := get_pubkey(kitty.RC_ENCRYPTION_PROTOCOL_VERSION + ":0")
+	if _, ok := err.(base85.CorruptInputError); !ok {
+		t.Fatalf("Expected Base85 CorruptInputError, got %T: %v", err, err)
 	}
 }

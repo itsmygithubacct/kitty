@@ -2558,6 +2558,13 @@ class Boss:
             tm.on_window_drop_move()
             tm.layout_tab_bar()
 
+    def on_drop_to_window(self, window_id: int, drop: dict[str, bytes]) -> bool:
+        # Completion belongs to the pane chosen at release, even if geometry
+        # or focus changes while its selection conversion is in flight.
+        if (window := self.window_id_map.get(window_id)) and not window.destroyed:
+            return window.on_drop(drop)
+        return False
+
     def on_drop(self, os_window_id: int, drop: dict[str, bytes] | int, from_self: bool, x: int, y: int) -> None:
         if isinstance(drop, int):
             import errno
@@ -3504,7 +3511,7 @@ class Boss:
                 arg = q
             cmdline.append(arg)
         overlay_for = w.id if w and as_overlay else None
-        return SpecialWindow(cmd, input_data, cwd_from=cwd_from, overlay_for=overlay_for, env=env)
+        return SpecialWindow(cmdline, input_data, cwd_from=cwd_from, overlay_for=overlay_for, env=env)
 
     def add_fd_based_remote_control(self, remote_control_passwords: dict[str, Sequence[str]] | None = None, initial_data: bytes = b'') -> socket.socket:
         local, remote = socket.socketpair()
@@ -4128,7 +4135,10 @@ class Boss:
             if isinstance(ans, int):
                 for tab in self.all_tabs:
                     if tab.id == ans:
-                        self.set_active_tab(tab)
+                        tm = tab.tab_manager_ref()
+                        if tm is not None and tm.set_active_tab(tab):
+                            self.focus_os_window(tab.os_window_id)
+                        return
 
         def format_tab_title(tab: Tab) -> str:
             w = 'windows' if tab.num_window_groups > 1 else 'window'

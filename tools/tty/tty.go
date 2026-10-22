@@ -396,12 +396,15 @@ func DebugPrintln(a ...any) {
 	}
 }
 
-func ReadSingleByteFromTerminal() (b byte, err error) {
-	term, err := OpenControllingTerm(SetBlockingRead, SetNoCanonical)
+func read_single_byte_from_terminal(open_term func(...TermiosOperation) (*Term, error)) (b byte, err error) {
+	term, err := open_term(SetBlockingRead, SetNoCanonical)
 	if err != nil {
 		return 0, err
 	}
-	defer term.Close()
+	if term == nil {
+		return 0, os.ErrInvalid
+	}
+	defer term.RestoreAndClose()
 	ans := []byte{b}
 	for {
 		n, err := term.Read(ans)
@@ -412,4 +415,8 @@ func ReadSingleByteFromTerminal() (b byte, err error) {
 			return ans[0], nil
 		}
 	}
+}
+
+func ReadSingleByteFromTerminal() (b byte, err error) {
+	return read_single_byte_from_terminal(OpenControllingTerm)
 }

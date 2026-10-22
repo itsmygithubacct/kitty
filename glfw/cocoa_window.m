@@ -1,3 +1,4 @@
+#import <dispatch/dispatch.h>
 //========================================================================
 // GLFW 3.4 macOS - www.glfw.org
 //------------------------------------------------------------------------
@@ -871,6 +872,7 @@ static void _glfwUpdateNotchCover(_GLFWwindow*);
 @interface GLFWFilePromiseProviderDelegate : NSObject <NSFilePromiseProviderDelegate>
 {
     GLFWid windowId, instanceId;
+    bool requesting;
     char* mimeType;  // MIME type for this provider
     char *file_name; // Optional file name for this provider
     bool is_directory;
@@ -1610,8 +1612,12 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     update_drop_source_actions(window, sender);
     _GLFWDropData *d = &window->ns.drop_data;
     if (reset_drop_copy_mimes(d)) {
+        GLFWid window_id = window->id;
         size_t accepted_count = _glfwInputDropEvent(window, GLFW_DROP_ENTER, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
-        update_drop_state(window, accepted_count, GLFW_DROP_ENTER);
+        window = _glfwWindowForId(window_id);
+        if (!window) return NSDragOperationNone;
+        d = &window->ns.drop_data;
+        if (accepted_count != _GLFW_DROP_SUPERSEDED) update_drop_state(window, accepted_count, GLFW_DROP_ENTER);
     }
     return window->ns.drop_data.drag_accepted ? NSDragOperationGeneric : NSDragOperationNone;
 }
@@ -1628,8 +1634,12 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     update_drop_source_actions(window, sender);
     _GLFWDropData *d = &window->ns.drop_data;
     if (reset_drop_copy_mimes(d)) {
+        GLFWid window_id = window->id;
         size_t accepted_count = _glfwInputDropEvent(window, GLFW_DROP_MOVE, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
-        update_drop_state(window, accepted_count, GLFW_DROP_MOVE);
+        window = _glfwWindowForId(window_id);
+        if (!window) return NSDragOperationNone;
+        d = &window->ns.drop_data;
+        if (accepted_count != _GLFW_DROP_SUPERSEDED) update_drop_state(window, accepted_count, GLFW_DROP_MOVE);
     }
     switch (window->drop_operation.preferred) {
         case GLFW_DRAG_OPERATION_NONE: return NSDragOperationNone;
@@ -1645,7 +1655,12 @@ reset_drop_copy_mimes(_GLFWDropData *d) {
     bool from_self = ([sender draggingSource] != nil);
     _GLFWDropData *d = &window->ns.drop_data;
     if (reset_drop_copy_mimes(d)) {
+        GLFWid window_id = window->id;
         size_t accepted_count = _glfwInputDropEvent(window, GLFW_DROP_LEAVE, 0, 0, d->copy_mimes, d->copy_mimes_count, from_self);
+        if (accepted_count == _GLFW_DROP_SUPERSEDED) return;
+        window = _glfwWindowForId(window_id);
+        if (!window) return;
+        d = &window->ns.drop_data;
         update_drop_state(window, accepted_count, GLFW_DROP_LEAVE);
     }
     free_drop_data(window);
@@ -1807,8 +1822,13 @@ build_uri_list(_GLFWDropData *d) {
         [promiseGroup release];
     } else d->in_progress_drop.promises_loaded = true;
 
+    GLFWid window_id = window->id;
     size_t num_accepted = _glfwInputDropEvent(
         window, GLFW_DROP_DROP, xpos, ypos, d->copy_mimes, d->copy_mimes_count, from_self);
+    if (num_accepted == _GLFW_DROP_SUPERSEDED) return NO;
+    window = _glfwWindowForId(window_id);
+    if (!window) return NO;
+    d = &window->ns.drop_data;
     if (d->copy_mimes) {
         update_drop_state(window, num_accepted, GLFW_DROP_DROP);
         for (size_t i = 0; i < num_accepted; i++)
@@ -4341,6 +4361,7 @@ void _glfwCocoaPostEmptyEvent(void) {
 static void fire_drag_finished(void);
 static void schedule_drag_finish_timer(void);
 static GLFWid drag_finish_window_id = 0;
+static GLFWid drag_finish_instance = 0;
 static GLFWDragOperationType drag_finish_action = 0;
 static NSTimer *drag_finish_timer = nil;
 static NSMutableArray<GLFWFilePromiseProviderDelegate*> *file_promise_providers = nil;
@@ -4404,10 +4425,12 @@ NSStringFromDragOperation(NSDragOperation operation) {
            endedAtPoint:(NSPoint)screenPoint
               operation:(NSDragOperation)operation
 {
-    (void)session;
+    if (session != _glfw.ns.drag_session) return;
+    const GLFWid instance = _glfw.drag.instance_id, wid = _glfw.drag.window_id;
     debug_input("Dragging session ended at: (%f, %f) with operation: %s\n", screenPoint.x, screenPoint.y, [NSStringFromDragOperation(operation) UTF8String]);
     _glfwPlatformFreeDragSourceData();
-    _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
+    if (!_glfwDragSourceCurrent(instance, wid)) return;
+    _GLFWwindow *window = _glfwWindowForId(wid);
     if (window) {
         GLFWDragEvent ev = {0};
         switch(operation) {
@@ -4431,8 +4454,12 @@ NSStringFromDragOperation(NSDragOperation operation) {
                 ev.type = GLFW_DRAG_DROPPED; break;
         }
         _glfwInputDragSourceRequest(window, &ev);
+        if (!_glfwDragSourceCurrent(instance, wid)) return;
+        window = _glfwWindowForId(wid);
+        if (!window) { _glfwFreeDragSourceData(); return; }
         if (ev.type == GLFW_DRAG_DROPPED) {
-            drag_finish_window_id = _glfw.drag.window_id;
+            drag_finish_instance = instance;
+            drag_finish_window_id = wid;
             drag_finish_action = ev.action;
             if (operation == NSDragOperationNone || !file_promise_providers || [file_promise_providers count] == 0) {
                 fire_drag_finished();
@@ -4440,7 +4467,7 @@ NSStringFromDragOperation(NSDragOperation operation) {
                 schedule_drag_finish_timer();
             }
         } else {
-            if (operation == NSDragOperationNone) _glfwFreeDragSourceData();
+            _glfwFreeDragSourceData();
         }
     }
 }
@@ -4449,29 +4476,28 @@ NSStringFromDragOperation(NSDragOperation operation) {
 
 static void
 fire_drag_finished(void) {
-    if (drag_finish_timer) {
-        [drag_finish_timer invalidate];
-        drag_finish_timer = nil;
-    }
-    GLFWid wid = drag_finish_window_id;
+    const GLFWid instance = drag_finish_instance, wid = drag_finish_window_id;
+    if (!wid || !_glfwDragSourceCurrent(instance, wid)) return;
+    if (drag_finish_timer) { [drag_finish_timer invalidate]; drag_finish_timer = nil; }
     GLFWDragOperationType action = drag_finish_action;
-    drag_finish_window_id = 0;
+    drag_finish_window_id = drag_finish_instance = 0;
     drag_finish_action = 0;
-    _GLFWwindow *window = wid ? _glfwWindowForId(wid) : NULL;
+    _GLFWwindow *window = _glfwWindowForId(wid);
     if (window) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_FINSHED, .action=action};
         _glfwInputDragSourceRequest(window, &ev);
     }
-    _glfwFreeDragSourceData();
+    if (_glfwDragSourceCurrent(instance, wid)) _glfwFreeDragSourceData();
 }
 
 static void
 schedule_drag_finish_timer(void) {
-    if (drag_finish_timer) {
-        [drag_finish_timer invalidate];
-        drag_finish_timer = nil;
-    }
-    drag_finish_timer = [NSTimer scheduledTimerWithTimeInterval:DRAG_FINISH_TIMEOUT_SECONDS repeats:NO block:^(NSTimer *t UNUSED) {
+    const GLFWid instance = drag_finish_instance, wid = drag_finish_window_id;
+    if (!wid || !_glfwDragSourceCurrent(instance, wid)) return;
+    if (drag_finish_timer) { [drag_finish_timer invalidate]; drag_finish_timer = nil; }
+    drag_finish_timer = [NSTimer scheduledTimerWithTimeInterval:DRAG_FINISH_TIMEOUT_SECONDS repeats:NO block:^(NSTimer *t) {
+        if (t != drag_finish_timer || drag_finish_instance != instance || drag_finish_window_id != wid ||
+                !_glfwDragSourceCurrent(instance, wid)) return;
         drag_finish_timer = nil;
         fire_drag_finished();
     }];
@@ -4601,11 +4627,13 @@ add_drag_items(_GLFWwindow *window, NSMutableArray<NSDraggingItem*>* dragItems, 
 
 int
 _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autoreleasepool{
-    if (file_promise_providers) {
-        for (NSInteger i = [file_promise_providers count] - 1; i >= 0; i--) {
-            GLFWFilePromiseProviderDelegate* d = file_promise_providers[i];
-            [d end_transfer:EINVAL];
-        }
+    const GLFWid instance = _glfw.drag.instance_id, wid = window->id;
+    NSArray *old_providers = [[file_promise_providers copy] autorelease];
+    for (GLFWFilePromiseProviderDelegate *d in old_providers) {
+        [d end_transfer:EINVAL];
+        if (!_glfwDragSourceCurrent(instance, wid)) return ECANCELED;
+        window = _glfwWindowForId(wid);
+        if (!window) return ECANCELED;
     }
     // Obtain the event and view early so we can position the drag image relative to the cursor
     NSEvent* event = [NSApp currentEvent];
@@ -4633,10 +4661,16 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
     NSMutableArray<NSDraggingItem*>* dragItems = [[[NSMutableArray alloc] init] autorelease];
     for (size_t i = 0; i < _glfw.drag.item_count; i++) {
         int err = add_drag_items(window, dragItems, _glfw.drag.items + i, thumbnail);
+        if (!_glfwDragSourceCurrent(instance, wid)) return ECANCELED;
+        window = _glfwWindowForId(wid);
+        if (!window) return ECANCELED;
         if (err) return err;
     }
 
+    // Retain the old view across beginDraggingSession, which can call source methods.
+    [[v retain] autorelease];
     NSDraggingSession *s = [v beginDraggingSessionWithItems:dragItems event:event source:[v draggingSource]];
+    if (!_glfwDragSourceCurrent(instance, wid) || !_glfwWindowForId(wid)) return ECANCELED;
     _glfw.ns.drag_session = [s retain];
     _glfw.ns.drag_view = [v retain];
     return 0;
@@ -4646,6 +4680,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 @implementation GLFWFilePromiseProviderDelegate
 
 - (void)end_transfer_with_error:(NSError*)err {
+    [[self retain] autorelease];
     if (err && file_url) {
         NSError *error;
         NSFileManager *fileManager = [NSFileManager defaultManager];
@@ -4653,13 +4688,13 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
     }
     if (file_handle) [file_handle release];
     file_handle = nil;
-    if (completion_handler) {
-        completion_handler(err);
-        Block_release(completion_handler);
-        completion_handler = nil;
-    }
-    if (file_promise_providers) [file_promise_providers removeObject:self];
-    if (drag_finish_window_id) {
+    // Snapshot ownership before the application's completion block.
+    void (^handler)(NSError*) = completion_handler;
+    completion_handler = nil;
+    if (file_promise_providers) [file_promise_providers removeObjectIdenticalTo:self];
+    if (handler) { handler(err); Block_release(handler); }
+    if (!_glfwDragSourceCurrent(instanceId, windowId)) return;
+    if (drag_finish_window_id == windowId && drag_finish_instance == instanceId) {
         if (!file_promise_providers || [file_promise_providers count] == 0) {
             fire_drag_finished();
         } else {
@@ -4675,6 +4710,8 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 - (bool)is_mimetype:(const char*)q { return strcmp(q, mimeType) == 0; }
 
 - (void)promised_data_ready:(const char*)path sz:(size_t)sz type:(int)type {
+    [[self retain] autorelease];
+    if (!_glfwDragSourceCurrent(instanceId, windowId)) { [self end_transfer:EINVAL]; return; }
     if (drag_finish_timer) {
         [drag_finish_timer invalidate];
         drag_finish_timer = nil;
@@ -4777,7 +4814,11 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 }
 
 - (void)request_drag_data {
-    if (instanceId != _glfw.drag.instance_id) { [self end_transfer:EINVAL]; return; }
+    if (requesting) return;
+    [[self retain] autorelease];
+    requesting = true;
+    @try {
+    if (!_glfwDragSourceCurrent(instanceId, windowId)) { [self end_transfer:EINVAL]; return; }
     _GLFWwindow *window = _glfwWindowForId(_glfw.drag.window_id);
     if (!window) { [self end_transfer:EINVAL]; return; }
     bool keep_going = true;
@@ -4785,9 +4826,14 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
         [drag_finish_timer invalidate];
         drag_finish_timer = nil;
     }
-    while (keep_going) {
+    for (unsigned count = 0; keep_going && count < 32; count++) {
         GLFWDragEvent ev = {.type=GLFW_DRAG_DATA_REQUEST, .mime_type=mimeType};
+        const GLFWdragsourcefun callback = window->callbacks.drag_source;
         _glfwInputDragSourceRequest(window, &ev);
+        if (!_glfwDragSourceCurrent(instanceId, windowId) || !_glfwWindowForId(windowId)) {
+            if (ev.data && callback) callback((GLFWwindow*)_glfwWindowForId(windowId), &ev);
+            [self end_transfer:EINVAL]; return;
+        }
         if (ev.err_num) {
             keep_going = false;
             if (ev.err_num != EAGAIN) [self end_transfer:ev.err_num];
@@ -4803,9 +4849,19 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
                 keep_going = false;
                 [self end_transfer_with_error:nil];
             }
-            _glfwInputDragSourceRequest(window, &ev);
         }
+        if (ev.data && callback) callback((GLFWwindow*)_glfwWindowForId(windowId), &ev);
+        if (!_glfwDragSourceCurrent(instanceId, windowId)) return;
+        window = _glfwWindowForId(windowId);
+        if (!window) return;
     }
+    if (keep_going) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (_glfwDragSourceCurrent(instanceId, windowId)) [self request_drag_data];
+            else [self end_transfer:EINVAL];
+        });
+    }
+    } @finally { requesting = false; }
 }
 
 - (instancetype)initWithWindow:(_GLFWwindow*)initWindow mimeType:(const char*)mime fileName:(const char*)name isDir:(bool)is_dir instanceId:(GLFWid) instance_id {
@@ -4829,7 +4885,15 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
     file_handle = nil;
     if (file_url) [file_url release];
     file_url = nil;
-    [self end_transfer:EINVAL];
+    // Do not retain a delegate already in dealloc. The normal end path retains
+    // before removing the last provider-array reference; dealloc owns only its
+    // detached block and cannot update drag/timer/provider state.
+    void (^handler)(NSError*) = completion_handler;
+    completion_handler = nil;
+    if (handler) {
+        handler([NSError errorWithDomain:NSPOSIXErrorDomain code:EINVAL userInfo:nil]);
+        Block_release(handler);
+    }
     [super dealloc];
 }
 
@@ -4885,29 +4949,26 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {@autore
 
 void
 _glfwPlatformCancelDrag(_GLFWwindow* window UNUSED) {@autoreleasepool{
-    if (!_glfw.drag.window_id) return;
-    _GLFWwindow* drag_win = _glfwWindowForId(_glfw.drag.window_id);
+    const GLFWid instance = _glfw.drag.instance_id, wid = _glfw.drag.window_id;
+    if (!wid) return;
+    _GLFWwindow* drag_win = _glfwWindowForId(wid);
     if (drag_win) {
         GLFWDragEvent ev = {.type = GLFW_DRAG_CANCELLED};
         _glfwInputDragSourceRequest(drag_win, &ev);
     }
-    _glfwFreeDragSourceData();
+    if (_glfwDragSourceCurrent(instance, wid)) _glfwFreeDragSourceData();
 }}
 
 void
 _glfwPlatformFreeDragSourceData(void) {
-    if (drag_finish_timer) {
-        [drag_finish_timer invalidate];
-        drag_finish_timer = nil;
-    }
-    drag_finish_window_id = 0;
+    NSTimer *timer = drag_finish_timer;
+    id session = _glfw.ns.drag_session, view = _glfw.ns.drag_view, image = _glfw.ns.drag_image;
+    drag_finish_timer = nil;
+    drag_finish_window_id = drag_finish_instance = 0;
     drag_finish_action = 0;
-    if (_glfw.ns.drag_session) [_glfw.ns.drag_session release];
-    _glfw.ns.drag_session = nil;
-    if (_glfw.ns.drag_view) [_glfw.ns.drag_view release];
-    _glfw.ns.drag_view = nil;
-    if (_glfw.ns.drag_image) [_glfw.ns.drag_image release];
-    _glfw.ns.drag_image = nil;
+    _glfw.ns.drag_session = _glfw.ns.drag_view = _glfw.ns.drag_image = nil;
+    // Detach every old native reference before releases can reenter startup.
+    [timer invalidate]; [session release]; [view release]; [image release];
 }
 
 int
@@ -4930,13 +4991,15 @@ _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {@autoreleasepool{
 
 
 int
-_glfwPlatformDragDataReady(const char *mime_type, const char *data, size_t sz, int type) {
-    if (!file_promise_providers) return 0;
-    for (GLFWFilePromiseProviderDelegate *d in file_promise_providers) {
+_glfwPlatformDragDataReady(const char *mime_type, const char *data, size_t sz, int type) {@autoreleasepool{
+    const GLFWid instance = _glfw.drag.instance_id, wid = _glfw.drag.window_id;
+    NSArray *providers = [[file_promise_providers copy] autorelease];
+    for (GLFWFilePromiseProviderDelegate *d in providers) {
+        if (!_glfwDragSourceCurrent(instance, wid)) return ECANCELED;
         if ([d is_mimetype:mime_type]) {
             if (type == -1) [d request_drag_data];
             else [d promised_data_ready:data sz:sz type:type];
         }
     }
     return 0;
-}
+}}

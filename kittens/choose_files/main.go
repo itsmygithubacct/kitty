@@ -855,9 +855,6 @@ var default_cwd string
 var use_light_colors bool
 
 func quote_if_needed(x string) string {
-	if s, err := shlex.Split(x); len(s) == 1 && err == nil && !strings.Contains(x, "$") {
-		return x
-	}
 	return utils.QuoteStringForSH(x)
 }
 

@@ -416,7 +416,7 @@ def gen_rowcolumn_diacritics() -> None:
         def print_range() -> None:
             if range_start >= range_end:
                 return
-            write_case((range_start, range_end), p)
+            write_case((range_start, range_end - 1), p)
             p('\t\treturn code - ' + hex(range_start) + ' + ' +
               str(range_start_num) + ';')
 

@@ -18,20 +18,6 @@
 #include <sys/mman.h>
 #include <structmember.h>
 
-#ifdef LIBRESSL_VERSION_NUMBER
-/* from: https://github.com/libressl/portable/blob/master/include/compat/string.h#L63 */
-#define explicit_bzero libressl_explicit_bzero
-void explicit_bzero(void *, size_t);
-/* from: https://github.com/libressl/portable/blob/master/crypto/compat/freezero.c */
-void
-freezero(void *ptr, size_t sz) {
-    if (ptr == NULL) return;
-    explicit_bzero(ptr, sz);
-    free(ptr);
-}
-#define OPENSSL_clear_free freezero
-#endif
-
 #define SHA1_DIGEST_LENGTH SHA_DIGEST_LENGTH
 
 typedef enum HASH_ALGORITHM { SHA1_HASH, SHA224_HASH, SHA256_HASH, SHA384_HASH, SHA512_HASH } HASH_ALGORITHM;
@@ -55,7 +41,7 @@ typedef struct {
     PyObject_HEAD
 
     void *secret;
-    size_t secret_len;
+    size_t secret_len, secret_allocation_len;
 } Secret;
 
 static PyObject *
@@ -66,8 +52,31 @@ new_secret(PyTypeObject *type UNUSED, PyObject *args UNUSED, PyObject *kwds UNUS
 static Secret* alloc_secret(size_t len);
 
 static void
+free_locked_secret_memory(void *ptr, size_t len) {
+    if (!ptr) return;
+    OPENSSL_cleanse(ptr, len);
+    if (munlock(ptr, len) != 0) log_error("Failed to unlock secret memory: %s", strerror(errno));
+    if (munmap(ptr, len) != 0) log_error("Failed to unmap secret memory: %s", strerror(errno));
+}
+
+static void *
+alloc_locked_secret_memory(size_t len) {
+    if (!len) { errno = EINVAL; return NULL; }
+    void *ptr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (ptr == MAP_FAILED) return NULL;
+    if (mlock(ptr, len) != 0) {
+        int saved_errno = errno;
+        OPENSSL_cleanse(ptr, len);
+        if (munmap(ptr, len) != 0) log_error("Failed to unmap unlocked secret memory: %s", strerror(errno));
+        errno = saved_errno;
+        return NULL;
+    }
+    return ptr;
+}
+
+static void
 dealloc_secret(Secret *self) {
-    if (self->secret) OPENSSL_clear_free(self->secret, self->secret_len);
+    if (self->secret) free_locked_secret_memory(self->secret, self->secret_allocation_len);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -110,8 +119,13 @@ alloc_secret(size_t len) {
     Secret *self = (Secret*)Secret_Type.tp_alloc(&Secret_Type, 0);
     if (self) {
         self->secret_len = len;
-        if (NULL == (self->secret = OPENSSL_malloc(len))) { Py_CLEAR(self); return (Secret*)set_error_from_openssl("Failed to malloc"); }
-        if (0 != mlock(self->secret, self->secret_len)) { Py_CLEAR(self); return (Secret*)PyErr_SetFromErrno(PyExc_OSError); }
+        self->secret_allocation_len = len;
+        if (NULL == (self->secret = alloc_locked_secret_memory(len))) {
+            int saved_errno = errno;
+            Py_CLEAR(self);
+            errno = saved_errno;
+            return (Secret*)PyErr_SetFromErrno(PyExc_OSError);
+        }
     }
     return self;
 }
@@ -187,9 +201,9 @@ derive_secret(EllipticCurveKey *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "y#|i", &pubkey_raw, &pubkey_len, &hash_algorithm)) return NULL;
 
     EVP_PKEY_CTX *ctx = NULL;
-    unsigned char *secret = NULL; size_t secret_len = 0;
+    unsigned char *secret = NULL; size_t secret_len = 0, secret_allocation_len = 0;
     EVP_PKEY *public_key = EVP_PKEY_new_raw_public_key(self->algorithm, NULL, (const unsigned char*)pubkey_raw, pubkey_len);
-#define cleanup() { if (public_key) EVP_PKEY_free(public_key); public_key = NULL; if (ctx) EVP_PKEY_CTX_free(ctx); ctx = NULL; if (secret) OPENSSL_clear_free(secret, secret_len); secret = NULL; }
+#define cleanup() { if (public_key) EVP_PKEY_free(public_key); public_key = NULL; if (ctx) EVP_PKEY_CTX_free(ctx); ctx = NULL; if (secret) free_locked_secret_memory(secret, secret_allocation_len); secret = NULL; secret_allocation_len = 0; }
 #define ssl_error(text) { cleanup(); return set_error_from_openssl(text); }
     if (!public_key) ssl_error("Failed to create public key");
 
@@ -198,8 +212,13 @@ derive_secret(EllipticCurveKey *self, PyObject *args) {
     if (1 != EVP_PKEY_derive_set_peer(ctx, public_key)) ssl_error("Failed to add public key");
 
     if (1 != EVP_PKEY_derive(ctx, NULL, &secret_len)) ssl_error("Failed to get length for secret");
-    if (NULL == (secret = OPENSSL_malloc(secret_len))) ssl_error("Failed to allocate secret key");
-    if (mlock(secret, secret_len) != 0) { cleanup(); return PyErr_SetFromErrno(PyExc_OSError); }
+    secret_allocation_len = secret_len;
+    if (NULL == (secret = alloc_locked_secret_memory(secret_allocation_len))) {
+        int saved_errno = errno;
+        cleanup();
+        errno = saved_errno;
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
     if (1 != (EVP_PKEY_derive(ctx, secret, &secret_len))) ssl_error("Failed to derive the secret");
 
     PyObject *ans = hash_data_to_secret(secret, secret_len, hash_algorithm);
@@ -228,7 +247,6 @@ elliptic_curve_key_get_private(EllipticCurveKey *self, void UNUSED *closure) {
     if (1 != EVP_PKEY_get_raw_private_key(self->key, NULL, &len)) return set_error_from_openssl("Could not get public key from EVP_PKEY");
     Secret *ans = alloc_secret(len);
     if (!ans) return NULL;
-    if (mlock(PyBytes_AS_STRING(ans), len) != 0) { Py_CLEAR(ans); return PyErr_SetFromErrno(PyExc_OSError); }
     if (1 != EVP_PKEY_get_raw_private_key(self->key, (unsigned char*)ans->secret, &len)) { Py_CLEAR(ans); return set_error_from_openssl("Could not get public key from EVP_PKEY"); }
     return (PyObject*)ans;
 }

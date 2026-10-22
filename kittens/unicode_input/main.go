@@ -43,6 +43,9 @@ var EMOTICONS_SET []rune
 
 const DEFAULT_MODE string = "HEX"
 
+// The ambiguous legacy unicode-input.json is left untouched and not migrated.
+const cached_data_name = "unicode-input-v1"
+
 func build_sets() {
 	DEFAULT_SET = make([]rune, 0, len(default_set_of_symbols))
 	for _, ch := range default_set_of_symbols {
@@ -549,12 +552,15 @@ func (self *handler) refresh() {
 
 func run_loop(opts *Options) (lp *loop.Loop, err error) {
 	output := tui.KittenOutputSerializer()
+	cv := utils.NewCachedValues(cached_data_name, &CachedData{Recent: DEFAULT_SET, Mode: DEFAULT_MODE})
+	cached_data = cv.Load()
+	if err = cv.LoadError(); err != nil {
+		return nil, fmt.Errorf("failed to load Unicode input cache: %w", err)
+	}
 	lp, err = loop.New()
 	if err != nil {
 		return
 	}
-	cv := utils.NewCachedValues("unicode-input", &CachedData{Recent: DEFAULT_SET, Mode: DEFAULT_MODE})
-	cached_data = cv.Load()
 	defer cv.Save()
 
 	h := handler{recent: cached_data.Recent, lp: lp, emoji_variation: opts.EmojiVariation}

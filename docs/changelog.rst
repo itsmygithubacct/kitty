@@ -179,6 +179,18 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
+Unreleased
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- X11: Repair asynchronous native drag selection delivery, including bounded
+  INCR transfers, negotiated COPY/MOVE completion and cancellation. Terminal
+  drag clients can bridge independent private application displays through
+  OSC 72. Replies and drop delivery stay bound to their gesture and pane.
+
+- Local file URI drops into a terminal are POSIX shell quoted before insertion
+  without submitting a line. Malformed URIs and decoded control characters,
+  including encoded LF, CR and TAB, refuse the whole list without insertion.
+
 
 0.48.2 [2026-07-30]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -261,6 +261,11 @@ typedef struct DragRemoteItem {
     struct DragRemoteItem *parent;
 } DragRemoteItem;
 
+typedef struct BufferedKeyEvent {
+    GLFWkeyevent event;
+    char *text;
+} BufferedKeyEvent;
+
 typedef struct Window {
     id_type id;
     bool visible;
@@ -280,7 +285,7 @@ typedef struct Window {
     id_type redirect_keys_to_overlay;
     struct {
         bool enabled;
-        void *key_data;
+        BufferedKeyEvent *key_data;
         size_t count, capacity;
     } buffered_keys;
     struct {
@@ -509,15 +514,19 @@ typedef struct GlobalState {
 
     struct {
         PyObject *data, *self_drag_data;
+        uint64_t generation;
         id_type os_window_id, client_window_data_request;
+        id_type hovered_window, guarded_client_window, destination_window;
         double x, y;
         size_t num_left;
         bool drop_has_happened;
         int allowed_ops;
+        int suggested_operation;
     } drop_dest;
 
     struct {
         bool is_active, was_dropped, was_canceled, needs_toplevel_on_wayland;
+        uint64_t generation;
         id_type from_window, from_os_window;
         char *accepted_mime_type;
         int action, thumbnail_idx;
@@ -638,6 +647,7 @@ void update_ime_focus(OSWindow* osw, bool focused);
 void update_ime_position(Window* w, Screen *screen);
 bool update_ime_position_for_window(id_type window_id, bool force, int update_focus);
 void set_ignore_os_keyboard_processing(bool enabled);
+void free_buffered_keys(Window *w);
 void update_menu_bar_title(PyObject *title UNUSED);
 void change_live_resize_state(OSWindow*, bool);
 bool render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images);

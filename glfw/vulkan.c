@@ -158,8 +158,12 @@ void _glfwTerminateVulkan(void)
 {
 #if !defined(_GLFW_VULKAN_STATIC)
     if (_glfw.vk.handle)
+    {
         _glfw_dlclose(_glfw.vk.handle);
+        _glfw.vk.handle = NULL;
+    }
 #endif
+    _glfw.vk.available = false;
 }
 
 const char* _glfwGetVulkanResultString(VkResult result)

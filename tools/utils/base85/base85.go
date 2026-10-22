@@ -153,17 +153,39 @@ func EncodeToString(src []byte) string {
 	return utils.UnsafeBytesToString(buf)
 }
 
+// encodedLengthError reports an impossible one-character trailing group.
+func encodedLengthError(src []byte) error {
+	if len(src)%5 != 1 {
+		return nil
+	}
+	decode := decoder_array()
+	for i, c := range src {
+		if decode[c] == 0xFF {
+			return CorruptInputError(i + 1)
+		}
+	}
+	return CorruptInputError(len(src))
+}
+
 // DecodeString returns the bytes represented by the base85 string s.
+// A CorruptInputError is returned for invalid characters or impossible lengths.
 func DecodeString(src string) ([]byte, error) {
-	buf := make([]byte, DecodedLen(len(src)))
-	_, err := Decode(buf, utils.UnsafeStringToBytes(src))
+	data := utils.UnsafeStringToBytes(src)
+	if err := encodedLengthError(data); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, DecodedLen(len(data)))
+	_, err := Decode(buf, data)
 	return buf, err
 }
 
 // Decode decodes src into dst, return the bytes written
 // The dst must have size of DecodedLen(len(src))
-// An CorruptInputError is returned when invalid character is found in src.
+// A CorruptInputError is returned for invalid characters or impossible lengths.
 func Decode(dst, src []byte) (int, error) {
+	if err := encodedLengthError(src); err != nil {
+		return 0, err
+	}
 	f := 0
 	t := 0
 	decode := decoder_array()

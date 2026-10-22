@@ -599,7 +599,7 @@ has_cell_text(bool(*has_codepoint)(const void*, char_type ch), const void* face,
     if (llc.count == 1) {
         if (has_codepoint(face, llc.chars[0])) return true;
         char_type ch = 0;
-        if (hb_unicode_compose(hb_unicode_funcs_get_default(), lc->chars[0], llc.chars[0], &ch) && face_has_codepoint(face, ch)) return true;
+        if (hb_unicode_compose(hb_unicode_funcs_get_default(), lc->chars[0], llc.chars[0], &ch) && has_codepoint(face, ch)) return true;
         goto not_found;
     }
     for (unsigned i = 0; i < llc.count; i++) {
@@ -617,6 +617,53 @@ not_found:
         debug(" but it does not actually contain glyphs for that text\n");
     }
     return false;
+}
+
+typedef struct {
+    const void *expected_context;
+    char_type codepoints[4];
+    size_t count;
+    bool context_preserved, overflow;
+} ComposedCandidateProbe;
+
+static ComposedCandidateProbe *active_composed_candidate_probe = NULL;
+
+static bool
+composed_candidate_probe_callback(const void *opaque, char_type ch) {
+    ComposedCandidateProbe *probe = active_composed_candidate_probe;
+    if (!probe) return false;
+    if (opaque != probe->expected_context) probe->context_preserved = false;
+    const size_t capacity = sizeof(probe->codepoints) / sizeof(probe->codepoints[0]);
+    if (probe->count < capacity) probe->codepoints[probe->count] = ch;
+    else probe->overflow = true;
+    probe->count++;
+    return ch == 'A' || ch == 0x0104;
+}
+
+static PyObject*
+test_composed_candidate_callback(PyObject *self UNUSED, PyObject *args UNUSED) {
+    char_type chars[] = {'A', 0x0328};
+    const size_t char_count = sizeof(chars) / sizeof(chars[0]);
+    ListOfChars lc = {.chars = chars, .count = char_count, .capacity = char_count};
+    ComposedCandidateProbe probe = {.expected_context = &probe, .context_preserved = true};
+    active_composed_candidate_probe = &probe;
+    const bool covered = has_cell_text(composed_candidate_probe_callback, &probe, false, &lc);
+    active_composed_candidate_probe = NULL;
+    const size_t capacity = sizeof(probe.codepoints) / sizeof(probe.codepoints[0]);
+    const size_t trace_count = MIN(probe.count, capacity);
+    RAII_PyObject(calls, PyTuple_New(trace_count));
+    if (!calls) return NULL;
+    for (size_t i = 0; i < trace_count; i++) {
+        PyObject *cp = PyLong_FromUnsignedLong(probe.codepoints[i]);
+        if (!cp) return NULL;
+        PyTuple_SET_ITEM(calls, i, cp);
+    }
+    PyObject *ans = PyTuple_New(3);
+    if (!ans) return NULL;
+    PyTuple_SET_ITEM(ans, 0, Py_NewRef(covered ? Py_True : Py_False));
+    PyTuple_SET_ITEM(ans, 1, Py_NewRef(probe.context_preserved && !probe.overflow && probe.count == 3 ? Py_True : Py_False));
+    PyTuple_SET_ITEM(ans, 2, Py_NewRef(calls));
+    return ans;
 }
 
 static void
@@ -2409,10 +2456,39 @@ PyTypeObject ParsedFontFeature_Type = {
 };
 
 static PyObject*
-pyspecialize_font_descriptor(PyObject *self UNUSED, PyObject *args) {
+test_parse_stat_font_table(PyObject *self UNUSED, PyObject *args) {
+    Py_buffer table;
+    if (!PyArg_ParseTuple(args, "y*", &table)) return NULL;
+    RAII_PyObject(name_lookup, PyDict_New());
+    RAII_PyObject(output, PyDict_New());
+    PyObject *ans = NULL;
+    if (name_lookup && output && read_STAT_font_table(table.buf, table.len, name_lookup, output)) ans = Py_NewRef(output);
+    PyBuffer_Release(&table);
+    return ans;
+}
+
+typedef PyObject* (*font_descriptor_specializer)(PyObject*, double, double, double);
+
+static PyObject*
+parse_font_descriptor_specialization_args(PyObject *args, font_descriptor_specializer specialize) {
     PyObject *desc; double font_sz, dpi_x, dpi_y;
-    if (!PyArg_ParseTuple(args, "Offf", &desc, &font_sz, &dpi_x, &dpi_y)) return NULL;
-    return specialize_font_descriptor(desc, font_sz, dpi_x, dpi_y);
+    if (!PyArg_ParseTuple(args, "Oddd", &desc, &font_sz, &dpi_x, &dpi_y)) return NULL;
+    return specialize(desc, font_sz, dpi_x, dpi_y);
+}
+
+static PyObject*
+observe_font_descriptor_specialization_args(PyObject *desc, double font_sz, double dpi_x, double dpi_y) {
+    return Py_BuildValue("(Oddd)", desc, font_sz, dpi_x, dpi_y);
+}
+
+static PyObject*
+test_specialize_font_descriptor_args(PyObject *self UNUSED, PyObject *args) {
+    return parse_font_descriptor_specialization_args(args, observe_font_descriptor_specialization_args);
+}
+
+static PyObject*
+pyspecialize_font_descriptor(PyObject *self UNUSED, PyObject *args) {
+    return parse_font_descriptor_specialization_args(args, specialize_font_descriptor);
 }
 
 static PyObject*
@@ -2455,6 +2531,9 @@ static PyMethodDef module_methods[] = {
     METHODB(test_shape, METH_VARARGS),
     METHODB(current_fonts, METH_VARARGS),
     METHODB(test_render_line, METH_VARARGS),
+    METHODB(test_parse_stat_font_table, METH_VARARGS),
+    METHODB(test_composed_candidate_callback, METH_NOARGS),
+    METHODB(test_specialize_font_descriptor_args, METH_VARARGS),
     METHODB(get_fallback_font, METH_VARARGS),
     {"specialize_font_descriptor", (PyCFunction)pyspecialize_font_descriptor, METH_VARARGS, ""},
     {"render_box_char", (PyCFunction)pyrender_box_char, METH_VARARGS, ""},

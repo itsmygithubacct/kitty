@@ -53,6 +53,7 @@
 
 // The Shape extension provides custom window shapes
 #include <X11/extensions/shape.h>
+#include <X11/extensions/Xfixes.h>
 
 // The libxkb library is used for improved keyboard support
 #include "xkb_glfw.h"
@@ -254,8 +255,21 @@ typedef struct XdndSelectionRequest {
     char *mime;
     bool inflight, got_data;
     unsigned char *data;
-    size_t offset, size;
+    size_t offset, size, announced;
+    bool incremental;
+    int error;
 } XdndSelectionRequest;
+
+typedef struct XdndDragRequest {
+    const char *mime_type;
+    Window requestor;
+    Atom property, target;
+    Time time;
+    uint64_t generation;
+    bool inflight, notified, incremental, delivered, polling;
+    unsigned char *data;
+    size_t size, capacity, offset;
+} XdndDragRequest;
 
 // X11-specific global data
 //
@@ -381,6 +395,13 @@ typedef struct _GLFWlibraryX11
         PFN_XRRUpdateConfiguration UpdateConfiguration;
     } randr;
 
+    struct {
+        bool attempted, available;
+        void *handle;
+        int event_base;
+        void (*select)(Display*, Window, Atom, unsigned long);
+    } dnd_fixes;
+
     _GLFWXKBData xkb;
     _GLFWDBUSData dbus;
 
@@ -394,17 +415,30 @@ typedef struct _GLFWlibraryX11
 
     struct {
         int         version;
+        uint64_t    generation;
         Window      source;
         char        format[256];
         int         format_priority;
         Window      target_window;  // For drag events: the window being dragged over
+        Window      request_window; // Fresh requestor prevents old-generation replies
+        GLFWid      target_id;
         const char** mimes;          // Cached MIME types from drag enter (original, never reordered)
         size_t       mimes_count;    // Count of MIME types (full original list, never reduced)
         const char** copy_mimes;     // Working copy passed to callbacks; pointers into mimes[]
         size_t       copy_mimes_count; // Accepted count after last callback
         bool drag_accepted;          // Whether the callback accepted at least one MIME type
-        bool from_self, dropped;
-        Time drop_time;
+        bool from_self, dropped, targets_pending, targets_checked;
+        bool delete_supported, delete_pending, delete_complete;
+        GLFWDragOperationType finish_operation;
+        uint64_t finish_generation;
+        Window finish_source, finish_target;
+        GLFWid finish_target_id;
+        Time finish_drop_time;
+        Time drop_time, acquired;
+        bool timestamp_pending, epoch_failed;
+        monotonic_t drop_deadline;
+        Atom suggested_action;
+        unsigned long long transfer_timer;
         XdndSelectionRequest *selection_requests;
         size_t selection_requests_count, selection_requests_capacity;
     } xdnd;
@@ -417,6 +451,22 @@ typedef struct _GLFWlibraryX11
         Atom             action_atom;   // XdndActionCopy, XdndActionMove, or XdndActionLink
         bool             active;        // Whether a drag is currently active
         bool             dropped;       // Awaiting completion, no longer tracking the pointer
+        bool             drop_published, completing, delivery_failed, epoch_ready;
+        struct {
+            bool valid;
+            Window source, receiver, proxy;
+            GLFWid instance;
+            Time acquired, drop_time;
+            Atom action;
+            uint32_t client;
+        } delete_receipt;
+        Time             acquired, drop_time;
+        monotonic_t      drop_deadline;
+        uint64_t         request_generation;
+        bool             pointer_released, pending_motion;
+        int              last_x, last_y;
+        Time             last_time;
+        unsigned int     last_modifiers;
         unsigned long long finish_timer;
         Window           current_target;// Current drop target window under cursor
         Window           proxy_target;  // Proxy target if current_target has XdndProxy
@@ -424,13 +474,7 @@ typedef struct _GLFWlibraryX11
         bool             waiting_for_status; // Waiting for XdndStatus from target
         bool             accepted;      // Whether target accepted the drag
         Atom             accepted_action; // Action accepted by target
-        struct {
-            const char *mime_type;
-            Window     requestor;
-            Atom       property;
-            Atom       target;
-            bool       inflight;
-        } *pending_requests;
+        XdndDragRequest *pending_requests;
         size_t           pending_count;
         size_t           pending_capacity;
         // Thumbnail window for drag icon

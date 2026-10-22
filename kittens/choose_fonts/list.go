@@ -216,20 +216,23 @@ func (self *FontList) draw_screen() (err error) {
 }
 
 func (self *FontList) on_click(id string) error {
+	return self.handle_click(id, self.handler.draw_screen, self.handler.lp.Beep)
+}
+
+func (self *FontList) handle_click(id string, redraw func() error, refuse func()) error {
 	which, data, found := strings.Cut(id, ":")
 	if !found {
 		return fmt.Errorf("Not a valid click id: %s", id)
 	}
 	switch which {
 	case "family-chosen":
-		if self.handler.state == LISTING_FAMILIES {
-			if self.family_list.Select(data) {
-				self.handler.draw_screen()
-			} else {
-				self.handler.lp.Beep()
-			}
-
+		if self.handler.current_pane != self {
+			return nil
 		}
+		if self.family_list.Select(data) {
+			return redraw()
+		}
+		refuse()
 	}
 	return nil
 }
@@ -244,11 +247,43 @@ func (self *FontList) update_family_search() {
 }
 
 func (self *FontList) next(delta int, allow_wrapping bool) error {
+	return self.next_with_feedback(delta, allow_wrapping, self.handler.draw_screen, self.handler.lp.Beep)
+}
+
+func (self *FontList) next_with_feedback(delta int, allow_wrapping bool, redraw func() error, refuse func()) error {
 	if self.family_list.Next(delta, allow_wrapping) {
-		return self.handler.draw_screen()
+		return redraw()
 	}
-	self.handler.lp.Beep()
+	refuse()
 	return nil
+}
+
+func (self *FontList) handle_navigation_key(event *loop.KeyEvent, screen_size func() (loop.ScreenSize, error), next func(int, bool) error) (bool, error) {
+	delta, allow_wrapping := 0, false
+	switch {
+	case event.MatchesPressOrRepeat("down"):
+		delta, allow_wrapping = 1, true
+	case event.MatchesPressOrRepeat("up"):
+		delta, allow_wrapping = -1, true
+	case event.MatchesPressOrRepeat("page_down"):
+		event.Handled = true
+		sz, err := screen_size()
+		if err != nil {
+			return true, err
+		}
+		delta = int(sz.HeightCells) - 3
+	case event.MatchesPressOrRepeat("page_up"):
+		event.Handled = true
+		sz, err := screen_size()
+		if err != nil {
+			return true, err
+		}
+		delta = 3 - int(sz.HeightCells)
+	default:
+		return false, nil
+	}
+	event.Handled = true
+	return true, next(delta, allow_wrapping)
 }
 
 func (self *FontList) on_key_event(event *loop.KeyEvent) (err error) {
@@ -271,30 +306,8 @@ func (self *FontList) on_key_event(event *loop.KeyEvent) (err error) {
 		}
 		return
 	}
-	ev := event
-	if ev.MatchesPressOrRepeat("down") {
-		ev.Handled = true
-		return self.next(1, true)
-	}
-	if ev.MatchesPressOrRepeat("up") {
-		ev.Handled = true
-		return self.next(-1, true)
-	}
-	if ev.MatchesPressOrRepeat("page_down") {
-		ev.Handled = true
-		sz, err := self.handler.lp.ScreenSize()
-		if err == nil {
-			err = self.next(int(sz.HeightCells)-3, false)
-		}
-		return err
-	}
-	if ev.MatchesPressOrRepeat("page_up") {
-		ev.Handled = true
-		sz, err := self.handler.lp.ScreenSize()
-		if err == nil {
-			err = self.next(3-int(sz.HeightCells), false)
-		}
-		return err
+	if handled, nav_err := self.handle_navigation_key(event, self.handler.lp.ScreenSize, self.next); handled {
+		return nav_err
 	}
 
 	if err = self.rl.OnKeyEvent(event); err != nil {

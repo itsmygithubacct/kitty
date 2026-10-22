@@ -1241,8 +1241,19 @@ static void schedule_timer(Timer *t) {
     t->os_timer = [NSTimer scheduledTimerWithTimeInterval:monotonic_t_to_s_double(t->interval) repeats:(t->repeats ? YES: NO) block:^(NSTimer *os_timer) {
         for (size_t i = 0; i < num_timers; i++) {
             if (timers[i].os_timer == os_timer) {
-                timers[i].callback(timers[i].id, timers[i].callback_data);
-                if (!timers[i].repeats) remove_timer_at(i);
+                const unsigned long long fired_id = timers[i].id;
+                const bool repeats = timers[i].repeats;
+                GLFWuserdatafun callback = timers[i].callback;
+                void *callback_data = timers[i].callback_data;
+                callback(fired_id, callback_data);
+                if (!repeats) {
+                    for (size_t j = 0; j < num_timers; j++) {
+                        if (timers[j].id == fired_id) {
+                            remove_timer_at(j);
+                            break;
+                        }
+                    }
+                }
                 break;
             }
         }

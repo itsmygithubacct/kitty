@@ -24,6 +24,7 @@ func TestParseColor(t *testing.T) {
 		c(`oklch(1,0,0)`, 255, 255, 255),
 		c(`oklch(0,0,0)`, 0, 0, 0),
 		c(`oklch(0.5,0.1,180)`, 0, 117, 101),
+		c(`oklch(50% 0.1 180)`, 0, 117, 101),
 		c(`oklch(0.7 0.15 140) # comment`, 0x68, 0xb4, 0x57),
 		c(`oklch(0.9 0.05 265)`, 0xce, 0xde, 0xff),
 		c(`lab(70 50 -30)`, 0xea, 0x88, 0xe2),

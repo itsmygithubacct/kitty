@@ -940,6 +940,42 @@ def parse_uri_list(text: str) -> Generator[str, None, None]:
             yield path
 
 
+def quote_file_uri_list(data: bytes) -> str:
+    """Quote a native local-file drop without generating an Enter/control key.
+
+    Do not turn a remote authority or malformed escape into a local pathname.
+    The drop callback has no established shell dialect. Refuse control-character
+    paths rather than inserting dialect-specific ANSI-C literals or raw keys.
+    Ordinary paths use POSIX quoting. Nothing is evaluated by the terminal.
+    """
+    import shlex
+    from urllib.parse import unquote_to_bytes, urlsplit
+    if len(data) > 1024 * 1024:
+        raise ValueError('file URI drop is too large')
+    answer = []
+    quoted_bytes = 0
+    for line in data.decode('utf-8', 'strict').split('\n'):
+        line = line.removesuffix('\r')
+        if not line or line.startswith('#'):
+            continue
+        if any(ord(c) < 32 or ord(c) == 127 for c in line) or re.search(r'%(?![0-9a-fA-F]{2})', line):
+            raise ValueError('invalid file URI')
+        uri = urlsplit(line)
+        if uri.scheme.lower() != 'file' or uri.netloc.lower() not in ('', 'localhost') or uri.query or uri.fragment:
+            raise ValueError('drop requires a local file URI')
+        path = unquote_to_bytes(uri.path).decode('utf-8', 'strict')
+        if not path.startswith('/') or '\0' in path:
+            raise ValueError('invalid local file path')
+        if any(ord(c) < 32 or 127 <= ord(c) < 160 for c in path):
+            raise ValueError('control-character file paths require a confirmed shell dialect')
+        quoted = shlex.quote(path)
+        quoted_bytes += len(quoted.encode('utf-8')) + bool(answer)
+        if quoted_bytes > 1024 * 1024:
+            raise ValueError('quoted file URI drop is too large')
+        answer.append(quoted)
+    return ' '.join(answer)
+
+
 def edit_config_file() -> None:
     from kitty.config import prepare_config_file_for_editing
     p = prepare_config_file_for_editing()

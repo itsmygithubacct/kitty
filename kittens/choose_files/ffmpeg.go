@@ -41,8 +41,7 @@ func ffmpeg_thumbnail_cmd(path, outpath string) *exec.Cmd {
 	)
 }
 
-func ffmpeg_thumbnail(path, tempath string, wg *sync.WaitGroup) (ans *images.ImageData, err error) {
-	defer wg.Done()
+func ffmpeg_thumbnail(path, tempath string) (ans *images.ImageData, err error) {
 	cmd := ffmpeg_thumbnail_cmd(path, tempath)
 	cmd.Stdin = nil
 	set_process_session_leader(cmd)
@@ -79,8 +78,7 @@ func ffmpeg_metadata_cmd(path string) *exec.Cmd {
 	)
 }
 
-func ffmpeg_metadata(path string, wg *sync.WaitGroup) (ans FFMpegMetadata, err error) {
-	defer wg.Done()
+func ffmpeg_metadata(path string) (ans FFMpegMetadata, err error) {
 	cmd := ffmpeg_metadata_cmd(path)
 	cmd.Stdin = nil
 	set_process_session_leader(cmd)
@@ -96,22 +94,39 @@ func ffmpeg_metadata(path string, wg *sync.WaitGroup) (ans FFMpegMetadata, err e
 	return
 }
 
+func run_ffmpeg_workers(
+	metadata_worker func() (FFMpegMetadata, error),
+	thumbnail_worker func() (*images.ImageData, error),
+) (metadata FFMpegMetadata, metadata_error error, img *images.ImageData, thumbnail_error error) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		metadata, metadata_error = metadata_worker()
+	}()
+	go func() {
+		defer wg.Done()
+		img, thumbnail_error = thumbnail_worker()
+	}()
+	wg.Wait()
+	return
+}
+
 func (c ffmpeg_renderer) Render(path string) (m map[string][]byte, mi metadata, img *images.ImageData, err error) {
-	wg := sync.WaitGroup{}
 	tempfile, err := os.CreateTemp(magick.TempDirInRAMIfPossible(), "kitty-choose-files-*.webp")
 	if err != nil {
 		return nil, mi, nil, err
 	}
 	defer func() { _ = os.Remove(tempfile.Name()); tempfile.Close() }()
-	var metadata FFMpegMetadata
-	var metadata_error error
-	wg.Add(1)
-	go func() { metadata, metadata_error = ffmpeg_metadata(path, &wg) }()
-	wg.Add(1)
-	go func() { img, err = ffmpeg_thumbnail(path, tempfile.Name(), &wg) }()
-	wg.Wait()
+	metadata, metadata_error, img, thumbnail_error := run_ffmpeg_workers(
+		func() (FFMpegMetadata, error) { return ffmpeg_metadata(path) },
+		func() (*images.ImageData, error) { return ffmpeg_thumbnail(path, tempfile.Name()) },
+	)
 	if metadata_error != nil {
 		return nil, mi, nil, metadata_error
+	}
+	if thumbnail_error != nil {
+		return nil, mi, nil, thumbnail_error
 	}
 	var ip ImagePreviewRenderer
 	if m, mi, img, err = ip.Render(tempfile.Name()); err != nil {

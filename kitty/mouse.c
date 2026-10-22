@@ -10,6 +10,7 @@
 #include "charsets.h"
 #include "dnd.h"
 #include <limits.h>
+#include <stdint.h>
 #include <math.h>
 #include "glfw-wrapper.h"
 #include "control-codes.h"
@@ -1530,41 +1531,79 @@ mouse_event(const int button, int modifiers, int action) {
     if (mouse_cursor_shape != old_cursor) set_mouse_cursor(mouse_cursor_shape);
 }
 
+static bool
+scroll_round_to_int(double value, int *result) {
+    if (!isfinite(value)) return false;
+    value = round(value);
+    // abs() is used by the callers, so keep INT_MIN out of the result too.
+    if (value >= (double)INT_MAX + 1.0 || value <= (double)INT_MIN) return false;
+    *result = (int)value;
+    return true;
+}
+
 static int
-scale_scroll(MouseTrackingMode mouse_tracking_mode, double offset, GLFWOffsetType offset_type, double *pending_scroll_pixels, int cell_size) {
+scale_scroll(MouseTrackingMode mouse_tracking_mode, double offset, GLFWOffsetType offset_type, double *pending_scroll_pixels, int cell_size,
+             double wheel_scroll_multiplier, double touch_scroll_multiplier, int wheel_scroll_min_lines) {
 // scale the scroll by the multiplier unless the mouse is grabbed. If the mouse is grabbed only change direction.
-#define SCALE_SCROLL(which) { double scale = OPT(which); if (mouse_tracking_mode) scale /= fabs(scale); offset *= scale; }
+    if (cell_size <= 0) { *pending_scroll_pixels = 0.0; return 0; }
+    if (!isfinite(offset)) {
+        *pending_scroll_pixels = 0.0;
+        return 0;
+    }
+#define SCALE_SCROLL(multiplier) do { \
+    double scale = (multiplier); \
+    if (!isfinite(scale)) { *pending_scroll_pixels = 0.0; return 0; } \
+    if (mouse_tracking_mode) { \
+        if (scale == 0.0) { *pending_scroll_pixels = 0.0; return 0; } \
+        scale = scale < 0.0 ? -1.0 : 1.0; \
+    } \
+    offset *= scale; \
+    if (!isfinite(offset)) { *pending_scroll_pixels = 0.0; return 0; } \
+} while (0)
     int s = 0;
     switch (offset_type) {
         case GLFW_SCROLL_OFFEST_HIGHRES: {
             SCALE_SCROLL(touch_scroll_multiplier);
             double pixels = *pending_scroll_pixels + offset;
+            if (!isfinite(pixels)) { *pending_scroll_pixels = 0.0; return 0; }
             if (fabs(pixels) < cell_size) {
                 *pending_scroll_pixels = pixels;
                 return 0;
             }
-            s = (int)round(pixels) / cell_size;
-            *pending_scroll_pixels = pixels - s * cell_size;
+            int rounded_pixels;
+            if (!scroll_round_to_int(pixels, &rounded_pixels)) { *pending_scroll_pixels = 0.0; return 0; }
+            s = rounded_pixels / cell_size;
+            *pending_scroll_pixels = pixels - (double)s * cell_size;
         } break;
         case GLFW_SCROLL_OFFEST_V120: {
             SCALE_SCROLL(wheel_scroll_multiplier);
             const double offset_lines = offset / 120.;
             const double pixels = *pending_scroll_pixels + offset_lines * cell_size;
+            if (!isfinite(pixels)) { *pending_scroll_pixels = 0.0; return 0; }
             if (fabs(pixels) < cell_size) {
                 *pending_scroll_pixels = pixels;
                 return 0;
             }
-            s = (int)round(pixels) / cell_size;
-            *pending_scroll_pixels = pixels - s * cell_size;
+            int rounded_pixels;
+            if (!scroll_round_to_int(pixels, &rounded_pixels)) { *pending_scroll_pixels = 0.0; return 0; }
+            s = rounded_pixels / cell_size;
+            *pending_scroll_pixels = pixels - (double)s * cell_size;
         } break;
         case GLFW_SCROLL_OFFSET_LINES: {
             SCALE_SCROLL(wheel_scroll_multiplier);
-            s = (int) round(offset);
+            if (!scroll_round_to_int(offset, &s)) { *pending_scroll_pixels = 0.0; return 0; }
             if (offset != 0) {
-                const int min_lines = mouse_tracking_mode ? 1 : OPT(wheel_scroll_min_lines);
+                const int min_lines = mouse_tracking_mode ? 1 : wheel_scroll_min_lines;
                 if (min_lines > 0 && abs(s) < min_lines) s = offset > 0 ? min_lines : -min_lines;
                 // Always add the minimum number of lines when it is negative
-                else if (min_lines < 0) s = offset > 0 ? s - min_lines : s + min_lines;
+                else if (min_lines < 0) {
+                    const int64_t adjusted_s = offset > 0 ? (int64_t)s - min_lines : (int64_t)s + min_lines;
+                    if (adjusted_s < (int64_t)INT_MIN + 1 || adjusted_s > (int64_t)INT_MAX) {
+                        *pending_scroll_pixels = 0.0;
+                        return 0;
+                    }
+                    s = (int)adjusted_s;
+                }
                 // apparently on cocoa some mice generate really small yoffset values
                 // when scrolling slowly https://github.com/kovidgoyal/kitty/issues/1238
                 if (s == 0) s = offset > 0 ? 1 : -1;
@@ -1574,6 +1613,21 @@ scale_scroll(MouseTrackingMode mouse_tracking_mode, double offset, GLFWOffsetTyp
     }
     return s;
 #undef SCALE_SCROLL
+}
+
+static PyObject*
+test_scale_scroll(PyObject *self UNUSED, PyObject *args) {
+    int mouse_tracking_mode, offset_type, cell_size, wheel_scroll_min_lines;
+    double offset, pending_scroll_pixels, wheel_scroll_multiplier, touch_scroll_multiplier;
+    if (!PyArg_ParseTuple(args, "idididdi", &mouse_tracking_mode, &offset, &offset_type, &pending_scroll_pixels, &cell_size,
+                          &wheel_scroll_multiplier, &touch_scroll_multiplier, &wheel_scroll_min_lines)) return NULL;
+    if (cell_size <= 0) {
+        PyErr_SetString(PyExc_ValueError, "cell_size must be positive");
+        return NULL;
+    }
+    int s = scale_scroll((MouseTrackingMode)mouse_tracking_mode, offset, (GLFWOffsetType)offset_type, &pending_scroll_pixels, cell_size,
+                         wheel_scroll_multiplier, touch_scroll_multiplier, wheel_scroll_min_lines);
+    return Py_BuildValue("id", s, pending_scroll_pixels);
 }
 
 static const char*
@@ -1671,9 +1725,11 @@ scroll_event(const GLFWScrollEvent *ev) {
                 delta_pixels = offset_lines * global_state.callback_os_window->fonts_data->fcm.cell_height;
             }
             screen->pending_scroll_pixels_y = 0.0;
-            if (screen_apply_pixel_scroll(screen, delta_pixels) && screen->selections.in_progress) update_drag(w);
+            if (isfinite(delta_pixels) && screen_apply_pixel_scroll(screen, delta_pixels) && screen->selections.in_progress) update_drag(w);
         } else {
-            int s = scale_scroll(screen->modes.mouse_tracking_mode, ev->y_offset, ev->offset_type, &screen->pending_scroll_pixels_y, global_state.callback_os_window->fonts_data->fcm.cell_height);
+            int s = scale_scroll(screen->modes.mouse_tracking_mode, ev->y_offset, ev->offset_type, &screen->pending_scroll_pixels_y,
+                                 global_state.callback_os_window->fonts_data->fcm.cell_height, OPT(wheel_scroll_multiplier),
+                                 OPT(touch_scroll_multiplier), OPT(wheel_scroll_min_lines));
             if (s) {
                 bool upwards = s > 0;
                 if (screen->modes.mouse_tracking_mode) {
@@ -1695,7 +1751,9 @@ scroll_event(const GLFWScrollEvent *ev) {
         }
     }
     if (ev->x_offset != 0.0) {
-        int s = scale_scroll(screen->modes.mouse_tracking_mode, ev->x_offset, ev->offset_type, &screen->pending_scroll_pixels_x, global_state.callback_os_window->fonts_data->fcm.cell_width);
+        int s = scale_scroll(screen->modes.mouse_tracking_mode, ev->x_offset, ev->offset_type, &screen->pending_scroll_pixels_x,
+                             global_state.callback_os_window->fonts_data->fcm.cell_width, OPT(wheel_scroll_multiplier),
+                             OPT(touch_scroll_multiplier), OPT(wheel_scroll_min_lines));
         if (s) {
             if (screen->modes.mouse_tracking_mode) {
                 int sz = encode_mouse_scroll(w, s > 0 ? 6 : 7, ev->keyboard_modifiers);
@@ -1789,6 +1847,7 @@ send_mock_mouse_event_to_window(PyObject *self UNUSED, PyObject *args) {
 static PyMethodDef module_methods[] = {
     {"send_mouse_event", (PyCFunction)(void (*) (void))(send_mouse_event), METH_VARARGS | METH_KEYWORDS, NULL},
     METHODB(test_encode_mouse, METH_VARARGS),
+    METHODB(test_scale_scroll, METH_VARARGS),
     METHODB(send_mock_mouse_event_to_window, METH_VARARGS),
     METHODB(mock_mouse_selection, METH_VARARGS),
     {NULL, NULL, 0, NULL}        /* Sentinel */

@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <errno.h>
 #include "../iqsort.h"
 
@@ -310,17 +311,35 @@ process_cli_arg(CLISpec* spec, const char *alias, const char *payload, const cha
             }
             break;
         case CLI_VALUE_INT:
-            errno = 0; val.intval = strtoll(payload, NULL, 10);
-            if (errno) {
-                set_err("%s is an invalid value for %s, it must be an integer number.", red_text(payload), green_text(alias));
-                return false;
-            } break;
+            {
+                char *end;
+                errno = 0; val.intval = strtoll(payload, &end, 10);
+                if (errno || end == payload) {
+                    set_err("%s is an invalid value for %s, it must be an integer number.", red_text(payload), green_text(alias));
+                    return false;
+                }
+                while (isspace((unsigned char)*end)) end++;
+                if (*end) {
+                    set_err("%s is an invalid value for %s, it must be an integer number.", red_text(payload), green_text(alias));
+                    return false;
+                }
+            }
+            break;
         case CLI_VALUE_FLOAT:
-            errno = 0; val.floatval = strtod(payload, NULL);
-            if (errno) {
-                set_err("%s is an invalid value for %s, it must be a number.", red_text(payload), green_text(alias));
-                return false;
-            } break;
+            {
+                char *end;
+                errno = 0; val.floatval = strtod(payload, &end);
+                if (errno || end == payload) {
+                    set_err("%s is an invalid value for %s, it must be a number.", red_text(payload), green_text(alias));
+                    return false;
+                }
+                while (isspace((unsigned char)*end)) end++;
+                if (*end) {
+                    set_err("%s is an invalid value for %s, it must be a number.", red_text(payload), green_text(alias));
+                    return false;
+                }
+            }
+            break;
         case CLI_VALUE_LIST: add_list_value(spec, flag->dest, payload); return true;
     }
     if (vt_is_end(vt_insert(&spec->value_map, flag->dest, val))) OOM;

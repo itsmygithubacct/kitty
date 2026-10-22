@@ -148,3 +148,31 @@ time.sleep(300)
             self.assertGreater(mem_walk, 0)
         finally:
             self._terminate(child)
+
+
+@unittest.skipUnless(is_macos, 'macOS process enumeration API')
+class MacOSProcessInfoTest(BaseTest):
+
+    def test_repeated_process_enumeration_releases_pid_buffer(self):
+        import gc
+        import tracemalloc
+
+        from kitty.fast_data_types import get_all_processes
+
+        tracemalloc.start()
+        try:
+            first = get_all_processes()
+            self.assertIsInstance(first, tuple)
+            self.assertIn(os.getpid(), first)
+            del first
+            gc.collect()
+            before = tracemalloc.get_traced_memory()[0]
+            for _ in range(128):
+                pids = get_all_processes()
+                self.assertIn(os.getpid(), pids)
+                del pids
+            gc.collect()
+            retained = tracemalloc.get_traced_memory()[0] - before
+            self.assertLess(retained, 64 * 1024)
+        finally:
+            tracemalloc.stop()

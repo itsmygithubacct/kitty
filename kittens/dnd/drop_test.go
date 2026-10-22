@@ -3,6 +3,7 @@
 package dnd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -429,4 +430,140 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestOnDropDataRejectsOutOfRangeMimeIndices(t *testing.T) {
+	tests := []struct {
+		name         string
+		offeredMimes []string
+		index        int
+	}{
+		{name: "index equals list length", offeredMimes: []string{"text/plain"}, index: 2},
+		{name: "empty list", index: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &dnd{drop_status: drop_status{offered_mimes: tt.offeredMimes}}
+			if err := d.on_drop_data(DC{Type: 'r', X: tt.index, Payload: []byte("aGVsbG8=")}); err == nil {
+				t.Fatal("expected out-of-range MIME index to be rejected")
+			}
+		})
+	}
+}
+
+func TestOnDropDataRejectsInactiveOrUnacceptedMime(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		readingData   bool
+		acceptedMimes []string
+	}{
+		{name: "stale response after drop ended", readingData: false, acceptedMimes: []string{"text/plain"}},
+		{name: "MIME not accepted for this drop", readingData: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bufferWriteCloser{Buffer: &bytes.Buffer{}}
+			dest := &drop_dest{dest: buf, mime_type: "text/plain"}
+			d := &dnd{
+				drop_status: drop_status{
+					offered_mimes:  []string{"text/plain"},
+					accepted_mimes: tt.acceptedMimes,
+					reading_data:   tt.readingData,
+				},
+				drop_dests: map[string]*drop_dest{"text/plain": dest},
+			}
+			if err := d.on_drop_data(DC{Type: 'r', X: 1, Has_more: true, Payload: []byte("aGVsbG8=")}); err == nil {
+				t.Fatal("expected inactive or unaccepted MIME response to be rejected")
+			}
+			if got := buf.String(); got != "" {
+				t.Fatalf("rejected response wrote %q to the destination", got)
+			}
+		})
+	}
+}
+
+func TestOnDropDataRejectsMimeWithoutDestination(t *testing.T) {
+	d := &dnd{
+		drop_status: drop_status{
+			offered_mimes:  []string{"text/plain"},
+			accepted_mimes: []string{"text/plain"},
+			reading_data:   true,
+		},
+		drop_dests: map[string]*drop_dest{},
+	}
+	if err := d.on_drop_data(DC{Type: 'r', X: 1, Has_more: true, Payload: []byte("aGVsbG8=")}); err == nil {
+		t.Fatal("expected MIME without a destination to be rejected")
+	}
+}
+
+func TestOnDropDataAcceptsActiveAcceptedMime(t *testing.T) {
+	buf := &bufferWriteCloser{Buffer: &bytes.Buffer{}}
+	dest := &drop_dest{dest: buf, mime_type: "text/plain"}
+	d := &dnd{
+		drop_status: drop_status{
+			offered_mimes:  []string{"text/plain"},
+			accepted_mimes: []string{"text/plain"},
+			reading_data:   true,
+		},
+		drop_dests: map[string]*drop_dest{"text/plain": dest},
+	}
+	if err := d.on_drop_data(DC{Type: 'r', X: 1, Has_more: true, Payload: []byte("aGVsbG8=")}); err != nil {
+		t.Fatalf("active accepted MIME was rejected: %v", err)
+	}
+	if got := buf.String(); got != "hello" {
+		t.Fatalf("destination got %q, want %q", got, "hello")
+	}
+}
+
+func TestOnDropDataRejectsCompletedMimeWhileAnotherMimeIsActive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plain.txt")
+	if err := os.WriteFile(path, []byte("preexisting"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	plain := &drop_dest{path: path, mime_type: "text/plain"}
+	html := &drop_dest{dest: &bufferWriteCloser{Buffer: &bytes.Buffer{}}, mime_type: "text/html"}
+	d := &dnd{
+		drop_status: drop_status{
+			offered_mimes:  []string{"text/plain", "text/html"},
+			accepted_mimes: []string{"text/plain", "text/html"},
+			reading_data:   true,
+		},
+		drop_dests: map[string]*drop_dest{
+			"text/plain": plain,
+			"text/html":  html,
+		},
+	}
+
+	if err := d.on_drop_data(DC{Type: 'r', X: 1, Has_more: true, Payload: []byte("aGVsbG8=")}); err != nil {
+		t.Fatalf("initial MIME A chunk was rejected: %v", err)
+	}
+	if err := d.on_drop_data(DC{Type: 'r', X: 1}); err != nil {
+		t.Fatalf("MIME A completion was rejected: %v", err)
+	}
+	if !plain.completed {
+		t.Fatal("MIME A destination was not marked completed")
+	}
+	if !d.drop_status.reading_data || html.completed {
+		t.Fatal("MIME B should keep the drop active after MIME A completes")
+	}
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(before); got != "hello" {
+		t.Fatalf("file after MIME A completion: got %q, want %q", got, "hello")
+	}
+	if err := d.on_drop_data(DC{Type: 'r', X: 1, Has_more: true, Payload: []byte("d29ybGQ=")}); err == nil {
+		t.Fatal("additional data for completed MIME A was accepted")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("completed MIME A file changed after a late chunk: before %q, after %q", before, after)
+	}
+	if !plain.completed {
+		t.Fatal("late MIME A chunk cleared the completed state")
+	}
 }
