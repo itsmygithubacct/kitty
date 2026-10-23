@@ -191,6 +191,9 @@ Unreleased
   without submitting a line. Malformed URIs and decoded control characters,
   including encoded LF, CR and TAB, refuse the whole list without insertion.
 
+- Graphics: Draw the first image immediately when a terminal window switches
+  from text to image layers, even if the application sends no further output.
+
 
 0.48.2 [2026-07-30]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

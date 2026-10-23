@@ -960,7 +960,6 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
         Window *w = tab->windows + i;
 #define WD w->render_data
         if (w->visible && WD.screen) {
-            os_window->needs_layers = os_window->needs_layers || screen_needs_rendering_in_layers(os_window, w, WD.screen);
             screen_check_pause_rendering(WD.screen, now);
             *num_visible_windows += 1;
             color_type window_bg = colorprofile_to_color(WD.screen->color_profile, WD.screen->color_profile->overridden.default_bg, WD.screen->color_profile->configured.default_bg).rgb;
@@ -1024,6 +1023,9 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
                 }
             }
             if (send_cell_data_to_gpu(WD.vao_idx, WD.screen, os_window)) needs_render = true;
+            // Image visibility is refreshed by send_cell_data_to_gpu. Checking
+            // earlier misses the first image until another redraw is requested.
+            os_window->needs_layers = os_window->needs_layers || screen_needs_rendering_in_layers(os_window, w, WD.screen);
             if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) needs_render = true;
             // Prepare window title bar screen data for GPU
             WindowRenderData *trd = &w->window_title_render_data;
