@@ -870,3 +870,115 @@ class TestLayout(BaseTest):
         RealTab.goto_layout(t, 'tall', raise_exception=True)
         RealTab.set_enabled_layouts(t, ['splits'])
         self.ae(t.current_layout.name, 'splits')
+
+    def fake_tab(self, enabled):
+        from kitty.layout.interface import all_layouts
+        from kitty.tabs import Tab as RealTab
+
+        class FakeTab:
+            enabled_layouts = enabled
+            goto_layout = RealTab.goto_layout
+            last_used_layout = RealTab.last_used_layout
+            current_layout = create_layout(Splits)
+            _last_used_layout = ''
+
+            def _set_current_layout(self, name):
+                self._last_used_layout = self.current_layout.full_name
+                self.current_layout = create_layout(all_layouts[name.partition(':')[0]])
+
+            @property
+            def _current_layout_name(self):
+                return self.current_layout.full_name
+
+            def relayout(self):
+                pass
+        return FakeTab()
+
+    def test_sessions_is_never_reached_by_wildcard_or_cycling(self):
+        from kitty.options.utils import parse_layout_names, to_layout_names
+        from kitty.tabs import Tab as RealTab
+        for wildcard in (['*'], ['all'], ['splits', '*']):
+            names = parse_layout_names(wildcard)
+            self.assertNotIn('sessions', names, wildcard)
+            self.assertIn('grid', names, wildcard)
+            # Cycling forwards and backwards from every enabled layout.
+            for delta in (1, -1):
+                t = self.fake_tab(names)
+                seen = []
+                for _ in range(2 * len(names)):
+                    RealTab.next_layout(t, delta)
+                    seen.append(t.current_layout.name)
+                self.assertNotIn('sessions', seen, (wildcard, delta))
+        self.assertNotIn('sessions', to_layout_names('*'))
+        # Cycling away from a selected sessions layout leaves it, as before.
+        t = self.fake_tab(parse_layout_names(['*']))
+        RealTab.goto_layout(t, 'sessions', raise_exception=True)
+        RealTab.next_layout(t)
+        self.assertNotEqual(t.current_layout.name, 'sessions')
+        # The previous layout is an explicit choice: zooming to stack and back
+        # with toggle_layout returns to the sessions grid.
+        t = self.fake_tab(parse_layout_names(['*']))
+        RealTab.goto_layout(t, 'sessions', raise_exception=True)
+        RealTab.toggle_layout(t, 'stack')
+        self.ae(t.current_layout.name, 'stack')
+        RealTab.toggle_layout(t, 'stack')
+        self.ae(t.current_layout.name, 'sessions')
+
+    def test_sessions_listed_by_name_is_an_ordinary_enabled_layout(self):
+        from kitty.options.utils import parse_layout_names, to_layout_names
+        from kitty.tabs import Tab as RealTab
+        self.ae(parse_layout_names(['*', 'sessions'])[-1], 'sessions')
+        self.ae(to_layout_names('splits,sessions'), ['splits', 'sessions'])
+        t = self.fake_tab(['splits', 'sessions'])
+        RealTab.next_layout(t)
+        self.ae(t.current_layout.name, 'sessions')
+        RealTab.next_layout(t)
+        self.ae(t.current_layout.name, 'splits')
+
+    def resize_probe(self, cls, n, idx, horizontal):
+        q = create_layout(cls)
+        orig = q._set_dimensions
+
+        def set_dimensions(all_windows):
+            orig(all_windows)
+            lgd.central = Region((0, 0, 1199, 599, 1200, 600))
+            lgd.cell_width, lgd.cell_height = 10, 20
+        q._set_dimensions = set_dimensions
+        windows = create_windows(q, num=n)
+        q(windows)
+        geometry = lambda: [w.geometry for w in windows]  # noqa: E731
+        before = geometry()
+        changed = q.modify_size_of_window(windows, idx + 1, .10, is_horizontal=horizontal)
+        q(windows)
+        return q, windows, geometry, before, changed
+
+    def test_sessions_resize_reset_and_restore(self):
+        # Two real rows of fifteen cells and ceil(n/2) columns: every count can
+        # be resized vertically, and horizontally once there are two columns.
+        for n in range(2, 14):
+            for horizontal, idx in ((False, 1), (True, 0), (False, n - 1)):
+                if horizontal and n < 3:
+                    q, windows, geometry, before, changed = self.resize_probe(Sessions, n, idx, horizontal)
+                    self.assertFalse(changed, f'one column cannot widen, n={n}')
+                    continue
+                q, windows, geometry, before, changed = self.resize_probe(Sessions, n, idx, horizontal)
+                what = f'n={n} horizontal={horizontal} pane={idx}'
+                self.assertTrue(changed, what)
+                resized = geometry()
+                self.assertNotEqual(resized, before, what)
+                state = q.layout_state()
+                q.remove_all_biases()
+                q(windows)
+                self.ae(geometry(), before, what)
+                q.set_layout_state(state, lambda x: x)
+                q(windows)
+                self.ae(geometry(), resized, what)
+
+    def test_stock_grid_resize_is_unchanged(self):
+        # Control: the sessions resize fix is an override; the stock grid keeps
+        # its own results, including the counts where it cannot resize rows.
+        expected = [(False, True), (True, True), (True, True), (True, True)] + [(False, True)] * 8
+        got = [tuple(self.resize_probe(Grid, n, idx, horizontal)[4] for horizontal, idx in ((False, 1), (True, 0)))
+               for n in range(2, 14)]
+        self.ae(got, expected)
+        self.assertIsNot(Sessions.apply_bias, Grid.apply_bias)

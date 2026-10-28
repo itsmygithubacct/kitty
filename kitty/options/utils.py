@@ -673,7 +673,9 @@ def parse_layout_names(parts: Iterable[str]) -> list[str]:
     for p in parts:
         p = p.lower()
         if p in ('*', 'all'):
-            ans.extend(sorted(all_layouts))
+            # A layout selected only by name (sessions) is never part of "all";
+            # listing it by name enables it like any other layout.
+            ans.extend(sorted(k for k, v in all_layouts.items() if not v.explicit_only))
             continue
         name = p.partition(':')[0]
         if name not in all_layouts:

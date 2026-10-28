@@ -155,8 +155,13 @@ been there. Five windows look like::
 
 This layout is selected by name, with ``goto_layout sessions`` or
 ``kitten @ goto-layout sessions``, and does not need to be in
-:opt:`enabled_layouts`. It is then kept when the configuration is reloaded, and
-cycling with :ac:`next_layout` never selects it. It has no options.
+:opt:`enabled_layouts`. It is then kept when the configuration is reloaded.
+``enabled_layouts *`` (or ``all``) does not include it, so cycling with
+:ac:`next_layout` never selects it; :ac:`last_used_layout` and
+:ac:`toggle_layout` return to it like any previously used layout. Listing
+``sessions`` by name in :opt:`enabled_layouts` makes it an ordinary enabled
+layout that :ac:`next_layout` cycles through. Resizing works on its real two
+rows and columns. It has no options.
 
 
 .. _splits_layout:

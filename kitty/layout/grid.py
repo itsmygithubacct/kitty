@@ -354,3 +354,24 @@ class Sessions(Grid):
         # The grid's small-count shortcut assumes side-by-side panes; two
         # sessions here are stacked.
         return self.grid_neighbors(window, windows, n) if n > 1 else {}
+
+    def apply_bias(self, window_id: int, increment: float, all_windows: WindowList, is_horizontal: bool = True) -> bool:
+        # Grid probes a bias against one slot per window, which from six
+        # sessions on invents rows too short to resize. Probe the real two
+        # rows and ceil(n/2) columns; the stock grid keeps its own behaviour.
+        num_windows = all_windows.num_groups
+        ncols, nrows, special_rows, special_col = self.grid_size(num_windows)
+        row_num, col_num = self.position_for_window_idx(window_id, num_windows, ncols, nrows, special_rows, special_col)
+        if is_horizontal:
+            attr, bias_idx, slots, layout_func = 'biased_cols', col_num, ncols, self.column_layout
+        else:
+            attr, bias_idx, slots, layout_func = 'biased_rows', row_num, max(nrows, special_rows), self.row_layout
+        if slots < 2:
+            return False
+        current: dict[int, float] = getattr(self, attr)
+        candidate = current.copy()
+        candidate[bias_idx] = candidate.get(bias_idx, 0) + increment
+        if tuple(self.variable_layout(layout_func, slots, current)) == tuple(self.variable_layout(layout_func, slots, candidate)):
+            return False
+        setattr(self, attr, candidate)
+        return True
