@@ -56,7 +56,7 @@ from .fast_data_types import (
 )
 from .kilix_chrome.popup import ChromePopup, current_popup, dismiss_popup, layout_popups
 from .layout.base import DragOverlayMode, Layout
-from .layout.interface import create_layout_object_for, evict_cached_layouts
+from .layout.interface import all_layouts, create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
 from .tab_bar import TabBar, TabBarData, apply_title_template
 from .types import ac
@@ -269,7 +269,7 @@ class Tab:  # {{{
 
     def set_enabled_layouts(self, val: Iterable[str]) -> None:
         self.enabled_layouts = [x.lower() for x in val] or ['tall']
-        if self.current_layout.name not in self.enabled_layouts:
+        if self.current_layout.name not in self.enabled_layouts and not self.current_layout.explicit_only:
             self._set_current_layout(self.enabled_layouts[0])
         self.relayout()
 
@@ -697,6 +697,8 @@ class Tab:  # {{{
                 matched_layout = prefix_matches[0]
             elif len(matches) == 1:
                 matched_layout = matches[0]
+            elif not matches and not has_colon and getattr(all_layouts.get(q), 'explicit_only', False):
+                matched_layout = q
         if matched_layout:
             self._set_current_layout(matched_layout)
             self.relayout()

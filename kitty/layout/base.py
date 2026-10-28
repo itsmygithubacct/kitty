@@ -243,6 +243,10 @@ class Layout:
     layout_opts = LayoutOpts({})
     only_active_window_visible = False
     drag_overlay_mode: ClassVar[DragOverlayMode] = DragOverlayMode.full
+    # Selectable by name (goto_layout) without being in enabled_layouts, and
+    # kept when a configuration reload resets a tab's enabled layouts. Cycling
+    # only visits enabled layouts, so such a layout is never reached by accident.
+    explicit_only = False
 
     def __init__(self, os_window_id: int, tab_id: int, layout_opts: str = '') -> None:
         self.set_owner(os_window_id, tab_id)

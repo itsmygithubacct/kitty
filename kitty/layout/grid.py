@@ -30,11 +30,25 @@ def calc_grid_size(n: int) -> tuple[int, int, int, int]:
     return ncols, nrows, special_rows, special_col
 
 
+@lru_cache
+def calc_sessions_grid_size(n: int) -> tuple[int, int, int, int]:
+    # One pane fills the tab; otherwise two rows and ceil(n/2) columns, filled
+    # column by column, so adding a pane never moves an earlier one. With an
+    # odd count the last column holds a single full-height pane.
+    if n <= 1:
+        return 1, 1, 1, 0
+    ncols = (n + 1) // 2
+    return ncols, 2, n - 2 * (ncols - 1), ncols - 1
+
+
 class Grid(Layout):
 
     name: str = 'grid'
     no_minimal_window_borders = True
     drag_overlay_mode = DragOverlayMode.axis_y
+
+    def grid_size(self, n: int) -> tuple[int, int, int, int]:
+        return calc_grid_size(n)
 
     def remove_all_biases(self) -> bool:
         self.biased_rows: dict[int, float] = {}
@@ -77,7 +91,7 @@ class Grid(Layout):
 
     def bias_slot(self, all_windows: WindowList, idx: int, fractional_bias: float, cell_increment_bias_h: float, cell_increment_bias_v: float) -> bool:
         num_windows = all_windows.num_groups
-        ncols, nrows, special_rows, special_col = calc_grid_size(num_windows)
+        ncols, nrows, special_rows, special_col = self.grid_size(num_windows)
         row_num, col_num = self.position_for_window_idx(idx, num_windows, ncols, nrows, special_rows, special_col)
         if row_num == 0:
             b = self.biased_cols
@@ -95,7 +109,7 @@ class Grid(Layout):
 
     def apply_bias(self, window_id: int, increment: float, all_windows: WindowList, is_horizontal: bool = True) -> bool:
         num_windows = all_windows.num_groups
-        ncols, nrows, special_rows, special_col = calc_grid_size(num_windows)
+        ncols, nrows, special_rows, special_col = self.grid_size(num_windows)
         row_num, col_num = self.position_for_window_idx(window_id, num_windows, ncols, nrows, special_rows, special_col)
 
         if is_horizontal:
@@ -156,7 +170,7 @@ class Grid(Layout):
         if n == 1:
             self.layout_single_window_group(next(windows.iter_all_layoutable_groups()))
             return
-        ncols, nrows, special_rows, special_col = calc_grid_size(n)
+        ncols, nrows, special_rows, special_col = self.grid_size(n)
         groups = tuple(windows.iter_all_layoutable_groups())
         win_col_map: list[list[WindowGroup]] = []
 
@@ -198,7 +212,7 @@ class Grid(Layout):
         if not lgd.draw_minimal_borders or n < 2:
             return
         needs_borders_map = windows.compute_needs_borders_map(lgd.draw_active_borders)
-        ncols, nrows, special_rows, special_col = calc_grid_size(n)
+        ncols, nrows, special_rows, special_col = self.grid_size(n)
         is_first_row: set[int] = set()
         is_last_row: set[int] = set()
         is_first_column: set[int] = set()
@@ -262,10 +276,12 @@ class Grid(Layout):
         n = windows.num_groups
         if n < 4:
             return neighbors_for_tall_window(1, window, windows)
+        return self.grid_neighbors(window, windows, n)
 
+    def grid_neighbors(self, window: WindowType, windows: WindowList, n: int) -> NeighborsMap:
         wg = windows.group_for_window(window)
         assert wg is not None
-        ncols, nrows, special_rows, special_col = calc_grid_size(n)
+        ncols, nrows, special_rows, special_col = self.grid_size(n)
         blank_row: list[int | None] = [None for i in range(ncols)]
         matrix = tuple(blank_row[:] for j in range(max(nrows, special_rows)))
         wi = windows.iter_all_layoutable_groups()
@@ -322,3 +338,19 @@ class Grid(Layout):
         self.biased_rows = {int(k): v for k, v in layout_state['biased_rows'].items()}
         self.biased_cols = {int(k): v for k, v in layout_state['biased_cols'].items()}
         return True
+
+
+class Sessions(Grid):
+    """Coding sessions side by side: at most two rows, columns added as needed."""
+
+    name = 'sessions'
+    explicit_only = True
+
+    def grid_size(self, n: int) -> tuple[int, int, int, int]:
+        return calc_sessions_grid_size(n)
+
+    def neighbors_for_window(self, window: WindowType, windows: WindowList) -> NeighborsMap:
+        n = windows.num_groups
+        # The grid's small-count shortcut assumes side-by-side panes; two
+        # sessions here are stacked.
+        return self.grid_neighbors(window, windows, n) if n > 1 else {}

@@ -4,7 +4,8 @@
 from kitty.config import defaults
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, RIGHT_EDGE, TOP_EDGE, Region
 from kitty.layout.base import layout_dimension, lgd
-from kitty.layout.interface import Grid, Horizontal, Splits, Stack, Tall
+from kitty.layout.grid import calc_grid_size, calc_sessions_grid_size
+from kitty.layout.interface import Grid, Horizontal, Sessions, Splits, Stack, Tall
 from kitty.layout.splits import Pair, SplitsLayoutOpts
 from kitty.types import WindowGeometry
 from kitty.window import EdgeWidths
@@ -242,12 +243,12 @@ class TestLayout(BaseTest):
         check_visible()
 
     def test_layout_operations(self):
-        for layout_class in (Stack, Horizontal, Tall, Grid):
+        for layout_class in (Stack, Horizontal, Tall, Grid, Sessions):
             q = create_layout(layout_class)
             self.do_ops_test(q)
 
     def test_overlay_layout_operations(self):
-        for layout_class in (Stack, Horizontal, Tall, Grid):
+        for layout_class in (Stack, Horizontal, Tall, Grid, Sessions):
             q = create_layout(layout_class)
             self.do_overlay_test(q)
 
@@ -749,3 +750,123 @@ class TestLayout(BaseTest):
         d = drtw(q, all_windows, wD, TOP_EDGE)
         self.ae(d.vertical_id, right_pair_id)
         self.ae(d.height_increases_downwards, True)
+
+    def test_grid_size_is_unchanged(self):
+        # The sessions layout reuses the grid machinery; the grid's own shapes
+        # must not move.
+        expected = {1: (1, 1, 1, 0), 2: (2, 1, 1, 1), 3: (2, 1, 2, 1), 4: (2, 2, 2, 1),
+                    5: (2, 2, 3, 1), 6: (3, 2, 2, 2), 9: (3, 3, 3, 2), 11: (4, 2, 5, 3), 12: (4, 3, 3, 3)}
+        for n, shape in expected.items():
+            self.ae(calc_grid_size(n), shape, n)
+
+    def test_sessions_grid_size(self):
+        # (columns, rows, rows in the special column, special column): one
+        # pane fills the tab, then two rows and ceil(n/2) columns; with an odd
+        # count the last column holds one pane.
+        expected = {1: (1, 1, 1, 0), 2: (1, 2, 2, 0), 3: (2, 2, 1, 1), 4: (2, 2, 2, 1),
+                    5: (3, 2, 1, 2), 6: (3, 2, 2, 2), 7: (4, 2, 1, 3), 8: (4, 2, 2, 3),
+                    9: (5, 2, 1, 4), 10: (5, 2, 2, 4), 11: (6, 2, 1, 5), 12: (6, 2, 2, 5),
+                    13: (7, 2, 1, 6)}
+        for n, shape in expected.items():
+            self.ae(calc_sessions_grid_size(n), shape, n)
+
+    def sessions_rects(self, num, remove=()):
+        q = create_layout(Sessions)
+        orig = q._set_dimensions
+
+        def set_dimensions(all_windows):
+            orig(all_windows)
+            lgd.central = Region((0, 0, 1199, 599, 1200, 600))
+            lgd.cell_width, lgd.cell_height = 10, 20
+        q._set_dimensions = set_dimensions
+        all_windows = create_windows(q, num=0)
+        windows = [Window(i + 1) for i in range(num)]
+        for w in windows:
+            q.add_window(all_windows, w)
+        for idx in remove:
+            all_windows.remove_window(windows[idx])
+        q(all_windows)
+        kept = [w for i, w in enumerate(windows) if i not in remove]
+        return [(w.geometry.left, w.geometry.top, w.geometry.right, w.geometry.bottom) for w in kept]
+
+    def test_sessions_placement(self):
+        for n in range(1, 14):
+            rects = self.sessions_rects(n)
+            lefts = sorted({r[0] for r in rects})
+            tops = sorted({r[1] for r in rects})
+            self.ae(len(lefts), (n + 1) // 2, f'columns for {n}')
+            self.ae(len(tops), 1 if n == 1 else 2, f'rows for {n}')
+            widths = [r[2] - r[0] for r in rects]
+            self.assertLessEqual(max(widths) - min(widths), 10, f'column widths for {n}')
+            for i, (left, top, right, bottom) in enumerate(rects):
+                # Column-major: adding a pane never moves an earlier one to
+                # another cell.
+                self.ae(lefts.index(left), i // 2, f'column of pane {i} of {n}')
+                self.ae(tops.index(top), i % 2 if n > 1 else 0, f'row of pane {i} of {n}')
+            if n % 2 and n > 1:
+                last = rects[-1]
+                self.ae((last[1], last[3]), (min(r[1] for r in rects), max(r[3] for r in rects)),
+                        f'odd last pane spans both rows for {n}')
+
+    def test_sessions_rebalance_on_close(self):
+        # Closing any pane re-lays out the rest exactly as a fresh grid of the
+        # remaining count, in their original order.
+        for n in range(2, 14):
+            for idx in range(n):
+                self.ae(self.sessions_rects(n, remove=(idx,)), self.sessions_rects(n - 1), f'close {idx} of {n}')
+        self.ae(self.sessions_rects(12, remove=(1, 6)), self.sessions_rects(10))
+
+    def test_sessions_neighbors(self):
+        def neighbors(n, idx):
+            q = create_layout(Sessions)
+            all_windows = create_windows(q, num=0)
+            windows = [Window(i + 1) for i in range(n)]
+            for w in windows:
+                q.add_window(all_windows, w)
+            q(all_windows)
+            gid = {w.id: all_windows.group_for_window(w).id for w in windows}
+            ans = q.neighbors_for_window(windows[idx], all_windows)
+            back = {v: k for k, v in gid.items()}
+            return {k: [back[x] for x in v] for k, v in ans.items()}
+
+        self.ae(neighbors(1, 0), {})
+        self.ae(neighbors(2, 0), {'bottom': [2]})
+        self.ae(neighbors(2, 1), {'top': [1]})
+        self.ae(neighbors(3, 0), {'bottom': [2], 'right': [3]})
+        self.ae(neighbors(3, 2), {'left': [1, 2]})
+        self.ae(neighbors(12, 11), {'top': [11], 'left': [10]})
+
+    def test_sessions_is_selected_explicitly(self):
+        # Selectable by name without being enabled, kept when a configuration
+        # reload resets the enabled layouts, and never reached by cycling.
+        from kitty.layout.interface import all_layouts
+        from kitty.tabs import Tab as RealTab
+
+        class FakeTab:
+            def __init__(self):
+                self.enabled_layouts = ['splits', 'tall']
+                self.current_layout = create_layout(Splits)
+
+            def _set_current_layout(self, name):
+                self.current_layout = create_layout(all_layouts[name.partition(':')[0]])
+
+            def relayout(self):
+                pass
+
+        self.assertTrue(Sessions.explicit_only)
+        self.assertFalse(Grid.explicit_only)
+        t = FakeTab()
+        RealTab.goto_layout(t, 'sessions', raise_exception=True)
+        self.ae(t.current_layout.name, 'sessions')
+        RealTab.set_enabled_layouts(t, ['splits', 'tall'])
+        self.ae(t.current_layout.name, 'sessions')
+        with self.assertRaises(ValueError):
+            RealTab.goto_layout(t, 'no-such-layout', raise_exception=True)
+        RealTab.next_layout(t)
+        self.ae(t.current_layout.name, 'splits')
+        # Other disabled layouts stay disabled.
+        with self.assertRaises(ValueError):
+            RealTab.goto_layout(t, 'grid', raise_exception=True)
+        RealTab.goto_layout(t, 'tall', raise_exception=True)
+        RealTab.set_enabled_layouts(t, ['splits'])
+        self.ae(t.current_layout.name, 'splits')

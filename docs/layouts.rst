@@ -135,6 +135,30 @@ options::
     └─────────┴──────────┴─────────┘
 
 
+The Sessions Layout
+--------------------
+
+A grid for coding sessions: one window fills the tab, and from two windows on
+there are exactly two rows and as many columns as needed (half the window
+count, rounded up). Windows fill each column top to bottom, so adding a window
+never moves an earlier one; with an odd count the last column holds one
+full-height window. Closing a window lays out the rest again as if it had never
+been there. Five windows look like::
+
+    ┌─────────┬──────────┬─────────┐
+    │ 1       │ 3        │ 5       │
+    │         │          │         │
+    ├─────────┼──────────┤         │
+    │ 2       │ 4        │         │
+    │         │          │         │
+    └─────────┴──────────┴─────────┘
+
+This layout is selected by name, with ``goto_layout sessions`` or
+``kitten @ goto-layout sessions``, and does not need to be in
+:opt:`enabled_layouts`. It is then kept when the configuration is reloaded, and
+cycling with :ac:`next_layout` never selects it. It has no options.
+
+
 .. _splits_layout:
 
 The Splits Layout
