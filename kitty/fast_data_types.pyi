@@ -925,6 +925,9 @@ def next_window_id() -> int:
 def mark_tab_bar_dirty(os_window_id: int, should_be_shown: bool) -> None:
     pass
 
+def set_tab_bar_rows(os_window_id: int, rows: int) -> bool:
+    """Reserve height for the rows the tab bar draws; True when the count changed."""
+
 def is_tab_bar_visible(os_window_id: int) -> bool: ...
 
 

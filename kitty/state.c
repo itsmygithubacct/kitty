@@ -13,7 +13,7 @@
 
 GlobalState global_state = {{0}};
 
-#define KILIX_TAB_BAR_TABS_PER_ROW 30
+#define KILIX_TAB_BAR_TABS_PER_ROW 10
 
 #define REMOVER(array, qid, count, destroy, capacity) { \
     for (size_t i = 0; i < count; i++) { \
@@ -793,12 +793,16 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
     if (!is_os_window_fullscreen(os_window) && !OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
-        unsigned tab_bar_item_count = os_window->num_tabs + (OPT(tab_bar_show_new_tab_button) ? 1u : 0u);
+        // tab_bar.py reports the rows it draws (a dragged-out tab, a dropped
+        // placeholder or tab_bar_filter change the count). Before its first
+        // report, estimate from the tabs: the new-tab button rides on the last
+        // row and never starts one.
+        unsigned tab_bar_rows = os_window->tab_bar_rows ? os_window->tab_bar_rows : tab_bar_rows_for_count(os_window->num_tabs);
         central->left = 0; central->right = os_window->viewport_width;
         central->top = 0; central->bottom = os_window->viewport_height;
         switch(OPT(tab_bar_edge)) {
             case TOP_EDGE: {
-                unsigned tab_bar_content_height = os_window->fonts_data->fcm.cell_height * tab_bar_rows_for_count(tab_bar_item_count);
+                unsigned tab_bar_content_height = os_window->fonts_data->fcm.cell_height * tab_bar_rows;
                 unsigned tab_bar_height = tab_bar_content_height + margin_inner + margin_outer;
                 central->top = tab_bar_height;
                 central->bottom = os_window->viewport_height;
@@ -837,7 +841,7 @@ os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
                 break;
             }
             default: {
-                unsigned tab_bar_content_height = os_window->fonts_data->fcm.cell_height * tab_bar_rows_for_count(tab_bar_item_count);
+                unsigned tab_bar_content_height = os_window->fonts_data->fcm.cell_height * tab_bar_rows;
                 unsigned tab_bar_height = tab_bar_content_height + margin_inner + margin_outer;
                 central->top = 0;
                 long bottom = os_window->viewport_height - tab_bar_height;
@@ -1231,6 +1235,18 @@ PYWRAP1(mark_tab_bar_dirty) {
         os_window->tab_bar_data_updated = false;
     END_WITH_OS_WINDOW
     Py_RETURN_NONE;
+}
+
+PYWRAP1(set_tab_bar_rows) {
+    id_type os_window_id; unsigned int rows;
+    PA("KI", &os_window_id, &rows);
+    WITH_OS_WINDOW(os_window_id)
+        if (!rows) rows = 1;
+        if (os_window->tab_bar_rows == rows) Py_RETURN_FALSE;
+        os_window->tab_bar_rows = rows;
+        Py_RETURN_TRUE;
+    END_WITH_OS_WINDOW
+    Py_RETURN_FALSE;
 }
 
 PYWRAP1(is_tab_bar_visible) {
@@ -1951,6 +1967,7 @@ static PyMethodDef module_methods[] = {
     MW(set_os_window_chrome, METH_VARARGS),
     MW(focus_os_window, METH_VARARGS),
     MW(mark_tab_bar_dirty, METH_VARARGS),
+    MW(set_tab_bar_rows, METH_VARARGS),
     MW(is_tab_bar_visible, METH_VARARGS),
     MW(is_os_window_fullscreen, METH_VARARGS),
     MW(run_with_activation_token, METH_O),

@@ -48,6 +48,7 @@ from .fast_data_types import (
     set_active_tab,
     set_active_window,
     set_redirect_keys_to_overlay,
+    set_tab_bar_rows,
     set_tab_being_dragged,
     set_window_being_dragged,
     start_drag_with_data,
@@ -58,7 +59,7 @@ from .kilix_chrome.popup import ChromePopup, current_popup, dismiss_popup, layou
 from .layout.base import DragOverlayMode, Layout
 from .layout.interface import all_layouts, create_layout_object_for, evict_cached_layouts
 from .progress import ProgressState
-from .tab_bar import TabBar, TabBarData, apply_title_template
+from .tab_bar import TabBar, TabBarData, apply_title_template, split_tab_bar_rows
 from .types import ac
 from .typing_compat import EdgeLiteral, SessionTab, SessionType, TypedDict
 from .utils import cmdline_for_hold, color_as_int, log_error, platform_window_id, resolved_shell, shlex_split, which
@@ -1484,7 +1485,14 @@ class TabManager:  # {{{
                 watcher(boss, w, data)
 
     def update_tab_bar_data(self) -> None:
-        if self.tab_bar.update(self.tab_bar_data):
+        data = self.tab_bar_data
+        # The bar is as tall as the rows it draws. Those can change without a
+        # tab being added or closed (a tab dragged out or dropped in, or
+        # tab_bar_filter), so reserve the drawn count and relayout on change.
+        if not self.tab_bar.is_vertical and set_tab_bar_rows(self.os_window_id, len(split_tab_bar_rows(data))):
+            self.tab_bar.layout()
+            self.resize(only_tabs=True)
+        if self.tab_bar.update(data):
             for tab in self.tabs:
                 tab.relayout_borders()
 

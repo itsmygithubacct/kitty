@@ -65,7 +65,10 @@ def chrome_value(name: str, default: str = '1') -> str:
             'KILIX_CHROME_WINDOWS', 'KILIX_CHROME_SPEAK', 'KILIX_CHROME_DICTATE',
         }:
             return '0'
-        if name in {'KILIX_CHROME_PANE_CPU_MODE', 'KILIX_CHROME_PANE_MEMORY_MODE'}:
+        if name in {
+            'KILIX_CHROME_PANE_CPU_MODE', 'KILIX_CHROME_PANE_MEMORY_MODE',
+            'KILIX_CHROME_SYSTEM_LOAD_MODE',
+        }:
             return 'off'
     settings, exists = values()
     return settings.get(name, default) if exists else os.environ.get(name, default)

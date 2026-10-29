@@ -456,6 +456,8 @@ typedef struct OSWindow {
     bool mouse_button_pressed[32];
     uint32_t chrome_popup_dismiss_buttons;
     bool has_too_few_tabs;
+    // Rows tab_bar.py last drew; 0 until it has drawn, then the bar height follows it.
+    unsigned tab_bar_rows;
     PyObject *window_title;
     bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;

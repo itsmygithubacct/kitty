@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..kilix_memory import MEMORY_WIDGET_ACTION
 from .layouts import LAYOUT_ACTION, show_layout_menu
 from .providers import (
     CALENDAR_WIDGET_ACTION,
@@ -29,7 +30,7 @@ THERMAL_WIDGET_ACTION = 'kilix_show_thermal_widget'
 GESTURE_ACTIONS = frozenset((
     VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION, BATTERY_TOGGLE_ACTION, THERMAL_WIDGET_ACTION,
-    LAYOUT_ACTION,
+    LAYOUT_ACTION, MEMORY_WIDGET_ACTION,
 ))
 
 
@@ -107,6 +108,12 @@ def dispatch(tab_manager: TabManager, action: str, gesture: str = 'single') -> b
         command([*target_command, '--clock'] if target_command else None, 'Clock Settings', 48, 13)
     elif gesture == 'right':
         command(settings_target(), 'Kilix Settings', 90, 30)
+    elif action == MEMORY_WIDGET_ACTION:
+        # The system CPU/RAM readout opens Kilix Memory, like a pane's chip.
+        # One click opens one tab: the second release of a double click is
+        # not another request.
+        if gesture == 'single':
+            tab.kilix_show_memory_widget()
     elif action == BATTERY_TOGGLE_ACTION and gesture == 'double':
         from ..kilix_battery import toggle_battery_percent
         toggle_battery_percent()

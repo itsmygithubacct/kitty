@@ -44,8 +44,10 @@ def ensure_clock_timer() -> None:
 def ensure_chrome_timers() -> None:
     from ..kilix_battery import ensure_battery_timer, ensure_thermal_timer
     from ..kilix_memory import ensure_pane_memory_timer
+    from ..kilix_system_load import ensure_system_load_timer
     from ..kilix_windows import ensure_windows_timer
     ensure_timer(invalidate_all)
+    ensure_system_load_timer()
     ensure_thermal_timer()
     ensure_clock_timer()
     ensure_battery_timer()

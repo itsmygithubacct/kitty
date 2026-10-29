@@ -18,6 +18,7 @@ from kitty.kilix_battery import (
     VOLUME_WIDGET_ACTION,
 )
 from kitty.kilix_chrome import settings as chrome_settings
+from kitty.kilix_memory import MEMORY_WIDGET_ACTION
 from kitty.tab_bar import TabBar, TabBarData, as_rgb
 from kitty.utils import color_as_int
 
@@ -214,6 +215,8 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.get_boss', return_value=boss),
             patch('kitty.tab_bar.window_entries', return_value=()),
             patch('kitty.tab_bar.ensure_chrome_timers'),
+            patch('kitty.tab_bar.system_load_segment', return_value=(
+                ' load ', MEMORY_WIDGET_ACTION, 41)) as system_segment,
             patch('kitty.tab_bar.thermal_segment', return_value=(
                 ' thermal ', THERMAL_WIDGET_ACTION, 42)),
             patch('kitty.tab_bar.window_entries', return_value=()),
@@ -222,18 +225,21 @@ class TestTabBar(BaseTest):
             tb.layout()
             segments = tb.right_status_segments()
             tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
+            # Each OS window records what it drew, so a refresh reaches each.
+            system_segment.assert_called_with(1)
 
+        # System CPU/RAM is immediately left of the temperature.
         self.ae(tuple(action for _, action, _ in segments), (
-            THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
-            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+            MEMORY_WIDGET_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION,
+            NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
-        self.ae(segments[0][2], 42)
+        self.ae((segments[0][2], segments[1][2]), (41, 42))
         self.assertTrue(all(
             fg == as_rgb(color_as_int(opts.foreground))
-            for _, _, fg in segments[1:]
+            for _, _, fg in segments[2:]
         ))
         self.ae(tuple(ae.action for ae in tb.action_extents), (
-            THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
+            MEMORY_WIDGET_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
             CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
         for extent in tb.action_extents:
@@ -364,6 +370,7 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_CALENDAR': '0',
                 'KILIX_CHROME_CLOCK': '0',
                 'KILIX_CHROME_NETWORK': '0',
+                'KILIX_CHROME_SYSTEM_LOAD_MODE': 'off',
                 'KILIX_CHROME_TEMPERATURE': '0',
                 'KILIX_CHROME_VOLUME': '0',
             }),
@@ -375,14 +382,23 @@ class TestTabBar(BaseTest):
         ):
             tb = TabBar(1)
             tb.layout()
-            tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 32)))
+            # Ten tabs per row: the eleventh starts the second row, even on a
+            # bar wide enough for all of them, and the new-tab button follows
+            # the last tab instead of starting a row of its own.
+            new_tab = TabBarData(title='+')
+            tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 12)) + (new_tab,))
 
-            self.ae(len(tb.tab_extents), 31)
-            self.ae(tb.tab_extents[29].y, (0, 0))
-            self.ae(tb.tab_extents[30].y, (1, 1))
-            last = tb.tab_extents[-1]
-            self.ae(tb.tab_id_at(last.x.start * 10 + 5, 185), 31)
+            self.ae(len(tb.tab_extents), 12)
+            self.ae(tb.tab_extents[9].y, (0, 0))
+            self.ae(tb.tab_extents[10].y, (1, 1))
+            self.ae(tb.tab_extents[11].y, (1, 1))
+            last = tb.tab_extents[10]
+            self.ae(tb.tab_id_at(last.x.start * 10 + 5, 185), 11)
             self.ae(tb.drag_order_coordinate(20, 181), (181, 20))
+
+            tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 21)) + (new_tab,))
+            self.ae(len(tb.tab_extents), 21)
+            self.ae([e.y.start for e in tb.tab_extents], [0] * 10 + [1] * 11)
 
             viewport.return_value = (region(0, 0, 3600, 200), hidden, 3600, 200, 10, 20)
             tb.layout()

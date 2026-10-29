@@ -40,6 +40,7 @@ from .kilix_chrome.lifecycle import ensure_chrome_timers
 from .kilix_chrome.providers import start_menu_segment
 from .kilix_chrome.registry import segments_for
 from .kilix_chrome.settings import chrome_value
+from .kilix_system_load import system_load_segment
 from .kilix_voice import dictate_segment, speak_segment
 from .kilix_windows import MINIMISED_GLYPH, window_entries
 from .progress import ProgressState
@@ -73,18 +74,22 @@ class TabBarData(NamedTuple):
     active_session_name: str = ''
 
 
-MAX_TABS_PER_ROW = 30
+MAX_TABS_PER_ROW = 10
 
 
 def split_tab_bar_rows(data: Sequence[TabBarData]) -> tuple[tuple[TabBarData, ...], ...]:
     rows: list[list[TabBarData]] = [[]]
     visible_items_in_row = 0
     for tab in data:
-        if visible_items_in_row >= MAX_TABS_PER_ROW:
+        # The new-tab button (tab_id -1) rides at the end of the last row: it
+        # is not a tab, so it never starts a row of its own. state.c counts
+        # rows the same way.
+        is_tab = tab.tab_id >= 0
+        if is_tab and visible_items_in_row >= MAX_TABS_PER_ROW:
             rows.append([])
             visible_items_in_row = 0
         rows[-1].append(tab)
-        visible_items_in_row += 1
+        visible_items_in_row += int(is_tab)
     return tuple(tuple(row) for row in rows if row) or ((),)
 
 
@@ -1093,6 +1098,11 @@ class TabBar:
         # The default inactive-tab foreground is #444, which is too dim for a
         # persistent status control. Match the configured terminal foreground.
         clock_fg = as_rgb(color_as_int(get_options().foreground))
+        # Whole-system CPU and RAM sit left of the temperature, in the same
+        # form as each pane's resource chip.
+        system = system_load_segment(self.os_window_id)
+        if system is not None:
+            ans.append(system)
         thermal = thermal_segment()
         if thermal is not None:
             text, action, fg = thermal

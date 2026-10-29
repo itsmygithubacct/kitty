@@ -117,6 +117,20 @@ class TestKilixChrome(BaseTest):
                 with patch('kitty.kilix_chrome.providers.local_now', return_value=datetime(2026, 9, 27, 23, 5)):
                     self.ae(clock_segment(), ' 23:05 ')
 
+    def test_system_readout_click_opens_memory_and_right_click_settings(self):
+        from kitty.kilix_memory import MEMORY_WIDGET_ACTION
+        tab = SimpleNamespace(new_window=Mock(), kilix_show_memory_widget=Mock())
+        owner = SimpleNamespace(id=17, tabref=lambda: tab)
+        manager = SimpleNamespace(active_tab=SimpleNamespace(active_window=owner))
+        with patch('kitty.kilix_chrome.popup.popup_target', return_value=owner), \
+                patch('kitty.kilix_chrome.registry.settings_target', return_value=['kilix', 'settings']):
+            self.assertTrue(dispatch(manager, MEMORY_WIDGET_ACTION, 'single'))
+            self.assertTrue(dispatch(manager, MEMORY_WIDGET_ACTION, 'double'))
+            tab.kilix_show_memory_widget.assert_called_once_with()
+            self.assertTrue(dispatch(manager, MEMORY_WIDGET_ACTION, 'right'))
+            self.ae(tab.new_window.call_args.kwargs['override_title'], 'Kilix Settings')
+            self.ae(tab.new_window.call_args.kwargs['cmd'], ['kilix', 'settings'])
+
     def test_clock_right_click_opens_only_clock_settings(self):
         tab = SimpleNamespace(new_window=Mock())
         owner = SimpleNamespace(id=17, tabref=lambda: tab)
