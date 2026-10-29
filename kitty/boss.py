@@ -93,7 +93,7 @@ from .fast_data_types import (
     current_focused_os_window_id,
     current_os_window,
     destroy_global_data,
-    focus_os_window,
+    focus_os_window as _focus_os_window,
     get_boss,
     get_options,
     get_os_window_size,
@@ -428,6 +428,18 @@ class VisualSelect:
                 tm.set_active_tab(t)
         if current_focused_os_window_id() != self.prev_os_window_id and self.prev_os_window_id is not None:
             focus_os_window(self.prev_os_window_id, True)
+
+
+# Above zero while a remote command from a pane the user is not typing in (or
+# from no pane at all) runs: it may open, close and rearrange, but it must not
+# raise an OS window, and the tab and pane the user was in stay active.
+_background_rc_depth = 0
+
+
+def focus_os_window(os_window_id: int, also_raise: bool = True, activation_token: str | None = None) -> bool:
+    if _background_rc_depth:
+        return False
+    return _focus_os_window(os_window_id, also_raise, activation_token)
 
 
 class Boss:
@@ -917,6 +929,10 @@ class Boss:
         self, pcmd: dict[str, Any], window: Window | None = None, peer_id: int = 0, self_window: Window | None = None
     ) -> RCResponse:
         from .remote_control import handle_cmd
+        global _background_rc_depth
+        held = None if self._is_user_focus(self_window or window) else self._focus_snapshot()
+        if held is not None:
+            _background_rc_depth += 1
         try:
             response = handle_cmd(self, window, pcmd, peer_id, self_window)
         except Exception as err:
@@ -924,7 +940,32 @@ class Boss:
             response = {'ok': False, 'error': str(err)}
             if not getattr(err, 'hide_traceback', False):
                 response['tb'] = traceback.format_exc()
+        finally:
+            if held is not None:
+                _background_rc_depth -= 1
+                if self._restore_focus(held) and pcmd.get('cmd') in ('focus-window', 'focus-tab') and not pcmd.get('no_response'):
+                    response = {'ok': False, 'error': 'Focus stays in the pane the user is typing in; this request came from another pane'}
         return response
+
+    def _is_user_focus(self, window: Window | None) -> bool:
+        # The pane the keyboard is in: the active pane of the focused OS window.
+        return window is not None and current_focused_os_window_id() == window.os_window_id and window is self.active_window
+
+    def _focus_snapshot(self) -> list[tuple[TabManager, Tab | None, Window | None]]:
+        return [(tm, tm.active_tab, tm.active_tab.active_window if tm.active_tab else None) for tm in self.os_window_map.values()]
+
+    def _restore_focus(self, held: list[tuple[TabManager, Tab | None, Window | None]]) -> bool:
+        restored = False
+        for tm, tab, window in held:
+            if tab is None or self.os_window_map.get(tm.os_window_id) is not tm or tab not in tm:
+                continue
+            if tm.active_tab is not tab:
+                tm.set_active_tab(tab)
+                restored = True
+            if window is not None and window in tab and tab.active_window is not window:
+                tab.set_active_window(window)
+                restored = True
+        return restored
 
     @ac('misc', '''
         Run a remote control command without needing to allow remote control
