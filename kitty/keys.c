@@ -423,6 +423,11 @@ on_key_input(const GLFWkeyevent *ev) {
     else { consumed = ret == Py_True; Py_CLEAR(ret); } \
     w = window_for_window_id(active_window_id); \
 }
+    if (key == GLFW_FKEY_LEFT_SUPER || key == GLFW_FKEY_RIGHT_SUPER || (mods & GLFW_MOD_SUPER)) {
+        dispatch_key_event(kilix_super_key_event);
+        if (consumed || !w) return;
+        screen = w->render_data.screen;
+    }
     if (action == GLFW_PRESS || action == GLFW_REPEAT) {
         w->last_special_key_pressed = 0;
         dispatch_key_event(dispatch_possible_special_key);

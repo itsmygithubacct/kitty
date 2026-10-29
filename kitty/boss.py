@@ -93,7 +93,6 @@ from .fast_data_types import (
     current_focused_os_window_id,
     current_os_window,
     destroy_global_data,
-    focus_os_window as _focus_os_window,
     get_boss,
     get_options,
     get_os_window_size,
@@ -133,6 +132,9 @@ from .fast_data_types import (
     toggle_secure_input,
     viewport_for_window,
     wrapped_kitten_names,
+)
+from .fast_data_types import (
+    focus_os_window as _focus_os_window,
 )
 from .key_encoding import get_name_to_functional_number_map
 from .keys import Mappings
@@ -2242,6 +2244,31 @@ class Boss:
     def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
         return self.mappings.dispatch_possible_special_key(ev)
 
+    def kilix_super_key_event(self, ev: KeyEvent) -> bool:
+        from .kilix_chrome.settings import chrome_enabled
+        from .kilix_chrome.start_key import LoneSuperKey
+        state = getattr(self, '_kilix_super_key', None)
+        if state is None:
+            state = self._kilix_super_key = LoneSuperKey()
+        # Command is not a Start key on macOS. Native Windows has no supported
+        # Start menu. A disabled or unavailable menu must preserve raw keys,
+        # including modifier reporting in the kitty keyboard protocol.
+        if is_macos or not chrome_enabled('KILIX_CHROME_SUPER_START') or not chrome_enabled('KILIX_CHROME_START_MENU'):
+            state.reset()
+            return False
+        window = self.active_window
+        if window is None:
+            state.reset()
+            return False
+        consumed, activate = state.event(ev, (window.os_window_id, window.id))
+        if activate:
+            self.kilix_show_start_menu()
+        return consumed
+
+    def kilix_cancel_super_key(self) -> None:
+        if (state := getattr(self, '_kilix_super_key', None)) is not None:
+            state.cancel()
+
     def kilix_synchronized_input_peer_ids(self, source_window_id: int) -> tuple[int, ...]:
         """Return selected peers for native keyboard delivery.
 
@@ -2525,6 +2552,8 @@ class Boss:
 
     def on_focus(self, os_window_id: int, focused: bool) -> None:
         if not focused:
+            if (state := getattr(self, '_kilix_super_key', None)) is not None:
+                state.reset()
             self.kilix_dismiss_popup(os_window_id)
         tm = self.os_window_map.get(os_window_id)
         if tm is not None:
@@ -3361,6 +3390,8 @@ class Boss:
 
     def destroy(self) -> None:
         self.shutting_down = True
+        from .kilix_chrome.weather import weather
+        weather.stop()
         self.child_monitor.shutdown_monitor()
         self.set_update_check_process()
         self.update_check_process = None

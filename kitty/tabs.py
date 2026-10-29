@@ -1988,12 +1988,13 @@ class TabManager:  # {{{
                 from .kilix_chrome.registry import dispatch as dispatch_chrome_widget
                 gesture = ('right' if is_right_release else
                            'double' if click_count == 2 else 'single')
-                dispatch_chrome_widget(self, tab_action, gesture)
+                handled = dispatch_chrome_widget(self, tab_action, gesture)
                 # Preserve the first click long enough for a second release to
                 # be recognized; terminal overlays leave the tab bar live.
-                if gesture != 'single':
+                if handled and gesture != 'single':
                     self.recent_tab_bar_mouse_events.clear()
-                return
+                if handled:
+                    return
             if is_left_release and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
                 from .kilix_chrome.registry import dispatch as dispatch_chrome_widget
                 from .kilix_voice import (

@@ -195,6 +195,7 @@ class TestSystemLoad(BaseTest):
                 patch('kitty.kilix_battery.ensure_thermal_timer'), \
                 patch('kitty.kilix_memory.ensure_pane_memory_timer'), \
                 patch('kitty.kilix_windows.ensure_windows_timer'), \
+                patch('kitty.kilix_chrome.weather.ensure_weather_timer'), \
                 patch.object(lifecycle, 'ensure_timer'), \
                 patch.object(lifecycle, 'ensure_clock_timer'):
             lifecycle.ensure_chrome_timers()

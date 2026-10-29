@@ -1351,6 +1351,9 @@ border_name(int edges) {
 
 void
 mouse_event(const int button, int modifiers, int action) {
+    if (button >= 0 && action == GLFW_PRESS) {
+        call_boss(kilix_cancel_super_key, NULL);
+    }
     MouseShape old_cursor = mouse_cursor_shape;
     unsigned int window_idx = 0;
     Window *w = NULL; OSWindow *osw = global_state.callback_os_window;
@@ -1662,6 +1665,7 @@ pixel_scroll_enabled_for_screen(const Screen *screen) {
 
 void
 scroll_event(const GLFWScrollEvent *ev) {
+    call_boss(kilix_cancel_super_key, NULL);
     debug("\x1b[36mScroll\x1b[m type=%s x: %f y: %f momentum: %s modifiers: %s\n", scroll_offset_type(ev->offset_type), ev->x_offset, ev->y_offset, scroll_phase(ev->momentum_type), format_mods(ev->keyboard_modifiers));
     static id_type window_for_momentum_scroll = 0;
     static bool main_screen_for_momentum_scroll = false;

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..kilix_memory import MEMORY_WIDGET_ACTION
+from ..kilix_voice import DICTATE_ACTION, SPEAK_ACTION
 from .layouts import LAYOUT_ACTION, show_layout_menu
 from .providers import (
     CALENDAR_WIDGET_ACTION,
@@ -20,6 +21,8 @@ from .providers import (
     volume_segment,
     volume_target,
 )
+from .settings import chrome_value
+from .weather import WEATHER_ACTION, weather_segment
 
 if TYPE_CHECKING:
     from ..tabs import TabManager
@@ -30,7 +33,7 @@ THERMAL_WIDGET_ACTION = 'kilix_show_thermal_widget'
 GESTURE_ACTIONS = frozenset((
     VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION, BATTERY_TOGGLE_ACTION, THERMAL_WIDGET_ACTION,
-    LAYOUT_ACTION, MEMORY_WIDGET_ACTION,
+    LAYOUT_ACTION, MEMORY_WIDGET_ACTION, SPEAK_ACTION, DICTATE_ACTION, WEATHER_ACTION,
 ))
 
 
@@ -52,6 +55,7 @@ def _clock(foreground: int) -> tuple[Segment, ...]:
 
 
 SYSTEM_WIDGETS = (
+    Widget('weather', _one(weather_segment)),
     Widget('volume', _one(volume_segment)),
     Widget('network', _one(network_segment)),
     Widget('clock', _clock),
@@ -78,6 +82,10 @@ def dispatch(tab_manager: TabManager, action: str, gesture: str = 'single') -> b
         get_boss().kilix_show_start_menu()
         return True
     if action not in GESTURE_ACTIONS:
+        return False
+    # Their existing left-click toggles live in TabManager. Right-click must
+    # never start speech or open the microphone.
+    if action in (SPEAK_ACTION, DICTATE_ACTION) and gesture != 'right':
         return False
     target = tab_manager.active_tab.active_window if tab_manager.active_tab else None
     popup_action = f'{action}:{gesture}'
@@ -106,6 +114,19 @@ def dispatch(tab_manager: TabManager, action: str, gesture: str = 'single') -> b
     elif gesture == 'right' and action in (CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION):
         target_command = settings_target()
         command([*target_command, '--clock'] if target_command else None, 'Clock Settings', 48, 13)
+    elif action in (MEMORY_WIDGET_ACTION, THERMAL_WIDGET_ACTION, SPEAK_ACTION,
+                    DICTATE_ACTION, NETWORK_WIDGET_ACTION, WEATHER_ACTION) and (
+            gesture == 'right' or action == WEATHER_ACTION and not chrome_value('KILIX_WEATHER_ZIP', '').strip()):
+        kind, title, columns, lines = {
+            MEMORY_WIDGET_ACTION: ('system', 'System CPU and RAM', 78, 16),
+            THERMAL_WIDGET_ACTION: ('temperature', 'Temperature', 64, 12),
+            SPEAK_ACTION: ('speech', 'Read pane aloud', 80, 24),
+            DICTATE_ACTION: ('microphone', 'Microphone / dictation', 80, 26),
+            NETWORK_WIDGET_ACTION: ('network', 'Network / Wi-Fi', 80, 26),
+            WEATHER_ACTION: ('weather', 'Weather', 80, 22),
+        }[action]
+        base = settings_target()
+        command([*base, '--widget', kind] if base else None, title, columns, lines)
     elif gesture == 'right':
         command(settings_target(), 'Kilix Settings', 90, 30)
     elif action == MEMORY_WIDGET_ACTION:
@@ -138,7 +159,7 @@ def dispatch(tab_manager: TabManager, action: str, gesture: str = 'single') -> b
             kilix_popup=ChromePopup(popup_action, 34 if mode == 'calendar' else 46, 14))
     else:
         kind = {BATTERY_TOGGLE_ACTION: 'battery', THERMAL_WIDGET_ACTION: 'temperature',
-                NETWORK_WIDGET_ACTION: 'network'}[action]
+                NETWORK_WIDGET_ACTION: 'network', WEATHER_ACTION: 'weather'}[action]
         get_boss().run_kitten_with_metadata('kilix_chrome_widget', (kind,), window=target,
-            kilix_popup=ChromePopup(popup_action, 48, 8))
+            kilix_popup=ChromePopup(popup_action, 72 if kind == 'weather' else 48, 12 if kind == 'weather' else 8))
     return True

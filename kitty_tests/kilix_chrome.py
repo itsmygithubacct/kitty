@@ -52,7 +52,7 @@ class TestKilixChrome(BaseTest):
 
     def test_registry_owns_order_and_segment_selection(self) -> None:
         self.ae(tuple(widget.key for widget in SYSTEM_WIDGETS),
-                ('volume', 'network', 'clock'))
+                ('weather', 'volume', 'network', 'clock'))
         with patch.dict(os.environ, {
                 'GPU_TERMINAL_SETTINGS_FILE': '/missing/kilix-settings',
                 'KILIX_CHROME_VOLUME': '1',
@@ -128,8 +128,30 @@ class TestKilixChrome(BaseTest):
             self.assertTrue(dispatch(manager, MEMORY_WIDGET_ACTION, 'double'))
             tab.kilix_show_memory_widget.assert_called_once_with()
             self.assertTrue(dispatch(manager, MEMORY_WIDGET_ACTION, 'right'))
-            self.ae(tab.new_window.call_args.kwargs['override_title'], 'Kilix Settings')
-            self.ae(tab.new_window.call_args.kwargs['cmd'], ['kilix', 'settings'])
+            self.ae(tab.new_window.call_args.kwargs['override_title'], 'System CPU and RAM')
+            self.ae(tab.new_window.call_args.kwargs['cmd'], ['kilix', 'settings', '--widget', 'system'])
+
+    def test_right_click_routes_are_specific_and_voice_left_click_falls_through(self):
+        from kitty.kilix_chrome.registry import THERMAL_WIDGET_ACTION
+        from kitty.kilix_chrome.weather import WEATHER_ACTION
+        from kitty.kilix_voice import DICTATE_ACTION, SPEAK_ACTION
+        tab = SimpleNamespace(new_window=Mock())
+        owner = SimpleNamespace(id=17, tabref=lambda: tab)
+        manager = SimpleNamespace(active_tab=SimpleNamespace(active_window=owner))
+        routes = {THERMAL_WIDGET_ACTION: 'temperature', NETWORK_WIDGET_ACTION: 'network',
+                  SPEAK_ACTION: 'speech', DICTATE_ACTION: 'microphone', WEATHER_ACTION: 'weather'}
+        with patch('kitty.kilix_chrome.popup.popup_target', return_value=owner) as target, \
+                patch('kitty.kilix_chrome.registry.settings_target', return_value=['kilix', 'settings']):
+            for action, kind in routes.items():
+                self.assertTrue(dispatch(manager, action, 'right'))
+                call = tab.new_window.call_args.kwargs
+                self.ae(call['cmd'], ['kilix', 'settings', '--widget', kind])
+                self.ae(call['kilix_popup'].action, action + ':right')
+            target.reset_mock()
+            for action in (SPEAK_ACTION, DICTATE_ACTION):
+                self.assertFalse(dispatch(manager, action, 'single'))
+                self.assertFalse(dispatch(manager, action, 'double'))
+            target.assert_not_called()
 
     def test_clock_right_click_opens_only_clock_settings(self):
         tab = SimpleNamespace(new_window=Mock())

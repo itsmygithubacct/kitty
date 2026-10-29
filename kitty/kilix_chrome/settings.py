@@ -59,7 +59,7 @@ def chrome_value(name: str, default: str = '1') -> str:
     # Windows profile must not show controls that cannot perform their action.
     if sys.platform == 'win32':
         if name in {
-            'KILIX_CHROME_BATTERY', 'KILIX_CHROME_TEMPERATURE',
+            'KILIX_CHROME_BATTERY', 'KILIX_CHROME_TEMPERATURE', 'KILIX_CHROME_WEATHER',
             'KILIX_CHROME_VOLUME', 'KILIX_CHROME_NETWORK',
             'KILIX_CHROME_CALENDAR', 'KILIX_CHROME_START_MENU',
             'KILIX_CHROME_WINDOWS', 'KILIX_CHROME_SPEAK', 'KILIX_CHROME_DICTATE',

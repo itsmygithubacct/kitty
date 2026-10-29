@@ -1107,6 +1107,7 @@ class TabBar:
         if thermal is not None:
             text, action, fg = thermal
             ans.append((text, action, fg))
+        ans.extend(segments_for(('weather',), clock_fg))
         ans.extend(segments_for(('volume',), clock_fg))
         # Voice sits beside volume because both are audio, and ahead of network
         # so the clock and battery cluster on the right edge never moves when a
