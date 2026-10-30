@@ -4,7 +4,7 @@
 from kitty.config import defaults
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, RIGHT_EDGE, TOP_EDGE, Region
 from kitty.layout.base import layout_dimension, lgd
-from kitty.layout.grid import calc_grid_size, calc_sessions_grid_size
+from kitty.layout.grid import calc_grid_size, calc_sessions_grid_size, sessions_column_heights
 from kitty.layout.interface import Grid, Horizontal, Sessions, Splits, Stack, Tall
 from kitty.layout.splits import Pair, SplitsLayoutOpts
 from kitty.types import WindowGeometry
@@ -760,15 +760,17 @@ class TestLayout(BaseTest):
             self.ae(calc_grid_size(n), shape, n)
 
     def test_sessions_grid_size(self):
-        # (columns, rows, rows in the special column, special column): one
-        # pane fills the tab, then two rows and ceil(n/2) columns; with an odd
-        # count the last column holds one pane.
-        expected = {1: (1, 1, 1, 0), 2: (1, 2, 2, 0), 3: (2, 2, 1, 1), 4: (2, 2, 2, 1),
-                    5: (3, 2, 1, 2), 6: (3, 2, 2, 2), 7: (4, 2, 1, 3), 8: (4, 2, 2, 3),
-                    9: (5, 2, 1, 4), 10: (5, 2, 2, 4), 11: (6, 2, 1, 5), 12: (6, 2, 2, 5),
-                    13: (7, 2, 1, 6)}
-        for n, shape in expected.items():
-            self.ae(calc_sessions_grid_size(n), shape, n)
+        # Panes per column, left to right. Columns grow to four before a new
+        # row. A short last row is the leftmost columns. Twelve panes are
+        # four columns of three; a thirteenth pane starts a fourth row.
+        expected = {1: (1,), 2: (1, 1), 3: (1, 1, 1), 4: (1, 1, 1, 1),
+                    5: (2, 1, 1, 1), 6: (2, 2, 1, 1), 7: (2, 2, 2, 1), 8: (2, 2, 2, 2),
+                    9: (3, 2, 2, 2), 10: (3, 3, 2, 2), 11: (3, 3, 3, 2), 12: (3, 3, 3, 3),
+                    13: (4, 3, 3, 3)}
+        for n, heights in expected.items():
+            self.ae(sessions_column_heights(n), heights, n)
+            ncols, nrows, special_rows, special_col = calc_sessions_grid_size(n)
+            self.ae((ncols, max(nrows, special_rows), special_col), (len(heights), max(heights), 0), n)
 
     def sessions_rects(self, num, remove=()):
         q = create_layout(Sessions)
@@ -794,19 +796,16 @@ class TestLayout(BaseTest):
             rects = self.sessions_rects(n)
             lefts = sorted({r[0] for r in rects})
             tops = sorted({r[1] for r in rects})
-            self.ae(len(lefts), (n + 1) // 2, f'columns for {n}')
-            self.ae(len(tops), 1 if n == 1 else 2, f'rows for {n}')
+            ncols = min(n, 4)
+            self.ae(len(lefts), ncols, f'columns for {n}')
+            self.ae(len(tops), (n + ncols - 1) // ncols, f'rows for {n}')
             widths = [r[2] - r[0] for r in rects]
             self.assertLessEqual(max(widths) - min(widths), 10, f'column widths for {n}')
             for i, (left, top, right, bottom) in enumerate(rects):
-                # Column-major: adding a pane never moves an earlier one to
-                # another cell.
-                self.ae(lefts.index(left), i // 2, f'column of pane {i} of {n}')
-                self.ae(tops.index(top), i % 2 if n > 1 else 0, f'row of pane {i} of {n}')
-            if n % 2 and n > 1:
-                last = rects[-1]
-                self.ae((last[1], last[3]), (min(r[1] for r in rects), max(r[3] for r in rects)),
-                        f'odd last pane spans both rows for {n}')
+                # Left to right, then the next row. Adding a pane does not
+                # move an earlier one, including when a new row starts.
+                self.ae(lefts.index(left), i % ncols, f'column of pane {i} of {n}')
+                self.ae(tops.index(top), i // ncols, f'row of pane {i} of {n}')
 
     def test_sessions_rebalance_on_close(self):
         # Closing any pane re-lays out the rest exactly as a fresh grid of the
@@ -830,11 +829,21 @@ class TestLayout(BaseTest):
             return {k: [back[x] for x in v] for k, v in ans.items()}
 
         self.ae(neighbors(1, 0), {})
-        self.ae(neighbors(2, 0), {'bottom': [2]})
-        self.ae(neighbors(2, 1), {'top': [1]})
-        self.ae(neighbors(3, 0), {'bottom': [2], 'right': [3]})
-        self.ae(neighbors(3, 2), {'left': [1, 2]})
-        self.ae(neighbors(12, 11), {'top': [11], 'left': [10]})
+        self.ae(neighbors(2, 0), {'right': [2]})
+        self.ae(neighbors(2, 1), {'left': [1]})
+        self.ae(neighbors(3, 0), {'right': [2]})
+        self.ae(neighbors(3, 1), {'left': [1], 'right': [3]})
+        self.ae(neighbors(3, 2), {'left': [2]})
+        # Five panes: 1 2 3 4 / 5. The full-height pane beside 5 is 2.
+        self.ae(neighbors(5, 0), {'right': [2], 'bottom': [5]})
+        self.ae(neighbors(5, 4), {'top': [1], 'right': [2]})
+        # Six panes: 1 2 3 4 / 5 6. Pane 3 spans the rows of 2 and 6.
+        self.ae(neighbors(6, 2), {'left': [2, 6], 'right': [4]})
+        # Nine panes: four columns, and the second pane of columns 2–4 spans
+        # the second and third rows. Pane 6 therefore touches 5 and 9.
+        self.ae(neighbors(9, 5), {'top': [2], 'left': [5, 9], 'right': [7]})
+        self.ae(neighbors(9, 8), {'top': [5], 'right': [6]})
+        self.ae(neighbors(12, 11), {'top': [8], 'left': [11]})
 
     def test_sessions_is_selected_explicitly(self):
         # Selectable by name without being enabled, kept when a configuration
@@ -953,13 +962,14 @@ class TestLayout(BaseTest):
         return q, windows, geometry, before, changed
 
     def test_sessions_resize_reset_and_restore(self):
-        # Two real rows of fifteen cells and ceil(n/2) columns: every count can
-        # be resized vertically, and horizontally once there are two columns.
+        # One row of up to four columns until the fifth pane. Those panes
+        # widen and do not grow taller. From five on, a second row (and from
+        # nine, a third) can be resized vertically as well as horizontally.
         for n in range(2, 14):
             for horizontal, idx in ((False, 1), (True, 0), (False, n - 1)):
-                if horizontal and n < 3:
+                if n < 5 and not horizontal:
                     q, windows, geometry, before, changed = self.resize_probe(Sessions, n, idx, horizontal)
-                    self.assertFalse(changed, f'one column cannot widen, n={n}')
+                    self.assertFalse(changed, 'one row cannot grow taller')
                     continue
                 q, windows, geometry, before, changed = self.resize_probe(Sessions, n, idx, horizontal)
                 what = f'n={n} horizontal={horizontal} pane={idx}'

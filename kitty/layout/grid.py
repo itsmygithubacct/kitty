@@ -30,15 +30,28 @@ def calc_grid_size(n: int) -> tuple[int, int, int, int]:
     return ncols, nrows, special_rows, special_col
 
 
+SESSION_COLUMNS = 4
+
+
+@lru_cache
+def sessions_column_heights(n: int) -> tuple[int, ...]:
+    # Columns grow to four before a new row. Panes fill left to right, so a
+    # short last row is the leftmost columns and adding a pane never moves an
+    # earlier one. Twelve panes are four columns of three.
+    if n <= 0:
+        return ()
+    ncols = min(n, SESSION_COLUMNS)
+    full, extra = divmod(n, ncols)
+    return tuple(full + 1 if col < extra else full for col in range(ncols))
+
+
 @lru_cache
 def calc_sessions_grid_size(n: int) -> tuple[int, int, int, int]:
-    # One pane fills the tab; otherwise two rows and ceil(n/2) columns, filled
-    # column by column, so adding a pane never moves an earlier one. With an
-    # odd count the last column holds a single full-height pane.
-    if n <= 1:
-        return 1, 1, 1, 0
-    ncols = (n + 1) // 2
-    return ncols, 2, n - 2 * (ncols - 1), ncols - 1
+    # Bounding columns and rows. One special column cannot describe every
+    # count (six panes are 2, 2, 1, 1); Sessions places from the heights.
+    heights = sessions_column_heights(n) or (1,)
+    rows = max(heights)
+    return len(heights), rows, rows, 0
 
 
 class Grid(Layout):
@@ -341,7 +354,7 @@ class Grid(Layout):
 
 
 class Sessions(Grid):
-    """Coding sessions side by side: at most two rows, columns added as needed."""
+    """Coding sessions: up to four columns, then another row."""
 
     name = 'sessions'
     explicit_only = True
@@ -349,23 +362,109 @@ class Sessions(Grid):
     def grid_size(self, n: int) -> tuple[int, int, int, int]:
         return calc_sessions_grid_size(n)
 
+    def layout_windows(
+        self,
+        num_windows: int,
+        nrows: int, ncols: int,
+        special_rows: int, special_col: int,
+        on_col_done: Callable[[list[int]], None] = lambda col_windows: None
+    ) -> Generator[tuple[int, LayoutData, LayoutData], None, None]:
+        # Left to right, then the next row, on one shared set of rows. The
+        # special-column arguments cannot describe a partial row (six panes
+        # are 2, 2, 1, 1). A short column's last pane spans the rows below it.
+        heights = sessions_column_heights(num_windows)
+        if not heights:
+            return
+        nrows = max(heights)
+        xlayout = self.variable_layout(self.column_layout, len(heights), self.biased_cols)
+        yvals = tuple(self.variable_layout(self.row_layout, nrows, self.biased_rows))
+        for col, rows in enumerate(heights):
+            xl = next(xlayout)
+            col_windows: list[int] = []
+            for row in range(rows):
+                yl = yvals[row] if row < rows - 1 or row == nrows - 1 else self._span_rows(yvals[row:])
+                window_idx = row * len(heights) + col
+                yield window_idx, xl, yl
+                col_windows.append(window_idx)
+            on_col_done(col_windows)
+
+    @staticmethod
+    def _span_rows(cells: Sequence[LayoutData]) -> LayoutData:
+        first, last = cells[0], cells[-1]
+        if len(cells) == 1:
+            return first
+        end = last.content_pos + last.content_size
+        return LayoutData(
+            first.content_pos,
+            sum(cell.cells_per_window for cell in cells),
+            first.space_before,
+            last.space_after,
+            end - first.content_pos,
+        )
+
     def neighbors_for_window(self, window: WindowType, windows: WindowList) -> NeighborsMap:
         n = windows.num_groups
-        # The grid's small-count shortcut assumes side-by-side panes; two
-        # sessions here are stacked.
+        # Tall's small-count shortcut is side-by-side only. From two panes on
+        # this grid has up to four columns and then another row.
         return self.grid_neighbors(window, windows, n) if n > 1 else {}
 
+    def grid_neighbors(self, window: WindowType, windows: WindowList, n: int) -> NeighborsMap:
+        wg = windows.group_for_window(window)
+        assert wg is not None
+        heights = sessions_column_heights(n)
+        if not heights:
+            return {}
+        ncols = len(heights)
+        nrows = max(heights)
+        # A short column's last pane covers every grid row from its own row down.
+        coverage: list[list[int | None]] = [[None for i in range(ncols)] for j in range(nrows)]
+        wi = windows.iter_all_layoutable_groups()
+        origin: dict[int, tuple[int, int]] = {}
+        for index in range(n):
+            w = next(wi)
+            row, col = divmod(index, ncols)
+            end = nrows - 1 if row == heights[col] - 1 else row
+            for grid_row in range(row, end + 1):
+                coverage[grid_row][col] = w.id
+            origin[w.id] = row, col
+        if wg.id not in origin:
+            return {}
+        row, col = origin[wg.id]
+        covered = [grid_row for grid_row in range(nrows) if coverage[grid_row][col] == wg.id]
+        top_row, bot_row = covered[0], covered[-1]
+
+        def beside(delta: int) -> list[int]:
+            neighbor_col = col + delta
+            seen: list[int] = []
+            for grid_row in range(top_row, bot_row + 1):
+                wid = coverage[grid_row][neighbor_col]
+                if wid is not None and wid not in seen:
+                    seen.append(wid)
+            return seen
+
+        ans: NeighborsMap = {}
+        if top_row and (above := coverage[top_row - 1][col]) is not None:
+            ans['top'] = [above]
+        if bot_row + 1 < nrows and (below := coverage[bot_row + 1][col]) is not None:
+            ans['bottom'] = [below]
+        if col and (left := beside(-1)):
+            ans['left'] = left
+        if col < ncols - 1 and (right := beside(1)):
+            ans['right'] = right
+        return ans
+
     def apply_bias(self, window_id: int, increment: float, all_windows: WindowList, is_horizontal: bool = True) -> bool:
-        # Grid probes a bias against one slot per window, which from six
-        # sessions on invents rows too short to resize. Probe the real two
-        # rows and ceil(n/2) columns; the stock grid keeps its own behaviour.
+        # Grid probes a bias against one slot per window. Sessions have at
+        # most four columns, and a second row only from the fifth pane on.
         num_windows = all_windows.num_groups
-        ncols, nrows, special_rows, special_col = self.grid_size(num_windows)
-        row_num, col_num = self.position_for_window_idx(window_id, num_windows, ncols, nrows, special_rows, special_col)
+        heights = sessions_column_heights(num_windows)
+        ncols = len(heights)
+        nrows = max(heights) if heights else 1
+        row_num, col_num = self.position_for_window_idx(window_id, num_windows, ncols, nrows, nrows, 0)
         if is_horizontal:
             attr, bias_idx, slots, layout_func = 'biased_cols', col_num, ncols, self.column_layout
         else:
-            attr, bias_idx, slots, layout_func = 'biased_rows', row_num, max(nrows, special_rows), self.row_layout
+            attr, bias_idx, slots, layout_func = 'biased_rows', row_num, nrows, self.row_layout
         if slots < 2:
             return False
         current: dict[int, float] = getattr(self, attr)
