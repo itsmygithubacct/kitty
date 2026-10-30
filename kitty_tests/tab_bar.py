@@ -208,6 +208,7 @@ class TestTabBar(BaseTest):
                 'KILIX_CHROME_START_MENU': '0',
                 'KILIX_CHROME_TEMPERATURE': '0',
                 'KILIX_CHROME_VOLUME': '1',
+                'KILIX_CHROME_WEATHER': '0',
             }),
             patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
             patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 1000, 180, 10, 20)),
@@ -415,6 +416,51 @@ class TestTabBar(BaseTest):
         self.assertTrue(tb.laid_out_once)
         self.ae(len(tb.tab_extents), 3)
         self.assertNotEqual(geometries[-1], (0, 0, 0, 0))
+
+    def test_horizontal_multi_row_tab_indices(self) -> None:
+        self.set_options({
+            'tab_bar_edge': BOTTOM_EDGE,
+            'tab_bar_style': 'separator',
+            'tab_title_template': '{index}:{title}',
+        })
+        central = region(0, 0, 3600, 140)
+        tab_bar = region(0, 140, 3600, 200)
+        with (
+            patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
+            patch('kitty.tab_bar.viewport_for_window', return_value=(central, tab_bar, 3600, 200, 10, 20)),
+            patch('kitty.tab_bar.set_tab_bar_render_data'),
+            patch('kitty.tab_bar.get_boss', return_value=DummyBoss()),
+            patch('kitty.tab_bar.ensure_chrome_timers'),
+            patch.object(TabBar, 'left_status_segments', return_value=()),
+            patch.object(TabBar, 'right_status_segments', return_value=()),
+            patch('kitty.tab_bar.window_entries', return_value=()),
+        ):
+            tb = TabBar(1)
+            tb.layout()
+            # IDs are intentionally unrelated to positions. Reordering and
+            # removing tabs must recompute the displayed navigation indices.
+            tabs = tuple(TabBarData(title=f'page-{i}', tab_id=i) for i in range(101, 122))
+            cases = [tabs[:n] for n in (10, 11, 12, 20, 21)]
+            cases += [tabs[::-1], tabs[1:]]
+            for current in cases:
+                with self.subTest(tab_ids=tuple(t.tab_id for t in current)):
+                    data = current + (TabBarData(title='+'),)
+                    # Custom renderers receive the same index during layout
+                    # and drawing, including after the first row.
+                    with patch.object(tb, 'draw_func', wraps=tb.draw_func) as draw:
+                        tb.update(data)
+                    expected = [(tab.tab_id, i) for i, tab in enumerate(data, 1)]
+                    self.ae([(c.args[2].tab_id, c.args[5]) for c in draw.call_args_list], expected * 2)
+                    self.ae(len(tb.tab_extents), len(data))
+                    for i, (tab, extent) in enumerate(zip(current, tb.tab_extents), 1):
+                        row = (i - 1) // 10
+                        self.ae(extent.y, (row, row))
+                        label = str(tb.screen.line(row))[extent.x.start:extent.x.end + 1]
+                        self.assertIn(f'{i}:{tab.title}', label)
+                        self.ae(tb.tab_id_at(extent.x.start * 10 + 5, 150 + row * 20), tab.tab_id)
+                    plus = tb.tab_extents[-1]
+                    self.ae(plus.y.start, (len(current) - 1) // 10)
+                    self.assertEqual(str(tb.screen.line(plus.y.start))[plus.x.start:plus.x.end + 1].strip(), '+')
 
     def test_vertical_tab_bar_hit_testing(self) -> None:
         self.set_options({

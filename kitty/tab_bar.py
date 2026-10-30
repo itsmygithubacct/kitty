@@ -5,6 +5,7 @@ import os
 import re
 from collections.abc import Callable, Sequence
 from functools import lru_cache, partial, wraps
+from itertools import accumulate
 from string import Formatter as StringFormatter
 from typing import (
     Any,
@@ -938,6 +939,7 @@ class TabBar:
         left_width = self.status_width(left_segments)
         self.left_status_end = left_width if s.columns > left_width + 1 else 0
         rows = split_tab_bar_rows(data)[:s.lines]
+        row_offsets = tuple(accumulate(map(len, rows), initial=0))
         ed = ExtraData()
         self.last_laid_out_tabs = data
 
@@ -974,7 +976,7 @@ class TabBar:
             s.cursor.fg = as_rgb(self.draw_data.tab_fg(tab))
             s.cursor.bold, s.cursor.italic = self.active_font_style if tab.is_active else self.inactive_font_style
             before = s.cursor.x
-            end = self.draw_func(self.draw_data, s, tab, before, max_tab_length, i + 1, tab is row_last_tab, ed)
+            end = self.draw_func(self.draw_data, s, tab, before, max_tab_length, row_offsets[line] + i + 1, tab is row_last_tab, ed)
             s.cursor.bg = s.cursor.fg = 0
             cell_ranges.append(TabExtent(tab_id=tab.tab_id, x=CellRange(before, end), y=CellRange(line, line)))
             if not ed.for_layout and tab is not row_last_tab and s.cursor.x > row_limit(line) - max_tab_lengths[i + 1]:
