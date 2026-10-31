@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from typing import NamedTuple
 
@@ -98,17 +99,24 @@ def _read_memory_used(root: str) -> int | None:
 
 def _sample() -> SystemLoad:
     global _PREVIOUS_TIMES
-    root = _proc_root()
-    times = _read_cpu_times(root)
+    if sys.platform == 'win32' and not os.environ.get('KILIX_SYSTEM_PROC_ROOT'):
+        from .kilix_system_load_windows import read_cpu_times, read_memory_used
+        native_times = read_cpu_times()
+        times = _CpuTimes(*native_times) if native_times is not None else None
+        memory = read_memory_used()
+    else:
+        root = _proc_root()
+        times = _read_cpu_times(root)
+        memory = _read_memory_used(root)
     cores = None
     previous = _PREVIOUS_TIMES
-    if times is not None and previous is not None:
+    if times is not None and previous is not None and times.logical_cpus == previous.logical_cpus:
         elapsed = times.total - previous.total
         if elapsed > 0:
             busy = elapsed - max(0, times.idle - previous.idle)
             cores = max(0.0, min(1.0, busy / elapsed)) * times.logical_cpus
     _PREVIOUS_TIMES = times
-    return SystemLoad(cores, _read_memory_used(root))
+    return SystemLoad(cores, memory)
 
 
 def system_load(force: bool = False) -> SystemLoad:
@@ -138,14 +146,17 @@ def format_system_load(load: SystemLoad, mode: str = SYSTEM_LOAD_MODE_DEFAULT) -
     return pane_resource_text(cpu_text, memory_text)
 
 
-def system_load_segment(os_window_id: int = 0) -> tuple[str, str, int] | None:
+def system_load_segment(os_window_id: int = 0) -> tuple[str, str | None, int] | None:
     mode = system_load_mode()
     text = '' if mode == 'off' else format_system_load(system_load(), mode)
     _DRAWN_TEXT[os_window_id] = text
     if not text:
         return None
     from .window_title_bar import _MEMORY_CHIP_COLOR
-    return text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR
+    # Native packages do not ship the Linux memory dashboard/settings command.
+    # Show the counters without advertising an unavailable click action.
+    action = None if sys.platform == 'win32' else MEMORY_WIDGET_ACTION
+    return text, action, _MEMORY_CHIP_COLOR
 
 
 def _system_load_timer(timer_id: int | None = None) -> None:

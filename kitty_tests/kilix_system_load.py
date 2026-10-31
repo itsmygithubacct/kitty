@@ -183,10 +183,34 @@ class TestSystemLoad(BaseTest):
             system._system_load_timer()
         dirty.assert_called_once_with(7)
 
-    def test_windows_hides_the_linux_proc_readout(self) -> None:
+    def test_windows_shows_counters_without_linux_widget_actions(self) -> None:
+        write_proc(self.root, user=100, idle=900)
         with patch('sys.platform', 'win32'):
-            self.ae(system.system_load_mode(), 'off')
-            self.assertIsNone(system.system_load_segment())
+            self.ae(system.system_load_mode(), 'always')
+            segment = system.system_load_segment()
+            self.assertIsNotNone(segment)
+            self.ae(segment[0], f' {MEMORY_GLYPH} 12.0 ')
+            self.assertIsNone(segment[1])
+            with patch.dict(os.environ, {system.SYSTEM_LOAD_MODE_KEY: 'off'}):
+                self.assertIsNone(system.system_load_segment())
+
+    def test_windows_uses_native_counters_without_proc(self) -> None:
+        with patch('sys.platform', 'win32'), \
+                patch.dict(os.environ, {'KILIX_SYSTEM_PROC_ROOT': ''}), \
+                patch('kitty.kilix_system_load_windows.read_cpu_times', side_effect=[
+                    (1000, 900, 4), (1400, 1000, 4)]), \
+                patch('kitty.kilix_system_load_windows.read_memory_used', return_value=12 * GIB), \
+                patch.object(system, '_read_cpu_times', side_effect=AssertionError('Unexpected proc read')):
+            self.ae(system.system_load(force=True), system.SystemLoad(None, 12 * GIB))
+            self.ae(system.system_load(force=True), system.SystemLoad(3.0, 12 * GIB))
+
+    def test_cpu_topology_change_needs_a_new_baseline(self) -> None:
+        write_proc(self.root, user=100, idle=900, cpus=4)
+        system.system_load(force=True)
+        write_proc(self.root, user=400, idle=1000, cpus=8)
+        self.assertIsNone(system.system_load(force=True).cpu_cores)
+        write_proc(self.root, user=500, idle=1100, cpus=8)
+        self.ae(system.system_load(force=True).cpu_cores, 4.0)
 
     def test_chrome_lifecycle_starts_the_timer(self) -> None:
         from kitty.kilix_chrome import lifecycle
