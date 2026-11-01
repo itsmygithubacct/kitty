@@ -51,12 +51,17 @@ def _thermal() -> tuple[str, ...]:
             'Double-click for dashboard · Esc close')
 
 
+def _gpu() -> tuple[str, ...]:
+    from kitty.kilix_gpu import card_lines
+    return card_lines()
+
+
 def card(kind: str) -> tuple[str, ...]:
     if kind == 'weather':
         from kitty.kilix_chrome.weather import weather_card
         return weather_card()
     return {'network': _network, 'battery': _battery,
-            'temperature': _thermal}[kind]()
+            'temperature': _thermal, 'gpu': _gpu}[kind]()
 
 
 class ChromeCard(Handler):
@@ -117,7 +122,7 @@ class ChromeCard(Handler):
 
 def main(args: list[str]) -> None:
     kind = args[1] if len(args) > 1 else 'network'
-    if kind not in ('network', 'battery', 'temperature', 'weather'):
+    if kind not in ('network', 'battery', 'temperature', 'weather', 'gpu'):
         raise SystemExit(f'Unknown Kilix chrome widget: {kind}')
     loop = Loop()
     loop.loop(ChromeCard(kind))
@@ -128,7 +133,7 @@ if __name__ == '__main__':
     main(sys.argv)
 elif __name__ == '__doc__':
     cd = sys.cli_docs  # type: ignore
-    cd['usage'] = '[network|battery|temperature|weather]'
+    cd['usage'] = '[network|battery|temperature|weather|gpu]'
     cd['options'] = lambda: ''
     cd['help_text'] = 'Show a compact Kilix top-bar status card'
     cd['short_desc'] = 'Show a Kilix chrome widget'

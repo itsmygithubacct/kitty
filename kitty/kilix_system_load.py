@@ -37,6 +37,8 @@ _CACHE: SystemLoad = SystemLoad(None, None)
 _CACHE_UNTIL = 0.0
 # The text each OS window's tab bar last drew, by OS window id.
 _DRAWN_TEXT: dict[int, str] = {}
+# The same for the GPU widget beside it, which this timer also refreshes.
+_DRAWN_GPU_TEXT: dict[int, str] = {}
 _TIMER_STARTED = False
 
 
@@ -159,12 +161,27 @@ def system_load_segment(os_window_id: int = 0) -> tuple[str, str | None, int] | 
     return text, action, _MEMORY_CHIP_COLOR
 
 
+def system_gpu_bar_segment(os_window_id: int = 0) -> tuple[str, str | None, int] | None:
+    """The GPU widget immediately right of the CPU/RAM readout."""
+    from .kilix_gpu import system_gpu_segment, system_gpu_text
+    text = system_gpu_text()
+    _DRAWN_GPU_TEXT[os_window_id] = text
+    return system_gpu_segment(text)
+
+
 def _system_load_timer(timer_id: int | None = None) -> None:
     del timer_id
-    if not _DRAWN_TEXT:
+    if not _DRAWN_TEXT and not _DRAWN_GPU_TEXT:
         return
-    mode = system_load_mode()
-    text = '' if mode == 'off' else format_system_load(system_load(force=True), mode)
+    text = ''
+    if _DRAWN_TEXT:
+        mode = system_load_mode()
+        text = '' if mode == 'off' else format_system_load(system_load(force=True), mode)
+    gpu_text = ''
+    if _DRAWN_GPU_TEXT:
+        # The GPU poll rides this timer; no bar that drew it means no poll.
+        from .kilix_gpu import system_gpu_text
+        gpu_text = system_gpu_text()
     try:
         from .fast_data_types import get_boss, mark_os_window_dirty
         # Only the tab bar shows this; leave every pane title bar alone. A bar
@@ -173,9 +190,11 @@ def _system_load_timer(timer_id: int | None = None) -> None:
         # records fresh text whenever it next draws.
         for manager in get_boss().all_tab_managers:
             drawn = _DRAWN_TEXT.get(manager.os_window_id)
-            if drawn is None or drawn == text:
+            drawn_gpu = _DRAWN_GPU_TEXT.get(manager.os_window_id)
+            if (drawn is None or drawn == text) and (drawn_gpu is None or drawn_gpu == gpu_text):
                 continue
-            del _DRAWN_TEXT[manager.os_window_id]
+            _DRAWN_TEXT.pop(manager.os_window_id, None)
+            _DRAWN_GPU_TEXT.pop(manager.os_window_id, None)
             manager.mark_tab_bar_dirty()
             mark_os_window_dirty(manager.os_window_id)
     except Exception as error:
@@ -184,7 +203,8 @@ def _system_load_timer(timer_id: int | None = None) -> None:
 
 def ensure_system_load_timer() -> None:
     global _TIMER_STARTED
-    if _TIMER_STARTED or system_load_mode() == 'off':
+    from .kilix_gpu import system_gpu_mode
+    if _TIMER_STARTED or (system_load_mode() == 'off' and system_gpu_mode() == 'off'):
         return
     _TIMER_STARTED = True
     # Prime the CPU counters so the first refresh can report a delta.

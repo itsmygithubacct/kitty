@@ -226,11 +226,20 @@ class TestSystemLoad(BaseTest):
         start.assert_called_once_with()
 
     def test_off_never_starts_the_timer(self) -> None:
-        with patch.dict(os.environ, {system.SYSTEM_LOAD_MODE_KEY: 'off'}), \
+        # The timer refreshes both top-bar readouts, so it stays off only
+        # when CPU/RAM and the GPU widget beside it are both off.
+        with patch.dict(os.environ, {system.SYSTEM_LOAD_MODE_KEY: 'off',
+                                     'KILIX_CHROME_SYSTEM_GPU_MODE': 'off'}), \
                 patch.object(system, '_TIMER_STARTED', False), \
                 patch('kitty.fast_data_types.add_timer') as add_timer:
             system.ensure_system_load_timer()
             add_timer.assert_not_called()
+        with patch.dict(os.environ, {system.SYSTEM_LOAD_MODE_KEY: 'off',
+                                     'KILIX_CHROME_SYSTEM_GPU_MODE': 'always'}), \
+                patch.object(system, '_TIMER_STARTED', False), \
+                patch('kitty.fast_data_types.add_timer') as add_timer:
+            system.ensure_system_load_timer()
+            add_timer.assert_called_once()
 
 
 class TestTabRows(BaseTest):

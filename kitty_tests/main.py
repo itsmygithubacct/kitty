@@ -324,6 +324,9 @@ def env_for_python_tests(report_env: bool = False) -> Iterator[None]:
         XDG_DATA_DIRS=os.path.join(tdir, '.local', 'xdg'),
         XDG_CACHE_HOME=os.path.join(tdir, '.cache'),
         XDG_RUNTIME_DIR=os.path.join(tdir, '.cache', 'run'),
+        # No test reads the host's GPUs (or loads NVML) unless it builds a
+        # fake sysfs tree and points this at it.
+        KILIX_GPU_SYSFS_ROOT=os.path.join(tdir, 'no-gpu-sysfs'),
         PYTHONWARNINGS='error',
     ):
         if os.path.isdir(gohome):

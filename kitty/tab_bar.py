@@ -41,7 +41,7 @@ from .kilix_chrome.lifecycle import ensure_chrome_timers
 from .kilix_chrome.providers import start_menu_segment
 from .kilix_chrome.registry import segments_for
 from .kilix_chrome.settings import chrome_value
-from .kilix_system_load import system_load_segment
+from .kilix_system_load import system_gpu_bar_segment, system_load_segment
 from .kilix_voice import dictate_segment, speak_segment
 from .kilix_windows import MINIMISED_GLYPH, window_entries
 from .progress import ProgressState
@@ -1105,6 +1105,11 @@ class TabBar:
         system = system_load_segment(self.os_window_id)
         if system is not None:
             ans.append(system)
+        # Total GPU use (utilisation · GPU glyph · VRAM) sits immediately right
+        # of CPU/RAM, in the same grammar.
+        gpu = system_gpu_bar_segment(self.os_window_id)
+        if gpu is not None:
+            ans.append(gpu)
         thermal = thermal_segment()
         if thermal is not None:
             text, action, fg = thermal

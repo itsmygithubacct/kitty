@@ -509,6 +509,12 @@ class Tab:  # {{{
             for w in wg.windows:
                 w.update_title_bar(is_active=is_active)
 
+    @ac('tab', 'Show the Kilix GPU card (each GPU, its use and VRAM) over the active pane')
+    def kilix_show_gpu_widget(self) -> None:
+        window = self.active_window
+        if window is not None:
+            get_boss().run_kitten_with_metadata('kilix_chrome_widget', ('gpu',), window=window)
+
     @ac('tab', 'Open the Kilix Memory dashboard in a new tab')
     def kilix_show_memory_widget(self) -> None:
         from .kilix_memory import kilix_memory_target

@@ -32,7 +32,7 @@ _PROCESS_TOTALS: dict[int, int] = {}
 _PROCESS_CPU_CORES: dict[int, float] = {}
 _PROCESS_PREVIOUS: dict[int, tuple[int, int]] = {}
 _PROCESS_PREVIOUS_WHEN = 0.0
-_LAST_LABELS: dict[int, tuple[str, str]] = {}
+_LAST_LABELS: dict[int, tuple[str, ...]] = {}
 _TIMER_STARTED = False
 
 
@@ -331,12 +331,14 @@ def _memory_timer(timer_id: int | None = None) -> None:
     global _LAST_LABELS
     from .fast_data_types import get_boss, mark_os_window_dirty
     from .kilix_cpu import pane_cpu_label, pane_cpu_mode
+    from .kilix_gpu import pane_gpu_label, pane_gpu_mode
     memory_mode = pane_memory_mode()
     cpu_mode = pane_cpu_mode()
-    if memory_mode == 'off' and cpu_mode == 'off':
+    gpu_mode = pane_gpu_mode()
+    if memory_mode == 'off' and cpu_mode == 'off' and gpu_mode == 'off':
         _LAST_LABELS = {}
         return
-    current: dict[int, tuple[str, str]] = {}
+    current: dict[int, tuple[str, ...]] = {}
     try:
         boss = get_boss()
     except Exception:
@@ -352,10 +354,13 @@ def _memory_timer(timer_id: int | None = None) -> None:
                     pid = 0
                 if pid > 0:
                     roots.add(pid)
-    from .kilix_telemetry import refresh_panes
-    shared = refresh_panes(tuple(roots), register=memory_mode != 'off')
-    if not shared:
-        _refresh_process_cache(force=True)
+    if memory_mode != 'off' or cpu_mode != 'off':
+        from .kilix_telemetry import refresh_panes
+        shared = refresh_panes(tuple(roots), register=memory_mode != 'off')
+        if not shared:
+            _refresh_process_cache(force=True)
+    # The pane GPU chip reads the GPU snapshot this refresh shares with the top
+    # bar, and walks the process tree only when some process holds GPU memory.
     for manager in boss.all_tab_managers:
         manager_changed = False
         for tab in manager:
@@ -365,7 +370,8 @@ def _memory_timer(timer_id: int | None = None) -> None:
                 pid = getattr(child, 'process_tree_root_pid', 0)
                 label = pane_memory_label(pid) if pid else ''
                 cpu_label = pane_cpu_label(pid) if pid else ''
-                resource_labels = (cpu_label, label)
+                gpu_label = pane_gpu_label(pid) if pid else ''
+                resource_labels = (cpu_label, label, gpu_label)
                 current[window.id] = resource_labels
                 if _LAST_LABELS.get(window.id) != resource_labels:
                     tab_changed = True

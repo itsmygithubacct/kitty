@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..kilix_gpu import GPU_WIDGET_ACTION
 from ..kilix_memory import MEMORY_WIDGET_ACTION
 from ..kilix_voice import DICTATE_ACTION, SPEAK_ACTION
 from .layouts import LAYOUT_ACTION, show_layout_menu
@@ -34,6 +35,7 @@ GESTURE_ACTIONS = frozenset((
     VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION,
     DATE_WIDGET_ACTION, BATTERY_TOGGLE_ACTION, THERMAL_WIDGET_ACTION,
     LAYOUT_ACTION, MEMORY_WIDGET_ACTION, SPEAK_ACTION, DICTATE_ACTION, WEATHER_ACTION,
+    GPU_WIDGET_ACTION,
 ))
 
 
@@ -115,10 +117,12 @@ def dispatch(tab_manager: TabManager, action: str, gesture: str = 'single') -> b
         target_command = settings_target()
         command([*target_command, '--clock'] if target_command else None, 'Clock Settings', 48, 13)
     elif action in (MEMORY_WIDGET_ACTION, THERMAL_WIDGET_ACTION, SPEAK_ACTION,
-                    DICTATE_ACTION, NETWORK_WIDGET_ACTION, WEATHER_ACTION) and (
+                    DICTATE_ACTION, NETWORK_WIDGET_ACTION, WEATHER_ACTION,
+                    GPU_WIDGET_ACTION) and (
             gesture == 'right' or action == WEATHER_ACTION and not chrome_value('KILIX_WEATHER_ZIP', '').strip()):
         kind, title, columns, lines = {
             MEMORY_WIDGET_ACTION: ('system', 'System CPU and RAM', 78, 16),
+            GPU_WIDGET_ACTION: ('gpu', 'GPU', 78, 16),
             THERMAL_WIDGET_ACTION: ('temperature', 'Temperature', 64, 12),
             SPEAK_ACTION: ('speech', 'Read pane aloud', 80, 24),
             DICTATE_ACTION: ('microphone', 'Microphone / dictation', 80, 26),
@@ -159,7 +163,9 @@ def dispatch(tab_manager: TabManager, action: str, gesture: str = 'single') -> b
             kilix_popup=ChromePopup(popup_action, 34 if mode == 'calendar' else 46, 14))
     else:
         kind = {BATTERY_TOGGLE_ACTION: 'battery', THERMAL_WIDGET_ACTION: 'temperature',
-                NETWORK_WIDGET_ACTION: 'network', WEATHER_ACTION: 'weather'}[action]
+                NETWORK_WIDGET_ACTION: 'network', WEATHER_ACTION: 'weather',
+                GPU_WIDGET_ACTION: 'gpu'}[action]
+        columns, lines = {'weather': (72, 12), 'gpu': (70, 18)}.get(kind, (48, 8))
         get_boss().run_kitten_with_metadata('kilix_chrome_widget', (kind,), window=target,
-            kilix_popup=ChromePopup(popup_action, 72 if kind == 'weather' else 48, 12 if kind == 'weather' else 8))
+            kilix_popup=ChromePopup(popup_action, columns, lines))
     return True

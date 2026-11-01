@@ -18,6 +18,7 @@ from kitty.kilix_battery import (
     VOLUME_WIDGET_ACTION,
 )
 from kitty.kilix_chrome import settings as chrome_settings
+from kitty.kilix_gpu import GPU_WIDGET_ACTION
 from kitty.kilix_memory import MEMORY_WIDGET_ACTION
 from kitty.tab_bar import TabBar, TabBarData, as_rgb
 from kitty.utils import color_as_int
@@ -44,6 +45,7 @@ class TestTabBar(BaseTest):
         with (
             patch('kitty.kilix_memory.pane_memory_mode', return_value='off'),
             patch('kitty.kilix_cpu.pane_cpu_mode', return_value='off'),
+            patch('kitty.kilix_gpu.pane_gpu_mode', return_value='off'),
             patch('kitty.kilix_telemetry.refresh_panes') as refresh,
             patch('kitty.kilix_memory._refresh_process_cache') as scan,
         ):
@@ -218,6 +220,8 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.ensure_chrome_timers'),
             patch('kitty.tab_bar.system_load_segment', return_value=(
                 ' load ', MEMORY_WIDGET_ACTION, 41)) as system_segment,
+            patch('kitty.tab_bar.system_gpu_bar_segment', return_value=(
+                ' gpu ', GPU_WIDGET_ACTION, 43)) as gpu_segment,
             patch('kitty.tab_bar.thermal_segment', return_value=(
                 ' thermal ', THERMAL_WIDGET_ACTION, 42)),
             patch('kitty.tab_bar.window_entries', return_value=()),
@@ -228,21 +232,25 @@ class TestTabBar(BaseTest):
             tb.update((TabBarData(title='one', tab_id=1, is_active=True),))
             # Each OS window records what it drew, so a refresh reaches each.
             system_segment.assert_called_with(1)
+            gpu_segment.assert_called_with(1)
 
-        # System CPU/RAM is immediately left of the temperature.
+        # System CPU/RAM, then the GPU widget immediately right of it, then
+        # the temperature.
         self.ae(tuple(action for _, action, _ in segments), (
-            MEMORY_WIDGET_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION,
+            MEMORY_WIDGET_ACTION, GPU_WIDGET_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION,
             NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
-        self.ae((segments[0][2], segments[1][2]), (41, 42))
+        self.ae((segments[0][2], segments[1][2], segments[2][2]), (41, 43, 42))
         self.assertTrue(all(
             fg == as_rgb(color_as_int(opts.foreground))
-            for _, _, fg in segments[2:]
+            for _, _, fg in segments[3:]
         ))
         self.ae(tuple(ae.action for ae in tb.action_extents), (
-            MEMORY_WIDGET_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION, NETWORK_WIDGET_ACTION,
-            CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
+            MEMORY_WIDGET_ACTION, GPU_WIDGET_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION,
+            NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
+        # The GPU readout starts on the cell after CPU/RAM ends.
+        self.ae(tb.action_extents[1].x.start, tb.action_extents[0].x.end)
         for extent in tb.action_extents:
             x = tb.window_geometry.left + extent.x.start * tb.cell_width + 1
             y = tb.window_geometry.top + 1

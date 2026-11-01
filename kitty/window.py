@@ -1204,10 +1204,12 @@ class Window:
         is_maximized = bool(tab is not None and tab.current_layout.name == 'stack')
         is_overlay = tab is not None and tab.overlay_parent(self) is not None
         from .kilix_cpu import pane_cpu_label
+        from .kilix_gpu import pane_gpu_segment
         from .kilix_memory import pane_memory_segment
         root_pid = self.child.process_tree_root_pid
         memory_segment = None if is_overlay or root_pid is None else pane_memory_segment(root_pid)
         cpu_label = '' if is_overlay or root_pid is None else pane_cpu_label(root_pid)
+        gpu_segment = None if is_overlay or root_pid is None else pane_gpu_segment(root_pid)
 
         data = WindowTitleData(
             title=self.title or '',
@@ -1223,6 +1225,7 @@ class Window:
                 and tab.kilix_synchronized_input_enabled(self.id)),
             pane_memory_text=memory_segment[0] if memory_segment else '',
             pane_cpu_text=cpu_label,
+            pane_gpu_text=gpu_segment[0] if gpu_segment else '',
         )
         # If template evaluates to empty string, zero title bar geometry to hide it
         if pts.render(data, progress_percent):

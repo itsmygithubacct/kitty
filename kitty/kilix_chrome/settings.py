@@ -65,8 +65,11 @@ def chrome_value(name: str, default: str = '1') -> str:
             'KILIX_CHROME_WINDOWS', 'KILIX_CHROME_SPEAK', 'KILIX_CHROME_DICTATE',
         }:
             return '0'
+        # There is no native Windows GPU reader (sysfs, NVML via
+        # libnvidia-ml.so.1 and DRM fdinfo are Linux interfaces).
         if name in {
             'KILIX_CHROME_PANE_CPU_MODE', 'KILIX_CHROME_PANE_MEMORY_MODE',
+            'KILIX_CHROME_SYSTEM_GPU_MODE', 'KILIX_CHROME_PANE_GPU_MODE',
         }:
             return 'off'
     settings, exists = values()

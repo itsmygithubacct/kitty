@@ -12,6 +12,7 @@ from .fast_data_types import (
     get_options,
 )
 from .kilix_chrome.settings import chrome_enabled
+from .kilix_gpu import GPU_CHIP_RGB, GPU_WIDGET_ACTION
 from .kilix_memory import MEMORY_GLYPH, MEMORY_WIDGET_ACTION
 from .rgb import color_as_sgr, color_from_int, to_color
 from .tab_bar import draw_attributed_string, safe_builtins
@@ -19,6 +20,7 @@ from .types import WindowGeometry, run_once
 from .utils import color_as_int, log_error
 
 _MEMORY_CHIP_COLOR = (color_as_int(color_from_int(0x8ae234)) << 8) | 2
+_GPU_CHIP_COLOR = (color_as_int(color_from_int(GPU_CHIP_RGB)) << 8) | 2
 
 
 def pane_resource_text(cpu_text: str, memory_text: str) -> str:
@@ -102,6 +104,7 @@ class WindowTitleData(NamedTuple):
     is_synchronized_input: bool = False  # kilix fork: pane receives broadcast keys
     pane_memory_text: str = ''  # kilix fork: dynamic process-tree memory chip
     pane_cpu_text: str = ''  # kilix fork: pane CPU cores left of the RAM chip
+    pane_gpu_text: str = ''  # kilix fork: pane GPU memory right of the RAM measurement
 
 
 @run_once
@@ -242,6 +245,8 @@ class WindowTitleBarScreen:
                 data.pane_cpu_text, data.pane_memory_text)
             candidates = (
                 (None, resource_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # CPU load · shared chip · pane RAM
+                # GPU glyph · pane GPU memory, right of the RAM measurement
+                (None, data.pane_gpu_text, GPU_WIDGET_ACTION, _GPU_CHIP_COLOR),
                 ('KILIX_CHROME_BUTTON_LOG', f' {chr(0xf0219)} ', 'kilix_show_pane_log', None),  # full saved pane log in a new tab
                 # Join/leave synchronized keyboard input.
                 ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ',
