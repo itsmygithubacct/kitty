@@ -167,6 +167,10 @@ class GpuTestCase(BaseTest):
             'GPU_TERMINAL_SETTINGS_FILE': str(self.root / 'missing.conf'),
         })
         self.env.start()
+        # The real call posts to glfw, which tests never initialise.
+        wake = patch('kitty.fast_data_types.wakeup_main_loop')
+        self.wake = wake.start()
+        self.addCleanup(wake.stop)
         for key in (gpu.SYSTEM_GPU_MODE_KEY, gpu.PANE_GPU_MODE_KEY):
             os.environ.pop(key, None)
         gpu.reset_state()
@@ -627,11 +631,15 @@ class TestGpuRefresh(GpuTestCase):
             gpu._CACHE_UNTIL = 0.0
             system._system_load_timer()
             dirty.assert_not_called()
+            self.wake.assert_not_called()
             reading['util'] = 60
             gpu._CACHE_UNTIL = 0.0
             system._system_load_timer()
             dirty.assert_called_once_with(7)
             manager.mark_tab_bar_dirty.assert_called_once_with()
+            # The timer fires inside the event wait; without a wakeup an idle
+            # window keeps showing the old text.
+            self.wake.assert_called_once_with()
 
     def test_bar_timer_does_not_poll_a_gpu_no_bar_shows(self) -> None:
         self.device(NVIDIA)
@@ -659,9 +667,12 @@ class TestGpuRefresh(GpuTestCase):
             kilix_memory._LAST_LABELS = {1: ('', '', '')}
             kilix_memory._memory_timer()
             dirty.assert_not_called()
+            self.wake.assert_not_called()
             kilix_memory._memory_timer()
             dirty.assert_called_once_with(3)
             tab.update_window_title_bars.assert_called_once_with()
+            # A changed chip is rendered now, not at the next unrelated event.
+            self.wake.assert_called_once_with()
         # GPU alone needs no RAM/CPU telemetry refresh.
         refresh.assert_not_called()
         kilix_memory._LAST_LABELS = {}

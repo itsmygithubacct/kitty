@@ -35,6 +35,10 @@ class TestSystemLoad(BaseTest):
             'GPU_TERMINAL_SETTINGS_FILE': os.path.join(self.tmp.name, 'missing.conf'),
         })
         self.env.start()
+        # The real call posts to glfw, which tests never initialise.
+        wake = patch('kitty.fast_data_types.wakeup_main_loop')
+        self.wake = wake.start()
+        self.addCleanup(wake.stop)
         system._PREVIOUS_TIMES = None
         system._CACHE_UNTIL = 0.0
         system._DRAWN_TEXT.clear()
@@ -131,6 +135,7 @@ class TestSystemLoad(BaseTest):
             system._system_load_timer()
             manager.mark_tab_bar_dirty.assert_called_once_with()
             dirty.assert_called_once_with(7)
+            self.wake.assert_called_once_with()
             # Pane title bars do not show the system readout; redrawing them
             # every refresh would be wasted work.
             tab.update_window_title_bars.assert_not_called()
@@ -140,6 +145,7 @@ class TestSystemLoad(BaseTest):
             write_proc(self.root, user=700, idle=1100)
             system._system_load_timer()
             manager.mark_tab_bar_dirty.assert_not_called()
+            self.wake.assert_called_once_with()  # not again: nothing changed
 
     def test_each_os_window_is_refreshed_from_what_it_drew(self) -> None:
         # 9 comes first so waking it cannot hide behind the others being done.

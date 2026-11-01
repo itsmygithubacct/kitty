@@ -183,11 +183,12 @@ def _system_load_timer(timer_id: int | None = None) -> None:
         from .kilix_gpu import system_gpu_text
         gpu_text = system_gpu_text()
     try:
-        from .fast_data_types import get_boss, mark_os_window_dirty
+        from .fast_data_types import get_boss, mark_os_window_dirty, wakeup_main_loop
         # Only the tab bar shows this; leave every pane title bar alone. A bar
         # that has not drawn the segment since its last refresh (hidden,
         # vertical, fullscreen, or a closed window) is not woken again: it
         # records fresh text whenever it next draws.
+        changed = False
         for manager in get_boss().all_tab_managers:
             drawn = _DRAWN_TEXT.get(manager.os_window_id)
             drawn_gpu = _DRAWN_GPU_TEXT.get(manager.os_window_id)
@@ -197,6 +198,12 @@ def _system_load_timer(timer_id: int | None = None) -> None:
             _DRAWN_GPU_TEXT.pop(manager.os_window_id, None)
             manager.mark_tab_bar_dirty()
             mark_os_window_dirty(manager.os_window_id)
+            changed = True
+        if changed:
+            # A timer fires inside the event wait without waking the render
+            # loop, so an idle window would show the old text until some other
+            # event (output, input) arrived.
+            wakeup_main_loop()
     except Exception as error:
         log_error(f'Failed to refresh kilix system load chrome: {error}')
 

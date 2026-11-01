@@ -329,7 +329,7 @@ def kilix_memory_target() -> tuple[list[str], str | None] | None:
 def _memory_timer(timer_id: int | None = None) -> None:
     del timer_id
     global _LAST_LABELS
-    from .fast_data_types import get_boss, mark_os_window_dirty
+    from .fast_data_types import get_boss, mark_os_window_dirty, wakeup_main_loop
     from .kilix_cpu import pane_cpu_label, pane_cpu_mode
     from .kilix_gpu import pane_gpu_label, pane_gpu_mode
     memory_mode = pane_memory_mode()
@@ -361,6 +361,7 @@ def _memory_timer(timer_id: int | None = None) -> None:
             _refresh_process_cache(force=True)
     # The pane GPU chip reads the GPU snapshot this refresh shares with the top
     # bar, and walks the process tree only when some process holds GPU memory.
+    any_changed = False
     for manager in boss.all_tab_managers:
         manager_changed = False
         for tab in manager:
@@ -380,7 +381,12 @@ def _memory_timer(timer_id: int | None = None) -> None:
                 manager_changed = True
         if manager_changed:
             mark_os_window_dirty(manager.os_window_id)
+            any_changed = True
     _LAST_LABELS = current
+    if any_changed:
+        # This timer fires inside the event wait, which does not run a render
+        # pass; without a wakeup an idle pane keeps its old chips on screen.
+        wakeup_main_loop()
 
 
 def ensure_pane_memory_timer() -> None:
