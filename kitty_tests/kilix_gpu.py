@@ -1111,3 +1111,23 @@ class TestGpuFdinfoEpochs(GpuTestCase):
         self.snapshot()
         kilix_memory._PROCESS_CACHE_UNTIL = 0
         self.ae(gpu.pane_gpu_label(100), '700M')
+
+    def test_a_reused_pid_is_read_afresh_during_the_backoff(self) -> None:
+        # The cached fdinfo belongs to one process: a new process that got the
+        # same PID (another start time) is read, not given the old value.
+        self.device(AMD, control='auto', files={'gpu_busy_percent': '0', 'mem_info_vram_used': str(GIB)})
+        write_process(self.proc, 100, 1)
+        worker = write_process(self.proc, 101, 100)
+        add_fd(worker, 3, '/dev/dri/renderD130', 'drm-driver:\tamdgpu\ndrm-client-id:\t5\ndrm-resident-vram:\t600 MiB\n')
+        self.snapshot()
+        self.ae(gpu.pane_gpu_bytes(100), 600 * MIB)
+        self.assertIn(AMD[0], gpu._BACKOFF)
+        # PID 101 exits and the PID is reused inside the backoff: stat field
+        # 22 (the start time) differs.
+        fields = ['S', '100', '101', '101', *(['0'] * 15), '999', '0', '100']
+        (worker / 'stat').write_text(f"101 (pane worker) {' '.join(fields)}\n")
+        (worker / 'fdinfo' / '3').write_text('drm-driver:\tamdgpu\ndrm-client-id:\t8\ndrm-resident-vram:\t100 MiB\n')
+        gpu.gpu_snapshot(force=True)
+        kilix_memory._PROCESS_CACHE_UNTIL = 0
+        self.assertIn(AMD[0], gpu._BACKOFF)
+        self.ae(gpu.pane_gpu_bytes(100), 100 * MIB)
