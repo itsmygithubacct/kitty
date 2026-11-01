@@ -1098,3 +1098,16 @@ class TestGpuFdinfoEpochs(GpuTestCase):
                 kilix_memory._PROCESS_CACHE_UNTIL = 0
                 self.ae(gpu.pane_gpu_label(100), '600M')
         self.ae(fdinfo, [1002.0])
+
+    def test_fdinfo_is_read_again_after_each_counter_read(self) -> None:
+        # A GPU pinned on (no backoff): each sample reads its counters, and
+        # the pane chip follows the client's memory from one sample to the next.
+        self.device(AMD, control='on', files={'gpu_busy_percent': '0', 'mem_info_vram_used': str(GIB)})
+        shell = write_process(self.proc, 100, 1)
+        add_fd(shell, 3, '/dev/dri/renderD130', 'drm-driver:\tamdgpu\ndrm-client-id:\t5\ndrm-resident-vram:\t600 MiB\n')
+        self.snapshot()
+        self.ae(gpu.pane_gpu_label(100), '600M')
+        (shell / 'fdinfo' / '3').write_text('drm-driver:\tamdgpu\ndrm-client-id:\t5\ndrm-resident-vram:\t700 MiB\n')
+        self.snapshot()
+        kilix_memory._PROCESS_CACHE_UNTIL = 0
+        self.ae(gpu.pane_gpu_label(100), '700M')
