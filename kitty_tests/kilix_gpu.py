@@ -63,6 +63,8 @@ class FakeNvml:
         self.versions = versions
         self.not_found = not_found
         self.calls: list[str] = []
+        self.init_results: list[int] = []  # nvmlInit return codes, then success
+        self.fail: str = ''  # a method that raises, as a broken library would
 
     def __getattr__(self, name: str) -> Any:
         for base in gpu._PROCESS_LISTS:
@@ -77,7 +79,7 @@ class FakeNvml:
 
     def nvmlInit_v2(self) -> int:
         self.calls.append('init')
-        return 0
+        return self.init_results.pop(0) if self.init_results else 0
 
     def nvmlShutdown(self) -> int:
         self.calls.append('shutdown')
@@ -96,6 +98,8 @@ class FakeNvml:
 
     def nvmlDeviceGetUtilizationRates(self, handle: ctypes.c_void_p, rates: Any) -> int:
         self.calls.append('utilisation')
+        if self.fail == 'utilisation':
+            raise OSError('nvmlDeviceGetUtilizationRates: broken library')
         rates._obj.gpu = self._device(handle).get('util', 0)
         return 0
 
@@ -322,13 +326,13 @@ class TestGpuSources(GpuTestCase):
         self.device(INTEL)
         self.device(NVIDIA)
         self.nvml = FakeNvml({NVIDIA[0]: dict(
-            name='Quadro RTX 3000', util=41, used=2 * GIB, total=6 * GIB,
+            name='Example NVIDIA GPU', util=41, used=2 * GIB, total=6 * GIB,
             compute=[(500, 600 * MIB), (501, 10 * MIB)], graphics=[(500, 600 * MIB), (77, 4 * MIB)])})
         snapshot = self.snapshot()
         self.ae([d.driver for d in snapshot.devices], ['i915', 'nvidia'])
         shown = gpu.primary_device(snapshot.devices)
         self.ae((shown.name, shown.utilisation, shown.memory_used, shown.source),
-                ('Quadro RTX 3000', 41, 2 * GIB, 'nvml'))
+                ('Example NVIDIA GPU', 41, 2 * GIB, 'nvml'))
         # A process on both lists is one allocation, not two.
         self.ae(dict(snapshot.process_memory), {500: 600 * MIB, 501: 10 * MIB, 77: 4 * MIB})
         self.ae(dict(snapshot.fdinfo_nodes), {'card0': INTEL[0], 'renderD128': INTEL[0]})
@@ -441,7 +445,7 @@ class TestGpuNoWake(GpuTestCase):
         self.nvml.calls.clear()
         self.ae(gpu.primary_device(self.snapshot().devices).memory_used, 300 * MIB)
         self.ae(self.nvml.calls, [])
-        gpu._IDLE[NVIDIA[0]] = gpu._IDLE[NVIDIA[0]]._replace(until=0.0)
+        gpu._BACKOFF[NVIDIA[0]] = gpu._BACKOFF[NVIDIA[0]]._replace(until=0.0)
         self.snapshot()
         self.assertIn('utilisation', self.nvml.calls)
 
@@ -459,15 +463,15 @@ class TestGpuChoice(GpuTestCase):
     def test_discrete_gpu_is_shown_and_the_card_lists_each_gpu(self) -> None:
         self.device(INTEL)
         self.device(NVIDIA)
-        self.nvml = FakeNvml({NVIDIA[0]: dict(name='Quadro RTX 3000', util=5, used=400 * MIB)})
+        self.nvml = FakeNvml({NVIDIA[0]: dict(name='Example NVIDIA GPU', util=5, used=400 * MIB)})
         snapshot = self.snapshot()
         shown = gpu.primary_device(snapshot.devices)
         self.ae(shown.pci, NVIDIA[0])
-        with patch.object(gpu, '_pci_ids_name', return_value='UHD Graphics 630'):
+        with patch.object(gpu, '_pci_ids_name', return_value='Example Intel iGPU'):
             lines = gpu.card_lines(snapshot)
         text = '\n'.join(lines)
-        self.assertIn('▶ Quadro RTX 3000', text)
-        self.assertIn('  UHD Graphics 630', text)
+        self.assertIn('▶ Example NVIDIA GPU', text)
+        self.assertIn('  Example Intel iGPU', text)
         self.assertIn('busy 5% · VRAM 400 MiB / 6.0 GiB', text)
         self.assertIn('no utilisation or VRAM counter', text)
         self.assertIn(INTEL[0], text)
@@ -715,3 +719,382 @@ class TestGpuActions(GpuTestCase):
     def test_card_kitten_accepts_gpu(self) -> None:
         from kittens.kilix_chrome_widget.main import card
         self.ae(card('gpu')[0], 'GPU')
+
+
+class Clock:
+    """A fake monotonic clock: refreshes are simulated without waiting."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+XORG = (1191, 4718592)  # a display server's resident 4.5 MiB at 0% busy
+
+
+class TestGpuIdleBackoff(GpuTestCase):
+    """A runtime-PM GPU (power/control=auto) must be able to reach RTD3 while
+    the widgets poll: the NVIDIA driver needs a use-free 5 s window, so no
+    read may reach the driver more often than the backoff allows."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.clock = Clock()
+        clock = patch.object(gpu.time, 'monotonic', self.clock)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def refresh_for(self, seconds: float, step: float = 4.0, every: Any = None) -> list[float]:
+        """Sample on every 4 s refresh for ``seconds``; return the times NVML was opened."""
+        opened: list[float] = []
+        end = self.clock.now + seconds
+        while self.clock.now <= end:
+            before = self.nvml.calls.count('init') if self.nvml else 0
+            if every is not None:
+                every()
+            gpu.gpu_snapshot()
+            if self.nvml and self.nvml.calls.count('init') > before:
+                opened.append(self.clock.now)
+            self.clock.now += step
+        return opened
+
+    def test_resident_display_server_allocation_is_idle(self) -> None:
+        self.device(NVIDIA, control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=0, used=300 * MIB, graphics=[XORG])})
+        opened = self.refresh_for(300)
+        # One read per backoff, not one per refresh (76 refreshes).
+        self.ae(len(opened), 10)
+        self.ae(self.nvml.calls.count('init'), self.nvml.calls.count('shutdown'))
+        gaps = [b - a for a, b in zip(opened, opened[1:])]
+        self.assertGreaterEqual(min(gaps), 30)
+        # The display server's memory is still in the total it reports.
+        self.ae(dict(gpu.gpu_snapshot().process_memory), {XORG[0]: XORG[1]})
+
+    def test_backoff_lasts_at_least_30_s_and_follows_the_autosuspend_delay(self) -> None:
+        dev = self.device(NVIDIA, control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=0, graphics=[XORG])})
+        gpu.gpu_snapshot()
+        self.ae(self.nvml.calls.count('init'), 1)
+        for at in (4, 8, 16, 24, 29.9):
+            self.clock.now = 1000 + at
+            gpu.gpu_snapshot()
+        self.ae(self.nvml.calls.count('init'), 1)
+        self.clock.now = 1032  # the next 4 s refresh after the backoff
+        gpu.gpu_snapshot()
+        self.ae(self.nvml.calls.count('init'), 2)
+        # A longer autosuspend delay doubles into the backoff, up to 120 s.
+        (dev / 'power' / 'autosuspend_delay_ms').write_text('40000\n')
+        self.ae(gpu.backoff_seconds(gpu.drm_devices()[0]), 80)
+        (dev / 'power' / 'autosuspend_delay_ms').write_text('100000\n')
+        self.ae(gpu.backoff_seconds(gpu.drm_devices()[0]), 120)
+        (dev / 'power' / 'autosuspend_delay_ms').write_text('2000\n')
+        self.ae(gpu.backoff_seconds(gpu.drm_devices()[0]), 30)
+
+    def test_activity_is_utilisation_or_moving_process_memory(self) -> None:
+        self.device(NVIDIA, control='auto')
+        job = [700, 100 * MIB]
+        reading = dict(util=0, graphics=[XORG], compute=[tuple(job)])
+        self.nvml = FakeNvml({NVIDIA[0]: reading})
+
+        def grow() -> None:
+            job[1] += 64 * MIB
+            reading['compute'] = [tuple(job)]
+        # The first read has nothing to compare with: idle at 0%.
+        gpu.gpu_snapshot()
+        self.assertIn(NVIDIA[0], gpu._BACKOFF)
+        gpu._BACKOFF.clear()
+        self.clock.now += 4
+        # Memory that keeps moving at 0% busy: read at every refresh.
+        self.ae(len(self.refresh_for(20, every=grow)), 6)
+        # Busy: read at every refresh.
+        reading['util'] = 35
+        self.ae(len(self.refresh_for(20)), 6)
+        # A process appearing is activity even at 0%.
+        reading['util'] = 0
+        gpu.gpu_snapshot(force=True)
+        self.assertIn(NVIDIA[0], gpu._BACKOFF)
+        gpu._BACKOFF.clear()
+        reading['compute'] = [tuple(job), (701, 200 * MIB)]
+        gpu.gpu_snapshot(force=True)
+        self.assertNotIn(NVIDIA[0], gpu._BACKOFF)
+        # Small moves of a resident allocation are not.
+        reading['graphics'] = [(XORG[0], XORG[1] + 64 * 1024)]
+        gpu.gpu_snapshot(force=True)
+        self.assertIn(NVIDIA[0], gpu._BACKOFF)
+
+    def test_pane_chip_survives_the_backoff(self) -> None:
+        self.device(NVIDIA, control='auto')
+        # A model loaded in a pane and sitting idle: steady memory at 0%.
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=0, graphics=[XORG], compute=[(101, 700 * MIB)])})
+        write_process(self.proc, 100, 1)
+        write_process(self.proc, 101, 100)
+        labels = set()
+        opened = self.refresh_for(60, every=lambda: labels.add(gpu.pane_gpu_label(100)))
+        self.ae(labels, {'700M'})
+        self.ae(len(opened), 2)
+
+    def test_amd_runtime_pm_counters_and_fdinfo_back_off_too(self) -> None:
+        self.device(AMD, control='auto', files={'gpu_busy_percent': '0', 'mem_info_vram_used': str(200 * MIB),
+                                                 'mem_info_vram_total': str(8 * GIB)})
+        shell = write_process(self.proc, 100, 1)
+        worker = write_process(self.proc, 101, 100)
+        add_fd(shell, 0, '/dev/pts/3')
+        add_fd(worker, 3, '/dev/dri/renderD130', 'drm-driver:\tamdgpu\ndrm-pdev:\t0000:03:00.0\n'
+               'drm-client-id:\t5\ndrm-resident-vram:\t600 MiB\n')
+        read = gpu._read
+        paths: list[tuple[float, str]] = []
+
+        def recording_read(path: str, limit: int = 4096) -> str | None:
+            paths.append((self.clock.now, path))
+            return read(path, limit)
+        labels = set()
+        with patch.object(gpu, '_read', recording_read), patch.dict(os.environ, {gpu.PANE_GPU_MODE_KEY: 'auto'}):
+            self.refresh_for(300, every=lambda: labels.add(gpu.pane_gpu_label(100)))
+        busy_reads = [t for t, p in paths if p.endswith('gpu_busy_percent')]
+        vram_reads = [t for t, p in paths if p.endswith('mem_info_vram_used')]
+        fdinfo_reads = [t for t, p in paths if '/fdinfo/' in p]
+        self.ae(len(busy_reads), 10)
+        self.ae(vram_reads, busy_reads)
+        self.assertGreaterEqual(min(b - a for a, b in zip(busy_reads, busy_reads[1:])), 30)
+        # Its clients' fdinfo is read with the counters, not in between...
+        self.assertLessEqual(set(fdinfo_reads), set(busy_reads))
+        self.assertTrue(fdinfo_reads)
+        # ...and the pane chip keeps the value read last.
+        self.ae(labels, {'600M'})
+
+    def test_amd_activity_and_pinned_on_are_read_every_refresh(self) -> None:
+        dev = self.device(AMD, control='auto', files={'gpu_busy_percent': '20', 'mem_info_vram_used': str(GIB)})
+        busy = []
+        with patch.object(gpu, '_sysfs_device', wraps=gpu._sysfs_device) as read:
+            self.refresh_for(20)
+            busy.append(read.call_count)
+            (dev / 'gpu_busy_percent').write_text('0\n')
+            (dev / 'power' / 'control').write_text('on\n')
+            gpu._BACKOFF.clear()
+            self.refresh_for(20)
+            busy.append(read.call_count - busy[0])
+        self.ae(busy, [6, 6])
+
+    def test_a_job_that_wakes_a_sleeping_gpu_is_read_at_once(self) -> None:
+        dev = self.device(NVIDIA, control='auto')
+        reading = dict(util=0, graphics=[XORG])
+        self.nvml = FakeNvml({NVIDIA[0]: reading})
+        gpu.gpu_snapshot()
+        set_status(dev, 'suspended')
+        self.clock.now += 4
+        self.assertTrue(gpu.gpu_snapshot().devices[0].asleep)
+        # A job starts: the GPU wakes, and it is read on the next refresh,
+        # not after a backoff, and is not backed off while its memory moves.
+        set_status(dev, 'active')
+        reading['compute'] = [(800, 900 * MIB)]
+        self.clock.now += 4
+        self.ae(dict(gpu.gpu_snapshot().process_memory), {XORG[0]: XORG[1], 800: 900 * MIB})
+        self.assertNotIn(NVIDIA[0], gpu._BACKOFF)
+
+    def test_reviewer_window_8_refreshes_over_28_s(self) -> None:
+        # GW-R1 check C2, in the suite: Xorg listed, 0% busy, control=auto.
+        self.device(NVIDIA, control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=0, graphics=[XORG])})
+        self.refresh_for(28)
+        self.ae((self.nvml.calls.count('init'), self.nvml.calls.count('shutdown')), (1, 1))
+
+
+class TestGpuNvmlSessions(GpuTestCase):
+
+    def test_two_nvidia_gpus_one_asleep_nvml_is_not_initialised(self) -> None:
+        second = ('0000:02:00.0', 0x10de, 0x1f36, 'nvidia', ('card2', 'renderD130'))
+        self.device(NVIDIA)
+        dev = self.device(second, status='suspended', control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=40, used=GIB), second[0]: dict(util=0)})
+        snapshot = self.snapshot()
+        # nvmlInit would attach (and so wake) the sleeping GPU: not called.
+        self.ae(self.nvml.calls.count('init'), 0)
+        self.ae([d.source for d in snapshot.devices], ['held', 'asleep'])
+        self.assertIn('another NVIDIA GPU is asleep', '\n'.join(gpu.card_lines(snapshot)))
+        # Both awake: read, and the session is closed (one is runtime-PM).
+        set_status(dev, 'active')
+        snapshot = self.snapshot()
+        self.ae([d.source for d in snapshot.devices], ['nvml', 'nvml'])
+        self.ae((self.nvml.calls.count('init'), self.nvml.calls.count('shutdown')), (1, 1))
+
+    def test_a_kept_session_is_closed_when_a_gpu_goes_to_sleep(self) -> None:
+        second = ('0000:02:00.0', 0x10de, 0x1f36, 'nvidia', ('card2', 'renderD130'))
+        self.device(NVIDIA)
+        dev = self.device(second)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=40), second[0]: dict(util=40)})
+        self.snapshot()
+        self.ae(self.nvml.calls.count('shutdown'), 0)  # both pinned on: kept
+        (dev / 'power' / 'control').write_text('auto\n')
+        set_status(dev, 'suspended')
+        self.snapshot()
+        self.ae(self.nvml.calls.count('shutdown'), 1)
+        self.assertFalse(gpu._NVML.initialised)
+
+    def test_mixed_control_closes_the_session_even_while_one_backs_off(self) -> None:
+        second = ('0000:02:00.0', 0x10de, 0x1f36, 'nvidia', ('card2', 'renderD130'))
+        self.device(NVIDIA, control='on')
+        self.device(second, control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=40), second[0]: dict(util=0)})
+        for _ in range(3):
+            self.snapshot()  # the second GPU is in its backoff after the first
+            self.assertFalse(gpu._NVML.initialised)
+        self.ae((self.nvml.calls.count('init'), self.nvml.calls.count('shutdown')), (3, 3))
+        self.assertIn(second[0], gpu._BACKOFF)
+
+    def test_a_failing_read_still_closes_nvml_and_logs_once(self) -> None:
+        self.device(NVIDIA, control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=5)})
+        self.nvml.fail = 'utilisation'
+        with patch.object(gpu, 'log_error') as log:
+            for _ in range(3):
+                gpu._BACKOFF.clear()
+                snapshot = self.snapshot()
+        self.ae((self.nvml.calls.count('init'), self.nvml.calls.count('shutdown')), (3, 3))
+        self.assertFalse(gpu._NVML.initialised)
+        self.ae(log.call_count, 1)
+        self.ae((snapshot.devices[0].source, snapshot.devices[0].readable), ('none', False))
+        # A broken read on a runtime-PM GPU is not retried at every refresh.
+        self.snapshot()
+        self.ae(self.nvml.calls.count('init'), 3)
+
+    def test_library_without_get_name_still_reads(self) -> None:
+        self.device(NVIDIA, control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=5, used=GIB)})
+        with patch.object(FakeNvml, 'nvmlDeviceGetName', None):
+            device = self.snapshot().devices[0]
+        self.ae((device.utilisation, device.name), (5, 'NVIDIA GPU 10de:1f36'))
+        self.ae(self.nvml.calls.count('shutdown'), 1)
+
+    def test_init_failure_is_retried_later_and_less_often(self) -> None:
+        self.device(NVIDIA)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=5, used=GIB)})
+        self.nvml.init_results = [18, 18]  # NVML_ERROR_LIB_RM_VERSION_MISMATCH twice
+        clock = Clock()
+        with patch.object(gpu.time, 'monotonic', clock):
+            self.assertFalse(self.snapshot().devices[0].readable)
+            for at in (4, 20, 29):
+                clock.now = 1000 + at
+                self.snapshot()
+            self.ae(self.nvml.calls.count('init'), 1)
+            clock.now = 1030
+            self.assertFalse(self.snapshot().devices[0].readable)
+            self.ae(self.nvml.calls.count('init'), 2)
+            clock.now = 1030 + 59
+            self.snapshot()
+            self.ae(self.nvml.calls.count('init'), 2)  # the wait doubled to 60 s
+            clock.now = 1030 + 60
+            self.ae(self.snapshot().devices[0].utilisation, 5)
+        self.ae(self.loads, 1)  # the library was loaded once
+
+    def test_more_than_128_processes_are_read(self) -> None:
+        self.device(NVIDIA)
+        many = [(2000 + i, MIB) for i in range(300)]
+        self.nvml = FakeNvml({NVIDIA[0]: dict(compute=many)})
+        self.ae(len(self.snapshot().process_memory), 300)
+
+    def test_device_without_runtime_pm_attributes_is_read(self) -> None:
+        dev = self.device(NVIDIA)
+        (dev / 'power' / 'runtime_status').unlink()
+        (dev / 'power' / 'control').unlink()
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=7)})
+        device = self.snapshot().devices[0]
+        self.ae((device.asleep, device.utilisation), (False, 7))
+
+    def test_nouveau_is_not_read_through_nvml(self) -> None:
+        nouveau = ('0000:01:00.0', 0x10de, 0x1f36, 'nouveau', ('card1', 'renderD129'))
+        self.device(nouveau)
+        self.nvml = FakeNvml({nouveau[0]: dict(util=50)})
+        snapshot = self.snapshot()
+        self.ae(self.loads, 0)
+        self.ae(snapshot.devices[0].source, 'none')
+        self.ae(dict(snapshot.fdinfo_nodes), {'card1': nouveau[0], 'renderD129': nouveau[0]})
+
+
+class TestGpuPaneCache(GpuTestCase):
+
+    def test_title_bar_redraws_reuse_one_fd_listing_per_refresh(self) -> None:
+        self.device(INTEL)
+        shell = write_process(self.proc, 100, 1)
+        add_fd(shell, 3, '/dev/dri/renderD128', I915_FDINFO.format(client=1, total=1, resident=700 * 1024))
+        self.snapshot()
+        listdir = os.listdir
+        opened: list[str] = []
+
+        def recording_listdir(path: Any) -> list[str]:
+            opened.append(str(path))
+            return listdir(path)
+        with patch('kitty.kilix_gpu.os.listdir', recording_listdir):
+            for _ in range(5):
+                self.ae(gpu.pane_gpu_bytes(100), 700 * MIB)
+        self.ae([p for p in opened if p.endswith('/fd')], [str(self.proc / '100' / 'fd')])
+        # The next sample reads it again.
+        gpu.gpu_snapshot(force=True)
+        with patch('kitty.kilix_gpu.os.listdir', recording_listdir):
+            gpu.pane_gpu_bytes(100)
+        self.ae(len([p for p in opened if p.endswith('/fd')]), 2)
+
+    def test_fdinfo_is_not_read_once_the_device_falls_asleep(self) -> None:
+        dev = self.device(AMD, files={'gpu_busy_percent': '30'})
+        shell = write_process(self.proc, 100, 1)
+        add_fd(shell, 3, '/dev/dri/renderD130', 'drm-driver:\tamdgpu\ndrm-client-id:\t5\ndrm-resident-vram:\t600 MiB\n')
+        self.snapshot()
+        set_status(dev, 'suspended')  # after the sample, before the pane refresh
+        self.ae(gpu.pane_gpu_bytes(100), 0)
+
+
+class TestGpuChipColour(GpuTestCase):
+
+    @staticmethod
+    def contrast(a: int, b: int) -> float:
+        def luminance(rgb: int) -> float:
+            parts = [((rgb >> shift) & 255) / 255 for shift in (16, 8, 0)]
+            parts = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in parts]
+            return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]
+        hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+
+    def test_chip_reads_on_both_title_bars_and_the_top_bar(self) -> None:
+        # Kilix's config/kitty.conf: active and inactive title bar, tab bar.
+        for background in (0x3465a4, 0x2e3436, 0x16181a):
+            self.assertGreaterEqual(self.contrast(gpu.GPU_CHIP_RGB, background), 4.5, hex(background))
+
+
+class TestGpuApu(GpuTestCase):
+
+    def test_boot_vga_apu_is_integrated_beside_a_sleeping_nvidia_gpu(self) -> None:
+        # GW-R1 check C7: a Ryzen APU behind an internal bridge (bus 05).
+        self.device(NVIDIA, status='suspended', control='auto')
+        apu = self.device(('0000:05:00.0', 0x1002, 0x1638, 'amdgpu', ('card0', 'renderD128')),
+                          files={'gpu_busy_percent': '7', 'mem_info_vram_used': str(300 * MIB),
+                                 'mem_info_vram_total': str(512 * MIB)})
+        (apu / 'boot_vga').write_text('1\n')
+        shown = gpu.primary_device(self.snapshot().devices)
+        self.ae((shown.pci, shown.asleep), (NVIDIA[0], True))
+        self.ae(gpu.system_gpu_text(), f' {G} {gpu.ASLEEP_TEXT} ')
+
+
+class TestGpuFdinfoEpochs(GpuTestCase):
+
+    def test_chip_is_read_once_per_backoff_even_when_the_bar_sampled_first(self) -> None:
+        # The bar timer takes the sample that reads the idle GPU's counters;
+        # the pane timer runs in the next sample, inside the backoff.
+        self.device(AMD, control='auto', files={'gpu_busy_percent': '0', 'mem_info_vram_used': str(GIB)})
+        shell = write_process(self.proc, 100, 1)
+        add_fd(shell, 3, '/dev/dri/renderD130', 'drm-driver:\tamdgpu\ndrm-client-id:\t5\ndrm-resident-vram:\t600 MiB\n')
+        clock = Clock()
+        read = gpu._read
+        fdinfo: list[float] = []
+
+        def recording_read(path: str, limit: int = 4096) -> str | None:
+            if '/fdinfo/' in path:
+                fdinfo.append(clock.now)
+            return read(path, limit)
+        with patch.object(gpu.time, 'monotonic', clock), patch.object(gpu, '_read', recording_read):
+            gpu.system_gpu_text()  # bar: reads the counters, starts the backoff
+            for step in range(1, 7):
+                clock.now = 1000 + 4 * step - 2
+                kilix_memory._PROCESS_CACHE_UNTIL = 0
+                self.ae(gpu.pane_gpu_label(100), '600M')
+        self.ae(fdinfo, [1002.0])
