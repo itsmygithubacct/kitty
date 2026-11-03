@@ -918,6 +918,10 @@ def pane_gpu_bytes(root_pid: int) -> int | None:
     if root_pid <= 0:
         return None
     snapshot = gpu_snapshot()
+    if any(device.source == 'held' for device in snapshot.devices):
+        # An unread awake GPU can belong to any pane, so the complete
+        # process-tree allocation is unavailable until sampling resumes.
+        return None
     if not snapshot.process_memory and not snapshot.fdinfo_nodes:
         return 0 if snapshot.devices else None
     from . import kilix_memory

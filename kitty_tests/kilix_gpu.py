@@ -1206,6 +1206,53 @@ class TestGpuMergeReview(GpuTestCase):
         self.ae(self.nvml.calls.count('shutdown'), 1)
         self.ae(gpu.system_gpu_text(), f' {G} 700M ')
 
+    def test_held_pane_allocation_is_unavailable_in_every_mode(self) -> None:
+        self.device(NVIDIA)
+        other = self.device(self.second, status='suspending', control='auto')
+        write_process(self.proc, 100, 1)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=90, compute=[(100, 2 * GIB)]),
+                              self.second[0]: dict(util=0)})
+        for status in ('suspending', 'suspended'):
+            set_status(other, status)
+            self.snapshot()
+            self.assertIsNone(gpu.pane_gpu_bytes(100))
+            for mode in ('always', 'auto', 'off'):
+                with self.subTest(status=status, mode=mode), patch.dict(os.environ, {gpu.PANE_GPU_MODE_KEY: mode}):
+                    self.ae(gpu.pane_gpu_label(100), '')
+                    self.assertIsNone(gpu.pane_gpu_segment(100))
+        self.ae(self.nvml.calls.count('init'), 0)
+
+    def test_held_pane_does_not_show_a_partial_sum_and_recovers(self) -> None:
+        self.device(NVIDIA, control='auto')
+        self.device(self.second, control='auto')
+        write_process(self.proc, 100, 1)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=70, compute=[(100, GIB)]),
+                              self.second[0]: dict(util=0, compute=[(100, 700 * MIB)])})
+        self.snapshot()
+        self.ae(gpu.pane_gpu_bytes(100), GIB + 700 * MIB)
+        self.clock.now += 4
+        snapshot = self.snapshot()
+        self.ae(snapshot.process_memory[100], 700 * MIB)
+        self.assertIsNone(gpu.pane_gpu_bytes(100))
+        for mode in ('always', 'auto'):
+            with patch.dict(os.environ, {gpu.PANE_GPU_MODE_KEY: mode}):
+                self.ae(gpu.pane_gpu_label(100), '')
+        self.clock.now += 28
+        self.snapshot()
+        self.ae(gpu.pane_gpu_bytes(100), GIB + 700 * MIB)
+        self.ae(gpu.pane_gpu_label(100), '1.7')
+        self.ae(self.nvml.calls.count('init'), 2)
+
+    def test_sampled_zero_is_still_available_in_always_mode(self) -> None:
+        self.device(NVIDIA, control='on')
+        write_process(self.proc, 100, 1)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=0, used=0)})
+        self.snapshot()
+        self.ae(gpu.pane_gpu_bytes(100), 0)
+        with patch.dict(os.environ, {gpu.PANE_GPU_MODE_KEY: 'always'}):
+            self.ae(gpu.pane_gpu_label(100), '0K')
+        self.ae(self.nvml.calls.count('init'), 1)
+
     def test_non_nvidia_sleepers_do_not_block_nvml(self) -> None:
         self.device(NVIDIA)
         intel = self.device(INTEL, status='suspended', control='auto')
