@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from kitty import kilix_battery, kilix_memory
+from kitty import kilix_battery, kilix_gpu, kilix_memory
 from kitty.boss import Boss, kilix_desktop_owns_start_menu
 from kitty.fast_data_types import BOTTOM_EDGE, LEFT_EDGE, Color, Region
 from kitty.kilix_battery import (
@@ -187,6 +187,10 @@ class TestTabBar(BaseTest):
         self.assertNotEqual(tb.tab_id_at(5, 165), 1)
 
     def test_clock_status_is_bright_and_clickable(self) -> None:
+        gpu_text = kilix_gpu.format_system_gpu(kilix_gpu.GpuDevice(
+            '0000:01:00.0', 0x10de, 0x1001, 'nvidia', 'Example GPU', True,
+            False, None, None, None, 'held'))
+        self.ae(gpu_text, f' {kilix_gpu.GPU_GLYPH} held ')
         opts = self.set_options({
             'foreground': Color(0xd3, 0xd7, 0xcf),
             'tab_bar_edge': BOTTOM_EDGE,
@@ -221,7 +225,7 @@ class TestTabBar(BaseTest):
             patch('kitty.tab_bar.system_load_segment', return_value=(
                 ' load ', MEMORY_WIDGET_ACTION, 41)) as system_segment,
             patch('kitty.tab_bar.system_gpu_bar_segment', return_value=(
-                ' gpu ', GPU_WIDGET_ACTION, 43)) as gpu_segment,
+                gpu_text, GPU_WIDGET_ACTION, 43)) as gpu_segment,
             patch('kitty.tab_bar.thermal_segment', return_value=(
                 ' thermal ', THERMAL_WIDGET_ACTION, 42)),
             patch('kitty.tab_bar.window_entries', return_value=()),
@@ -249,6 +253,9 @@ class TestTabBar(BaseTest):
             MEMORY_WIDGET_ACTION, GPU_WIDGET_ACTION, THERMAL_WIDGET_ACTION, VOLUME_WIDGET_ACTION,
             NETWORK_WIDGET_ACTION, CALENDAR_WIDGET_ACTION, DATE_WIDGET_ACTION,
         ))
+        # The withheld reading keeps its glyph, text and clickable cell width.
+        self.assertIn(gpu_text, str(tb.screen.line(0)))
+        self.ae(tb.action_extents[1].x.end - tb.action_extents[1].x.start, len(gpu_text))
         # The GPU readout starts on the cell after CPU/RAM ends.
         self.ae(tb.action_extents[1].x.start, tb.action_extents[0].x.end)
         for extent in tb.action_extents:

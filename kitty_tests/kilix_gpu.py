@@ -16,8 +16,8 @@ from kitty.window_title_bar import WindowTitleBarScreen, WindowTitleData, pane_r
 from . import BaseTest
 
 G = gpu.GPU_GLYPH
-INTEL = ('0000:00:02.0', 0x8086, 0x3e9b, 'i915', ('card0', 'renderD128'))
-NVIDIA = ('0000:01:00.0', 0x10de, 0x1f36, 'nvidia', ('card1', 'renderD129'))
+INTEL = ('0000:00:02.0', 0x8086, 0x1002, 'i915', ('card0', 'renderD128'))
+NVIDIA = ('0000:01:00.0', 0x10de, 0x1001, 'nvidia', ('card1', 'renderD129'))
 AMD = ('0000:03:00.0', 0x1002, 0x73bf, 'amdgpu', ('card2', 'renderD130'))
 
 
@@ -100,6 +100,8 @@ class FakeNvml:
         self.calls.append('utilisation')
         if self.fail == 'utilisation':
             raise OSError('nvmlDeviceGetUtilizationRates: broken library')
+        if self._device(handle).get('util', 0) is None:
+            return 3  # NVML_ERROR_NOT_SUPPORTED
         rates._obj.gpu = self._device(handle).get('util', 0)
         return 0
 
@@ -904,7 +906,7 @@ class TestGpuIdleBackoff(GpuTestCase):
 class TestGpuNvmlSessions(GpuTestCase):
 
     def test_two_nvidia_gpus_one_asleep_nvml_is_not_initialised(self) -> None:
-        second = ('0000:02:00.0', 0x10de, 0x1f36, 'nvidia', ('card2', 'renderD130'))
+        second = ('0000:02:00.0', 0x10de, 0x1001, 'nvidia', ('card2', 'renderD130'))
         self.device(NVIDIA)
         dev = self.device(second, status='suspended', control='auto')
         self.nvml = FakeNvml({NVIDIA[0]: dict(util=40, used=GIB), second[0]: dict(util=0)})
@@ -920,7 +922,7 @@ class TestGpuNvmlSessions(GpuTestCase):
         self.ae((self.nvml.calls.count('init'), self.nvml.calls.count('shutdown')), (1, 1))
 
     def test_a_kept_session_is_closed_when_a_gpu_goes_to_sleep(self) -> None:
-        second = ('0000:02:00.0', 0x10de, 0x1f36, 'nvidia', ('card2', 'renderD130'))
+        second = ('0000:02:00.0', 0x10de, 0x1001, 'nvidia', ('card2', 'renderD130'))
         self.device(NVIDIA)
         dev = self.device(second)
         self.nvml = FakeNvml({NVIDIA[0]: dict(util=40), second[0]: dict(util=40)})
@@ -933,14 +935,14 @@ class TestGpuNvmlSessions(GpuTestCase):
         self.assertFalse(gpu._NVML.initialised)
 
     def test_mixed_control_closes_the_session_even_while_one_backs_off(self) -> None:
-        second = ('0000:02:00.0', 0x10de, 0x1f36, 'nvidia', ('card2', 'renderD130'))
+        second = ('0000:02:00.0', 0x10de, 0x1001, 'nvidia', ('card2', 'renderD130'))
         self.device(NVIDIA, control='on')
         self.device(second, control='auto')
         self.nvml = FakeNvml({NVIDIA[0]: dict(util=40), second[0]: dict(util=0)})
         for _ in range(3):
             self.snapshot()  # the second GPU is in its backoff after the first
             self.assertFalse(gpu._NVML.initialised)
-        self.ae((self.nvml.calls.count('init'), self.nvml.calls.count('shutdown')), (3, 3))
+        self.ae((self.nvml.calls.count('init'), self.nvml.calls.count('shutdown')), (1, 1))
         self.assertIn(second[0], gpu._BACKOFF)
 
     def test_a_failing_read_still_closes_nvml_and_logs_once(self) -> None:
@@ -964,7 +966,7 @@ class TestGpuNvmlSessions(GpuTestCase):
         self.nvml = FakeNvml({NVIDIA[0]: dict(util=5, used=GIB)})
         with patch.object(FakeNvml, 'nvmlDeviceGetName', None):
             device = self.snapshot().devices[0]
-        self.ae((device.utilisation, device.name), (5, 'NVIDIA GPU 10de:1f36'))
+        self.ae((device.utilisation, device.name), (5, 'NVIDIA GPU 10de:1001'))
         self.ae(self.nvml.calls.count('shutdown'), 1)
 
     def test_init_failure_is_retried_later_and_less_often(self) -> None:
@@ -1003,7 +1005,7 @@ class TestGpuNvmlSessions(GpuTestCase):
         self.ae((device.asleep, device.utilisation), (False, 7))
 
     def test_nouveau_is_not_read_through_nvml(self) -> None:
-        nouveau = ('0000:01:00.0', 0x10de, 0x1f36, 'nouveau', ('card1', 'renderD129'))
+        nouveau = ('0000:01:00.0', 0x10de, 0x1001, 'nouveau', ('card1', 'renderD129'))
         self.device(nouveau)
         self.nvml = FakeNvml({nouveau[0]: dict(util=50)})
         snapshot = self.snapshot()
@@ -1131,3 +1133,171 @@ class TestGpuFdinfoEpochs(GpuTestCase):
         kilix_memory._PROCESS_CACHE_UNTIL = 0
         self.assertIn(AMD[0], gpu._BACKOFF)
         self.ae(gpu.pane_gpu_bytes(100), 100 * MIB)
+
+
+class TestGpuMergeReview(GpuTestCase):
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.clock = Clock()
+        clock = patch.object(gpu.time, 'monotonic', self.clock)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    refresh_for = TestGpuIdleBackoff.refresh_for
+    second = ('0000:02:00.0', 0x10de, 0x1001, 'nvidia', ('card3', 'renderD131'))
+
+    def test_mixed_nvidia_backoff_bounds_global_attaches(self) -> None:
+        first = self.device(NVIDIA, control='auto')
+        self.device(self.second, control='auto')
+        for control, util in (('auto', 60), ('on', 0)):
+            with self.subTest(control=control):
+                gpu.reset_state()
+                gpu.set_nvml_loader(self._load)
+                self.clock.now = 1000
+                (first / 'power' / 'control').write_text(control)
+                self.nvml = FakeNvml({NVIDIA[0]: dict(util=util), self.second[0]: dict(util=0, graphics=[XORG])})
+                # Model nvmlInit attaching BOTH devices, even if only one is read.
+                opened = self.refresh_for(300)
+                self.ae(len(opened), 10)
+                self.assertGreaterEqual(min(b - a for a, b in zip(opened, opened[1:])), 30)
+                self.ae(self.nvml.calls.count('shutdown'), len(opened))
+                self.assertFalse(gpu._NVML.initialised)
+                self.ae(self.nvml.calls.count('handle ' + NVIDIA[0]), 10)
+                self.ae(self.nvml.calls.count('handle ' + self.second[0]), 10)
+
+    def test_held_gpu_is_visible_above_sleeping_gpu_and_recovers(self) -> None:
+        self.device(NVIDIA)
+        other = self.device(self.second, status='suspending', control='auto')
+        write_process(self.proc, 100, 1)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=90, used=3 * GIB, compute=[(100, 2 * GIB)]),
+                              self.second[0]: dict(util=0)})
+        for status in ('suspending', 'suspended'):
+            set_status(other, status)
+            snapshot = self.snapshot()
+            self.ae(self.nvml.calls.count('init'), 0)
+            self.ae(gpu.primary_device(snapshot.devices).pci, NVIDIA[0])
+            for mode in ('always', 'auto'):
+                self.ae(gpu.format_system_gpu(gpu.primary_device(snapshot.devices), mode), f' {G} held ')
+            self.ae(gpu.format_system_gpu(gpu.primary_device(snapshot.devices), 'off'), '')
+            self.ae(gpu.pane_gpu_label(100), '')  # no invented process counters
+        set_status(other, 'active')
+        self.snapshot()
+        self.ae(gpu.system_gpu_text(), f' 90% {G} 3.0 ')
+        self.ae(gpu.pane_gpu_label(100), '2.0')
+        self.clock.now += 4
+        snapshot = self.snapshot()
+        self.ae(gpu.system_gpu_text(), f' {G} held ')
+        self.assertIn('backoff', '\n'.join(gpu.card_lines(snapshot)))
+        self.ae(self.nvml.calls.count('init'), 1)
+        self.clock.now += 28
+        self.snapshot()
+        self.ae(gpu.system_gpu_text(), f' 90% {G} 3.0 ')
+        self.ae(gpu.pane_gpu_label(100), '2.0')
+
+    def test_unknown_utilisation_backs_off_and_keeps_pane_memory(self) -> None:
+        self.device(NVIDIA, control='auto')
+        write_process(self.proc, 100, 1)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=None, used=700 * MIB, compute=[(100, 600 * MIB)])})
+        labels = set()
+        opened = self.refresh_for(28, every=lambda: labels.add(gpu.pane_gpu_label(100)))
+        self.ae(opened, [1000])
+        self.ae(labels, {'600M'})
+        self.ae(self.nvml.calls.count('shutdown'), 1)
+        self.ae(gpu.system_gpu_text(), f' {G} 700M ')
+
+    def test_non_nvidia_sleepers_do_not_block_nvml(self) -> None:
+        self.device(NVIDIA)
+        intel = self.device(INTEL, status='suspended', control='auto')
+        amd = self.device(AMD, status='suspended', control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=90, used=3 * GIB, compute=[(100, 2 * GIB)])})
+        write_process(self.proc, 100, 1)
+        for status in ('suspended', 'suspending'):
+            set_status(intel, status)
+            set_status(amd, status)
+            self.snapshot()
+            self.ae(gpu.system_gpu_text(), f' 90% {G} 3.0 ')
+            self.ae(gpu.pane_gpu_label(100), '2.0')
+        self.ae(self.nvml.calls.count('init'), 1)
+        self.ae(self.nvml.calls.count('shutdown'), 0)
+
+    def test_low_utilisation_is_activity(self) -> None:
+        self.device(NVIDIA, control='auto')
+        reading = dict(util=1)
+        self.nvml = FakeNvml({NVIDIA[0]: reading})
+        for util in (1, 4):
+            reading['util'] = util
+            self.ae(len(self.refresh_for(28)), 8)
+
+    def test_one_mib_memory_movement_is_activity(self) -> None:
+        self.device(NVIDIA, control='auto')
+        for delta, expected in ((MIB - 1, 2), (MIB, 3), (31 * MIB, 3)):
+            with self.subTest(delta=delta):
+                gpu.reset_state()
+                gpu.set_nvml_loader(self._load)
+                reading = dict(util=0, compute=[(100, 100 * MIB)])
+                self.nvml = FakeNvml({NVIDIA[0]: reading})
+                self.snapshot()
+                self.clock.now += 32
+                reading['compute'] = [(100, 100 * MIB + delta)]
+                self.snapshot()
+                self.clock.now += 4
+                self.snapshot()
+                self.ae(self.nvml.calls.count('init'), expected)
+
+    def test_init_retry_caps_and_resets_after_recovery(self) -> None:
+        self.device(NVIDIA, control='auto')
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=50)})
+        self.nvml.init_results = [18] * 6
+        with patch.object(gpu, 'log_error') as log:
+            self.snapshot()
+            for attempts, delay in enumerate((30, 60, 120, 240, 480, 600), 1):
+                self.clock.now += delay - 1
+                self.snapshot()
+                self.ae(self.nvml.calls.count('init'), attempts)
+                self.clock.now += 1
+                self.snapshot()
+                self.ae(self.nvml.calls.count('init'), attempts + 1)
+            self.ae(log.call_count, 1)
+            self.assertTrue(self.snapshot().devices[0].readable)
+            self.nvml.init_results = [18]
+            self.snapshot()
+            self.ae(log.call_count, 2)  # recovered, then failed again
+            before = self.nvml.calls.count('init')
+            self.clock.now += 29
+            self.snapshot()
+            self.ae(self.nvml.calls.count('init'), before)
+            self.clock.now += 1
+            self.assertTrue(self.snapshot().devices[0].readable)
+            self.ae(self.nvml.calls.count('init'), before + 1)
+
+    def test_two_failing_devices_log_once_each_until_recovery(self) -> None:
+        self.device(NVIDIA)
+        self.device(self.second)
+        self.nvml = FakeNvml({NVIDIA[0]: dict(util=50), self.second[0]: dict(util=50)})
+        self.nvml.fail = 'utilisation'
+        with patch.object(gpu, 'log_error') as log:
+            for _ in range(10):
+                self.snapshot()
+            self.ae(log.call_count, 2)
+            self.ae(len(set(c.args[0] for c in log.call_args_list)), 2)
+            self.nvml.fail = ''
+            self.snapshot()
+            self.nvml.fail = 'utilisation'
+            self.snapshot()
+            self.ae(log.call_count, 4)
+
+    def test_process_scan_invalidates_pane_cache_and_evicts_exited_clients(self) -> None:
+        self.device(INTEL)
+        write_process(self.proc, 100, 1)
+        worker = write_process(self.proc, 101, 100)
+        add_fd(worker, 3, '/dev/dri/renderD128', I915_FDINFO.format(client=1, total=1, resident=700 * 1024))
+        self.snapshot()
+        self.ae(gpu.pane_gpu_bytes(100), 700 * MIB)
+        samples_before = gpu.SAMPLE_COUNT
+        (worker / 'stat').unlink()  # gone from the next process scan
+        self.clock.now += 0.25  # still within the SAME GPU sample
+        kilix_memory._PROCESS_CACHE_UNTIL = 0
+        self.ae(gpu.pane_gpu_bytes(100), 0)
+        self.ae(gpu.SAMPLE_COUNT, samples_before)
+        self.assertFalse(any(pid == 101 for pid, pci in gpu._FDINFO_CACHE))

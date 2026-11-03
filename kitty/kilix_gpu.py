@@ -11,7 +11,7 @@ Data comes from three places, all read without new dependencies:
 * NVIDIA devices are read through NVML (``libnvidia-ml.so.1``) with ctypes:
   utilisation, memory, and the per-process memory lists. ``nvidia-smi`` is
   never spawned. ``nvmlInit`` attaches every NVIDIA GPU, so NVML is not
-  opened at all while any NVIDIA GPU is asleep.
+  opened at all while any NVIDIA GPU is asleep or in its idle backoff.
 * AMD devices are read from ``gpu_busy_percent`` / ``mem_info_vram_*`` where
   they exist; AMD and Intel per-process memory comes from DRM fdinfo, read
   only for a pane's own process tree and only for fds that point at
@@ -23,10 +23,12 @@ timer. On a GPU with ``power/control=auto`` a read that finds the GPU idle
 (0% busy, and no process's GPU memory changed since the previous read; a
 display server's resident allocation does not count as activity) starts a
 backoff of at least 30 s, renewed for as long as the GPU stays idle. During
-the backoff the GPU's last reading is shown and nothing reaches its driver,
-so the readouts are up to that long out of date: a job started meanwhile
-appears when the backoff ends, or at once if the GPU was asleep and the job
-woke it.
+the backoff the GPU's last reading is shown. A new pane process can still
+have its DRM fdinfo read once; existing clients reuse their cached reading.
+Readouts can miss short bursts entirely. A job that wakes a sleeping GPU
+is read at the next refresh, unless another NVIDIA GPU is asleep or backed
+off: NVML would attach that sibling too. In that case the awake GPU is
+shown as held, without counters or pane attribution until sampling resumes.
 
 Attribution is by process: memory held by a service outside every pane (for
 example a model server started by systemd) is in the top-bar total but in no
@@ -135,7 +137,7 @@ class GpuDevice(NamedTuple):
     memory_used: int | None  # bytes
     memory_total: int | None  # bytes
     # 'nvml', 'sysfs', 'asleep', 'none', or 'held' (an awake NVIDIA GPU left
-    # unread because another NVIDIA GPU is asleep)
+    # unread because another NVIDIA GPU is asleep or backed off)
     source: str
 
     @property
@@ -356,13 +358,16 @@ class Nvml:
         if init is None:
             self.unavailable = True
             return False
-        if init() != NVML_SUCCESS:
+        result = init()
+        if result != NVML_SUCCESS:
             # Often transient (a driver/library mismatch until reboot, a GPU
             # still coming up): try again later, less often each time.
+            _log_once(f'Failed to initialise kilix GPU NVML (error {result}); will retry', 'nvml-init')
             self.failures += 1
             self.retry_at = now + min(
                 _NVML_RETRY_MAX_SECONDS, _NVML_RETRY_SECONDS * 2 ** (self.failures - 1))
             return False
+        _LAST_ERRORS.pop('nvml-init', None)
         self.failures, self.retry_at = 0, 0.0
         self.initialised = True
         return True
@@ -474,15 +479,16 @@ _READ_EPOCH: dict[str, int] = {}
 _CACHE: GpuSnapshot = EMPTY_SNAPSHOT
 _CACHE_UNTIL = 0.0
 _GENERATION = 0  # bumped by every sample, for the per-refresh pane cache
-_LAST_ERROR = ''
+# One current error per device, plus sampling and initialisation failures.
+# Device keys are pruned on discovery; changing error text cannot grow this.
+_LAST_ERRORS: dict[str, str] = {}
 SAMPLE_COUNT = 0  # samples taken, for cost measurement
 
 
-def _log_once(message: str) -> None:
-    """Log an error once, not on every 1.5 s sample while it persists."""
-    global _LAST_ERROR
-    if message != _LAST_ERROR:
-        _LAST_ERROR = message
+def _log_once(message: str, key: str = 'sample') -> None:
+    """Log a persistent error once per source, with bounded storage."""
+    if message != _LAST_ERRORS.get(key):
+        _LAST_ERRORS[key] = message
         log_error(message)
 
 
@@ -566,6 +572,10 @@ def _sample() -> GpuSnapshot:
     global SAMPLE_COUNT
     SAMPLE_COUNT += 1
     devices = drm_devices()
+    error_keys = {d.pci for d in devices} | {'sample', 'nvml-init'}
+    for key in tuple(_LAST_ERRORS):
+        if key not in error_keys:
+            del _LAST_ERRORS[key]
     if not devices:
         _NVML.close()
         return EMPTY_SNAPSHOT
@@ -576,6 +586,7 @@ def _sample() -> GpuSnapshot:
     controls: dict[str, str] = {}
     nvml_targets: list[tuple[int, DrmDevice, str]] = []
     nvidia_asleep = False
+    nvidia_backoff = False
     for device in devices:
         if is_asleep(device):
             # Nothing else is read from a sleeping GPU: not NVML, not its
@@ -586,8 +597,9 @@ def _sample() -> GpuSnapshot:
             continue
         control = controls[device.pci] = runtime_control(device)
         held = _BACKOFF.get(device.pci)
-        if held is not None and now < held.until:
+        if control != 'on' and held is not None and now < held.until:
             # Idle and runtime-PM: show the last reading, read nothing.
+            nvidia_backoff = nvidia_backoff or device.is_nvidia
             slots.append(held.device)
             _add_processes(process_memory, held.processes)
             if not device.is_nvidia:
@@ -603,9 +615,10 @@ def _sample() -> GpuSnapshot:
             for node in device.nodes:
                 fdinfo_nodes[node] = device.pci
             _after_read(device, control, reading, reading.memory_used, {}, now)
-    if nvml_targets and nvidia_asleep:
+    if nvml_targets and (nvidia_asleep or nvidia_backoff):
         # nvmlInit attaches every NVIDIA GPU, opening each /dev/nvidiaN, and
-        # that resumes a sleeping one. Leave NVML closed until all are awake.
+        # that resumes a sleeping one or restarts an idle sibling's timer.
+        # Wait until all are awake and every runtime-PM backoff has expired.
         _NVML.close()
         for position, device, _control in nvml_targets:
             slots[position] = _no_counter_device(device, 'held')
@@ -619,12 +632,13 @@ def _sample() -> GpuSnapshot:
                 try:
                     reading, processes = _nvml_device(device)
                 except Exception as error:
-                    _log_once(f'Failed to read kilix GPU {device.pci}: {error}')
+                    _log_once(f'Failed to read kilix GPU {device.pci}: {error}', device.pci)
                     slots[position] = reading = _no_counter_device(device)
                     if control != 'on':
                         # A broken read is not retried at every refresh either.
                         _BACKOFF[device.pci] = _Backoff(now + backoff_seconds(device), reading, {})
                     continue
+                _LAST_ERRORS.pop(device.pci, None)
                 slots[position] = reading
                 _add_processes(process_memory, processes)
                 _after_read(device, control, reading, processes, processes, now)
@@ -646,6 +660,7 @@ def gpu_snapshot(force: bool = False) -> GpuSnapshot:
     if force or now >= _CACHE_UNTIL:
         try:
             _CACHE = _sample()
+            _LAST_ERRORS.pop('sample', None)
         except Exception as error:
             _log_once(f'Failed to sample kilix GPU use: {error}')
             _CACHE = EMPTY_SNAPSHOT
@@ -655,8 +670,8 @@ def gpu_snapshot(force: bool = False) -> GpuSnapshot:
 
 
 def reset_state() -> None:
-    """Forget every cached reading (tests and a settings change)."""
-    global _CACHE, _CACHE_UNTIL, _DEVICE_LIST, _DEVICE_LIST_ROOT, _DEVICE_LIST_UNTIL, _LAST_ERROR
+    """Forget cached readings and errors (test isolation)."""
+    global _CACHE, _CACHE_UNTIL, _DEVICE_LIST, _DEVICE_LIST_ROOT, _DEVICE_LIST_UNTIL
     _CACHE, _CACHE_UNTIL = EMPTY_SNAPSHOT, 0.0
     _DEVICE_LIST, _DEVICE_LIST_ROOT, _DEVICE_LIST_UNTIL = (), '', 0.0
     _BACKOFF.clear()
@@ -664,7 +679,7 @@ def reset_state() -> None:
     _READ_EPOCH.clear()
     _FDINFO_CACHE.clear()
     _PANE_BYTES.clear()
-    _LAST_ERROR = ''
+    _LAST_ERRORS.clear()
 
 
 def primary_device(devices: Iterable[GpuDevice]) -> GpuDevice | None:
@@ -672,9 +687,12 @@ def primary_device(devices: Iterable[GpuDevice]) -> GpuDevice | None:
     best: GpuDevice | None = None
     best_key: tuple[int, int, int] = (-1, -1, -1)
     for device in devices:
-        if not (device.readable or device.asleep):
+        if not (device.readable or device.asleep or device.source == 'held'):
             continue
-        key = (int(device.discrete), int(device.readable), device.memory_total or 0)
+        # A withheld NVIDIA reading takes precedence over its idle sibling's
+        # cached counters, which would otherwise misleadingly show zero use.
+        state = 3 if device.source == 'held' else (2 if device.readable else 0)
+        key = (int(device.discrete), state, device.memory_total or 0)
         if key > best_key:
             best, best_key = device, key
     return best
@@ -840,6 +858,8 @@ def format_system_gpu(device: GpuDevice | None, mode: str = SYSTEM_GPU_MODE_DEFA
     mode = _normalise(mode, SYSTEM_GPU_MODES, SYSTEM_GPU_MODE_DEFAULT)
     if mode == 'off' or device is None:
         return ''
+    if device.source == 'held':
+        return f' {GPU_GLYPH} held '
     if device.asleep:
         return f' {GPU_GLYPH} {ASLEEP_TEXT} ' if mode == 'always' else ''
     busy = ''
@@ -976,7 +996,7 @@ def card_lines(snapshot: GpuSnapshot | None = None) -> tuple[str, ...]:
         if device.asleep:
             detail = 'asleep (runtime suspended; not read, so not woken)'
         elif device.source == 'held':
-            detail = 'not read: another NVIDIA GPU is asleep, and NVML would wake it'
+            detail = 'held: another NVIDIA GPU is asleep or idle in backoff; NVML would attach it'
         elif not device.readable:
             detail = 'no utilisation or VRAM counter'
         else:
