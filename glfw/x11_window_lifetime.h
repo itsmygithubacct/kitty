@@ -22,8 +22,11 @@ window_request_error(Display *display, XErrorEvent *event) {
 
 static WindowRequest
 begin_window_request(Display *display) {
+    // The display is shared with XCB (for example by GLX). Take ownership
+    // and use the function accessor: the NextRequest macro can be stale.
+    XLockDisplay(display);
     WindowRequest saved = window_request;
-    window_request = (WindowRequest){ .display = display, .serial = NextRequest(display) };
+    window_request = (WindowRequest){ .display = display, .serial = XNextRequest(display) };
     window_request.previous = XSetErrorHandler(window_request_error);
     return saved;
 }
@@ -33,7 +36,9 @@ end_window_request(WindowRequest saved) {
     XSync(window_request.display, False);
     const int error = window_request.error;
     XSetErrorHandler(window_request.previous);
+    Display *display = window_request.display;
     window_request = saved;
+    XUnlockDisplay(display);
     return error;
 }
 

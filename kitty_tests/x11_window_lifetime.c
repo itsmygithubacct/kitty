@@ -2,6 +2,8 @@
 // Run on a disposable X server; never target a user's display.
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <X11/Xlib-xcb.h>
+#include <xcb/xcb.h>
 #include <stdbool.h>
 #include <assert.h>
 #include <stdlib.h>
@@ -12,7 +14,9 @@ static int previous_handler(Display *display, XErrorEvent *event) {
     (void)display; (void)event; errors++; return 0;
 }
 int main(void) {
+    assert(XInitThreads());
     Display *d = XOpenDisplay(NULL); assert(d);
+    xcb_connection_t *connection = XGetXCBConnection(d); assert(connection);
     XSetErrorHandler(previous_handler);
     Window live = XCreateSimpleWindow(d, DefaultRootWindow(d), 0, 0, 1, 1, 0, 0, 0);
     Window dead = XCreateSimpleWindow(d, DefaultRootWindow(d), 0, 0, 1, 1, 0, 0, 0);
@@ -23,10 +27,15 @@ int main(void) {
     assert(get_window_property(d, live, property, 0, 4, False, XA_STRING, &type, &format, &count, &after, &data) == Success);
     assert(type == XA_STRING && format == 8 && count == 2 && !after && data[0] == 'o'); XFree(data); data = NULL;
     for (int i = 0; i < 100; i++) {
+        // GLX/rendering can advance the shared connection through XCB. The
+        // NextRequest macro then reads a stale Xlib counter.
+        xcb_no_operation(connection); xcb_flush(connection);
         assert(get_window_property(d, dead, property, 0, 4, False, XA_STRING, &type, &format, &count, &after, &data) == BadWindow);
         assert(!data && type == None && !format && !count && !after);
+        xcb_no_operation(connection); xcb_flush(connection);
         assert(!change_window_property(d, dead, property, XA_STRING, 8, PropModeReplace, (unsigned char*)"ok", 2));
         XEvent e = {0}; e.type = ClientMessage; e.xclient.format = 32;
+        xcb_no_operation(connection); xcb_flush(connection);
         assert(!send_window_event(d, dead, False, 0, &e));
         assert(send_window_event(d, live, False, 0, &e));
     }
