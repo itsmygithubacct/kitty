@@ -53,11 +53,12 @@ def request_action(boss, choice):
 
 
 def show(boss, window=None, tab=None):
-    providers = [w for w in tab if w.user_vars.get(MARKER) == '1'] if tab is not None else (
-        [window] if window is not None and window.user_vars.get(MARKER) == '1' else [])
+    providers = [w for w in tab if w.user_vars.get(MARKER)] if tab is not None else (
+        [window] if window is not None and window.user_vars.get(MARKER) else [])
     if not providers:
         return False
     provider = providers[0]
+    generation = provider.user_vars[MARKER]
     if tab is not None:
         existing = boss.window_id_map.get(tab.confirm_close_window_id)
         if existing is not None and existing in tab:
@@ -69,7 +70,7 @@ def show(boss, window=None, tab=None):
             if not any(t is tab for t in boss.all_tabs):
                 return
             tab.confirm_close_window_id = 0
-        if boss.window_id_map.get(provider.id) is not provider or provider.user_vars.get(MARKER) != '1':
+        if boss.window_id_map.get(provider.id) is not provider or provider.user_vars.get(MARKER) != generation:
             return
         if tab is not None and provider not in tab:
             return

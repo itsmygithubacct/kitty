@@ -81,6 +81,17 @@ class DesktopClose(BaseTest):
             action.assert_not_called()
         self.boss.close_tab_no_confirm.assert_not_called()
 
+    def test_restarted_provider_in_same_pane_invalidates_dialog(self):
+        self.provider.user_vars[close.MARKER] = 'first-launch'
+        callback = self.prompt(tab=self.tab)
+        self.provider.user_vars.clear()
+        self.provider.user_vars[close.MARKER] = 'second-launch'
+        with patch.object(close, 'request_action') as action:
+            for choice in ('y', 's', 'r', 'l'):
+                callback(choice)
+            action.assert_not_called()
+        self.boss.close_tab_no_confirm.assert_not_called()
+
     def test_removed_tab_ignores_pending_answer(self):
         callback = self.prompt(tab=self.tab)
         self.boss.all_tabs = []
