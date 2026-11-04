@@ -1355,7 +1355,7 @@ class Boss:
         window = self.window_for_dispatch or self.active_window
         if window is None:
             return
-        if self.confirm_qemu_close(window):
+        if self.confirm_coding_close(window) or self.confirm_qemu_close(window):
             return
         if not window.child.is_pty_brokered:
             self.close_window_with_confirmation()
@@ -1367,6 +1367,10 @@ class Boss:
         self.confirm(
             message, self.handle_kilix_persistent_close_confirmation,
             window.id, window=window, title=_('Close persistent pane?'))
+
+    def confirm_coding_close(self, window: Window) -> bool:
+        from .coding_close import show
+        return show(self, window)
 
     def confirm_qemu_close(self, window: Window) -> bool:
         monitor = window.user_vars.get('kilix_qemu_monitor')
@@ -1466,7 +1470,7 @@ class Boss:
         window = self.window_for_dispatch or self.active_window
         if window is None:
             return
-        if self.confirm_qemu_close(window):
+        if self.confirm_coding_close(window) or self.confirm_qemu_close(window):
             return
         msg = self.close_windows_with_confirmation_msg((window,), window)[0]
         if not msg and not ignore_shell:
@@ -1913,7 +1917,8 @@ class Boss:
         )
 
     def confirm_tab_close(self, tab: Tab) -> None:
-        if len(tab) == 1 and tab.active_window is not None and self.confirm_qemu_close(tab.active_window):
+        if len(tab) == 1 and tab.active_window is not None and (
+                self.confirm_coding_close(tab.active_window) or self.confirm_qemu_close(tab.active_window)):
             return
         msg, num_active_windows = self.close_windows_with_confirmation_msg(tab, tab.active_window)
         x = get_options().confirm_os_window_close[0]
