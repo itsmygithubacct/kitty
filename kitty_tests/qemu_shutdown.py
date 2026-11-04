@@ -74,7 +74,8 @@ class TestQemuShutdown(BaseTest):
                     request_shutdown(monitor)
 
     def test_single_vm_tab_uses_vm_confirmation(self):
-        boss = SimpleNamespace(confirm_coding_close=Mock(return_value=False),
+        boss = SimpleNamespace(confirm_desktop_close=Mock(return_value=False),
+                               confirm_coding_close=Mock(return_value=False),
                                confirm_qemu_close=Mock(return_value=True),
                                close_windows_with_confirmation_msg=Mock())
         class Tab:
@@ -83,6 +84,7 @@ class TestQemuShutdown(BaseTest):
                 return 1
         tab = Tab()
         Boss.confirm_tab_close(boss, tab)
+        boss.confirm_desktop_close.assert_called_once_with(tab=tab)
         boss.confirm_coding_close.assert_called_once_with(tab.active_window)
         boss.confirm_qemu_close.assert_called_once_with(tab.active_window)
         boss.close_windows_with_confirmation_msg.assert_not_called()

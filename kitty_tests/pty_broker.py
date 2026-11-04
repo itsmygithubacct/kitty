@@ -654,7 +654,7 @@ class TestPtyBrokerIntegration(BaseTest):
                 return succeeds
             child = SimpleNamespace(is_pty_brokered=brokered, terminate_pty_broker=terminate,
                                     pty_broker_runtime='/private/broker', pty_broker_session_id=str(wid))
-            windows.append(SimpleNamespace(id=wid, child=child))
+            windows.append(SimpleNamespace(id=wid, child=child, user_vars={}))
 
         class Tab(list):
             id = 9
