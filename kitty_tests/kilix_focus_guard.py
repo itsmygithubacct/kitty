@@ -116,12 +116,26 @@ class TestBackgroundRemoteCommandFocus(BaseTest):
         self.assertIs(self.tm1.active_tab, self.tab2)
         self.raise_.assert_called_once_with(2, True, '')
 
-    def test_blocked_focus_request_reports_it(self):
+    def test_explicit_focus_from_background_and_socket_callers_succeeds(self):
         for cmd in ('focus-window', 'focus-tab'):
-            self.tm1.set_active_tab(self.tab1)
-            response = self.run_cmd(self.jump_everywhere, window=self.neighbour, cmd=cmd)
-            self.assertFalse(response['ok'], cmd)
-            self.assertIn('Focus stays', response['error'])
+            for caller in ({'window': self.neighbour}, {'self_window': self.neighbour}, {}):
+                with self.subTest(cmd=cmd, caller=caller):
+                    self.tm1.set_active_tab(self.tab1)
+                    self.raise_.reset_mock()
+                    response = self.run_cmd(self.jump_everywhere, cmd=cmd, **caller)
+                    self.assertEqual(response, {'ok': True})
+                    self.assertIs(self.tm1.active_tab, self.tab2)
+                    self.raise_.assert_called_once_with(2, True, '')
+
+    def test_explicit_focus_can_select_a_pane_in_the_current_tab(self):
+        self.run_cmd(lambda: self.tab1.set_active_window(self.neighbour),
+                     window=self.other, cmd='focus-window')
+        self.assertIs(self.tab1.active_window, self.neighbour)
+
+    def test_explicit_focus_can_raise_an_unfocused_os_window(self):
+        self.focused = 0
+        self.run_cmd(self.jump_everywhere, cmd='focus-tab')
+        self.raise_.assert_called_once_with(2, True, '')
 
     def test_background_launch_still_succeeds(self):
         self.assertEqual(self.run_cmd(self.jump_everywhere, window=self.neighbour), {'ok': True})
@@ -137,7 +151,8 @@ class TestBackgroundRemoteCommandFocus(BaseTest):
             response = self.boss._execute_remote_command(
                 {'cmd': 'focus-window', 'no_response': True}, self.neighbour, 0, None)
         self.assertIsNone(response)
-        self.assert_left_alone()
+        self.assertIs(self.tm1.active_tab, self.tab2)
+        self.raise_.assert_called_once_with(2, True, '')
 
     def test_focus_request_from_the_typing_pane_succeeds(self):
         self.assertEqual(self.run_cmd(self.jump_everywhere, window=self.typing, cmd='focus-window'), {'ok': True})

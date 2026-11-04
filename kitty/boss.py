@@ -932,7 +932,10 @@ class Boss:
     ) -> RCResponse:
         from .remote_control import handle_cmd
         global _background_rc_depth
-        held = None if self._is_user_focus(self_window or window) else self._focus_snapshot()
+        # Authenticated focus commands explicitly ask to move the keyboard.
+        # Other background commands (including launch) keep their focus guard.
+        explicit_focus = pcmd.get('cmd') in ('focus-window', 'focus-tab')
+        held = None if explicit_focus or self._is_user_focus(self_window or window) else self._focus_snapshot()
         if held is not None:
             _background_rc_depth += 1
         try:
@@ -945,8 +948,7 @@ class Boss:
         finally:
             if held is not None:
                 _background_rc_depth -= 1
-                if self._restore_focus(held) and pcmd.get('cmd') in ('focus-window', 'focus-tab') and not pcmd.get('no_response'):
-                    response = {'ok': False, 'error': 'Focus stays in the pane the user is typing in; this request came from another pane'}
+                self._restore_focus(held)
         return response
 
     def _is_user_focus(self, window: Window | None) -> bool:
