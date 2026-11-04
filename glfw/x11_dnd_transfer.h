@@ -473,7 +473,7 @@ xdnd_read_drop_property(_GLFWwindow *window, XdndSelectionRequest *r, bool initi
     const uint64_t generation = dnd.generation;
     const Atom expected = XInternAtom(_glfw.x11.display, r->mime, False);
     Window requestor = _glfw.x11.xdnd.request_window;
-    if (XGetWindowProperty(_glfw.x11.display, requestor, _glfw.x11.XdndSelection,
+    if (get_window_property(_glfw.x11.display, requestor, _glfw.x11.XdndSelection,
             0, XDND_MAX_BYTES / 4 + 1, False, AnyPropertyType, &type, &format, &count, &after, &data) != Success) {
         r->error = EIO; xdnd_drop_data_ready(window, r); return;
     }

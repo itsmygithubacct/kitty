@@ -44,6 +44,8 @@
 #include <errno.h>
 #include <assert.h>
 
+#include "x11_window_lifetime.h"
+
 // Action for EWMH client messages
 #define _NET_WM_STATE_REMOVE        0
 #define _NET_WM_STATE_ADD           1
@@ -999,7 +1001,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
         targets[0] = _glfw.x11.TARGETS;
         targets[1] = _glfw.x11.MULTIPLE;
         for (size_t i = 0; i < aa->sz; i++) targets[i+2] = aa->array[i].atom;
-        XChangeProperty(_glfw.x11.display,
+        change_window_property(_glfw.x11.display,
                         request->requestor,
                         request->property,
                         XA_ATOM,
@@ -1025,7 +1027,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
         const long maxMultipleAtoms = 2L * maxMultiplePairs;
 
         // Bound the MULTIPLE property to 1024 pairs (8 KiB of 32-bit atoms).
-        const int status = XGetWindowProperty(_glfw.x11.display,
+        const int status = get_window_property(_glfw.x11.display,
                                               request->requestor,
                                               request->property,
                                               0,
@@ -1062,7 +1064,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
             {
                 char *data = NULL; size_t sz = get_clipboard_data(cd, aa->array[j].mime, &data);
 
-                if (data) XChangeProperty(_glfw.x11.display,
+                if (data) change_window_property(_glfw.x11.display,
                                 request->requestor,
                                 targets[i + 1],
                                 targets[i],
@@ -1076,7 +1078,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
                 targets[i + 1] = None;
         }
 
-        XChangeProperty(_glfw.x11.display,
+        change_window_property(_glfw.x11.display,
                         request->requestor,
                         request->property,
                         _glfw.x11.ATOM_PAIR,
@@ -1096,7 +1098,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
         // The request is a check whether we support SAVE_TARGETS
         // It should be handled as a no-op side effect target
 
-        XChangeProperty(_glfw.x11.display,
+        change_window_property(_glfw.x11.display,
                         request->requestor,
                         request->property,
                         _glfw.x11.NULL_,
@@ -1117,7 +1119,7 @@ static Atom writeTargetToProperty(const XSelectionRequestEvent* request)
             // The requested target is one we support
 
             char *data = NULL; size_t sz = get_clipboard_data(cd, aa->array[i].mime, &data);
-            if (data) XChangeProperty(_glfw.x11.display,
+            if (data) change_window_property(_glfw.x11.display,
                             request->requestor,
                             request->property,
                             request->target,
@@ -1164,7 +1166,7 @@ handleSelectionRequest(XEvent* event) {
     reply.xselection.target = request->target;
     reply.xselection.time = request->time;
     reply.xselection.property = writeTargetToProperty(request);
-    XSendEvent(_glfw.x11.display, request->requestor, False, 0, &reply);
+    send_window_event(_glfw.x11.display, request->requestor, False, 0, &reply);
 }
 
 static void
@@ -1210,7 +1212,7 @@ getSelectionString(Atom selection, Atom *targets, size_t num_targets, GLFWclipbo
                       isSelPropNewValueNotify,
                       (XPointer) &notification);
 
-        XGetWindowProperty(_glfw.x11.display,
+        get_window_property(_glfw.x11.display,
                            notification.xselection.requestor,
                            notification.xselection.property,
                            0,
@@ -1241,7 +1243,7 @@ getSelectionString(Atom selection, Atom *targets, size_t num_targets, GLFWclipbo
                 }
 
                 XFREE(data);
-                XGetWindowProperty(_glfw.x11.display,
+                get_window_property(_glfw.x11.display,
                                    notification.xselection.requestor,
                                    notification.xselection.property,
                                    0,
@@ -1662,7 +1664,7 @@ update_dnd_mimes(XEvent *event) {
     bool allocated = false;
     if (event->xclient.data.l[1] & 1) {
         Atom type; int format; unsigned long after; unsigned char *data = NULL;
-        if (XGetWindowProperty(_glfw.x11.display, dnd.source, _glfw.x11.XdndTypeList,
+        if (get_window_property(_glfw.x11.display, dnd.source, _glfw.x11.XdndTypeList,
                 0, 65, False, XA_ATOM, &type, &format, &count, &after, &data) != Success) return;
         if (type != XA_ATOM || format != 32 || after || count > 64) { if (data) XFree(data); return; }
         formats = (Atom*)data; allocated = true;
@@ -1699,7 +1701,7 @@ static void
 update_drop_source_actions(_GLFWwindow *window) {
     window->drop_operation.source_actions = GLFW_DRAG_OPERATION_NONE;
     Atom type = None; int format = 0; unsigned long count = 0, after = 0; unsigned char *data = NULL;
-    if (XGetWindowProperty(_glfw.x11.display, dnd.source, _glfw.x11.XdndActionList,
+    if (get_window_property(_glfw.x11.display, dnd.source, _glfw.x11.XdndActionList,
             0, 65, False, XA_ATOM, &type, &format, &count, &after, &data) == Success &&
             type == XA_ATOM && format == 32 && !after && count <= 64) {
         Atom *actions = (Atom*)data;
@@ -1999,7 +2001,7 @@ drop_selection_notify(_GLFWwindow *window, XEvent *event) {
         unsigned char *data = NULL;
         bool valid = event->xselection.selection == _glfw.x11.XdndSelection &&
             event->xselection.property == _glfw.x11.XdndSelection &&
-            XGetWindowProperty(_glfw.x11.display, dnd.request_window, _glfw.x11.XdndSelection,
+            get_window_property(_glfw.x11.display, dnd.request_window, _glfw.x11.XdndSelection,
                 0, 2, True, AnyPropertyType, &type, &format, &count, &after, &data) == Success &&
             type == XA_INTEGER && format == 32 && count == 1 && !after && data;
         const Time acquired = valid ? (uint32_t)*(unsigned long*)data : 0;
@@ -2028,7 +2030,7 @@ drop_selection_notify(_GLFWwindow *window, XEvent *event) {
         bool valid = event->xselection.time == drop_time &&
             event->xselection.selection == _glfw.x11.XdndSelection &&
             event->xselection.property == _glfw.x11.XdndSelection && requestor &&
-            XGetWindowProperty(_glfw.x11.display, requestor, _glfw.x11.XdndSelection,
+            get_window_property(_glfw.x11.display, requestor, _glfw.x11.XdndSelection,
                 0, 69, True, XA_ATOM, &type, &format, &count, &after, &data) == Success &&
             type == XA_ATOM && format == 32 && count > 0 && count <= 68 && !after;
         Atom delete_atom = XInternAtom(_glfw.x11.display, "DELETE", False);
@@ -2075,7 +2077,7 @@ drop_selection_notify(_GLFWwindow *window, XEvent *event) {
             event->xselection.selection == _glfw.x11.XdndSelection &&
             event->xselection.property == _glfw.x11.XdndSelection &&
             XGetSelectionOwner(_glfw.x11.display, _glfw.x11.XdndSelection) == dnd.source &&
-            XGetWindowProperty(_glfw.x11.display, dnd.request_window, _glfw.x11.XdndSelection, 0, 1, True,
+            get_window_property(_glfw.x11.display, dnd.request_window, _glfw.x11.XdndSelection, 0, 1, True,
                 AnyPropertyType, &type, &format, &count, &after, &data) == Success &&
             type == XInternAtom(_glfw.x11.display, "NULL", False) && format == 8 && !count && !after;
         if (data) XFree(data);
@@ -2754,7 +2756,7 @@ unsigned long _glfwGetWindowPropertyX11(Window window,
     int actualFormat;
     unsigned long itemCount, bytesAfter;
 
-    XGetWindowProperty(_glfw.x11.display,
+    get_window_property(_glfw.x11.display,
                        window,
                        property,
                        0,
@@ -4299,7 +4301,7 @@ window_supports_xdnd(Window win, int *version_out) {
     unsigned char *data = NULL;
     bool supported = false;
 
-    if (XGetWindowProperty(_glfw.x11.display, win, _glfw.x11.XdndAware,
+    if (get_window_property(_glfw.x11.display, win, _glfw.x11.XdndAware,
                           0, 1, False, XA_ATOM,
                           &actual_type, &actual_format,
                           &count, &bytes_after, &data) == Success) {
@@ -4347,7 +4349,7 @@ find_xdnd_aware_target(Window root, int root_x, int root_y, int *version_out) {
             unsigned long count, bytes_after;
             unsigned char *data = NULL;
 
-            if (XGetWindowProperty(_glfw.x11.display, target, _glfw.x11.XdndProxy,
+            if (get_window_property(_glfw.x11.display, target, _glfw.x11.XdndProxy,
                                   0, 1, False, XA_WINDOW,
                                   &actual_type, &actual_format,
                                   &count, &bytes_after, &data) == Success) {
@@ -4358,7 +4360,7 @@ find_xdnd_aware_target(Window root, int root_x, int root_y, int *version_out) {
                     unsigned char *self = NULL;
                     unsigned long n, after;
                     Atom type; int format;
-                    if (XGetWindowProperty(_glfw.x11.display, proxy, _glfw.x11.XdndProxy, 0, 1, False,
+                    if (get_window_property(_glfw.x11.display, proxy, _glfw.x11.XdndProxy, 0, 1, False,
                             XA_WINDOW, &type, &format, &n, &after, &self) == Success &&
                             type == XA_WINDOW && format == 32 && n == 1 && !after && self &&
                             *(Window*)self == proxy && window_supports_xdnd(proxy, version_out))

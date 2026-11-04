@@ -4,6 +4,12 @@ Changelog
 |kitty| is a feature-rich, cross-platform, *fast*, GPU based terminal.
 To update |kitty|, :doc:`follow the instructions <binary>`.
 
+X11 stability
+---------------------------
+
+Handle disappearing clipboard requestors and drag-and-drop property windows
+without terminating the terminal. Unrelated X errors retain their existing handling.
+
 .. recent major features {{{
 
 Recent major new features
