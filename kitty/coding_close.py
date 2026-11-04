@@ -88,6 +88,10 @@ def show(boss, window):
     from .fast_data_types import add_timer
     from .tabs import SpecialWindow
 
+    if not window.child.is_pty_brokered:
+        boss.show_error('Cannot transfer coding pane',
+                        'A broker with descendant cessation support is required. The original pane remains open.')
+        return True
     snapshot = window.as_dict()
     broker = snapshot.get('env', {}).get('KITTY_PTY_BROKER_SESSION', '')
     foreground = snapshot['foreground_processes']
@@ -158,20 +162,38 @@ def show(boss, window):
                 if failure or not same_window() or boss.window_id_map.get(display.id) is not display:
                     error(failure or 'Original pane or receipt terminal changed after preparation.', receipt)
                     return
-                if not boss.close_window_explicitly(window):
-                    error('The broker did not acknowledge termination.', receipt)
-                    return
+                commits = Queue()
 
                 def commit():
                     try:
                         subprocess.run(command + ['commit', receipt], text=True,
                                        capture_output=True, timeout=15, check=True)
+                        commits.put(None)
                     except Exception:
-                        # The surviving terminal already exposes the receipt;
-                        # absent commit means the waiting worker cannot resume.
+                        # DRAIN may have reached the broker even when its reply
+                        # was lost. Never promise the original is still alive.
                         (Path(receipt).parent / 'commit-failure.txt').write_text(
-                            'Commit could not be confirmed; inspect the recovery receipt.\n')
+                            'Cessation/commit unconfirmed. No automatic retry; inspect the recovery receipt.\n')
+                        commits.put('Cessation/commit unconfirmed. The original may have stopped. Inspect the recovery receipt.')
+
+                def committed(timer_id):
+                    if commits.empty():
+                        add_timer(committed, .1, False); return
+                    failure = commits.get_nowait()
+                    _busy.discard(window.id)
+                    if failure:
+                        boss.show_error('Coding handoff unconfirmed', failure + '\nRecovery receipt: ' + receipt)
+                        return
+                    # Only retire the same frontend. The broker domain has
+                    # already ceased; do not send a second legacy termination.
+                    current = boss.window_id_map.get(window.id)
+                    if (current is window and current.as_dict().get('env', {}).get(
+                            'KITTY_PTY_BROKER_SESSION', '') == broker):
+                        boss.mark_window_for_close(window)
+
+                _busy.add(window.id)
                 Thread(target=commit, daemon=True).start()
+                add_timer(committed, .1, False)
 
             def ready(timer_id):
                 if not same_window() or boss.window_id_map.get(display.id) is not display:
