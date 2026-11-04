@@ -40,6 +40,33 @@ class DummyBoss:
 
 class TestTabBar(BaseTest):
 
+    def test_wrapped_pages_keep_native_windows_in_reserved_first_row(self) -> None:
+        self.set_options({'tab_bar_style': 'powerline', 'tab_title_template': '{title}'})
+        for count in (1, 10, 11, 21):
+            with (
+                patch('kitty.tab_bar.cell_size_for_window', return_value=(10, 20)),
+                patch('kitty.tab_bar.viewport_for_window', return_value=(
+                    region(0, 60, 1000, 200), region(0, 0, 1000, 60), 1000, 200, 10, 20)),
+                patch('kitty.tab_bar.set_tab_bar_render_data'),
+                patch('kitty.tab_bar.get_boss', return_value=DummyBoss()),
+                patch('kitty.tab_bar.ensure_chrome_timers'),
+                patch.object(TabBar, 'left_status_segments', return_value=()),
+                patch.object(TabBar, 'right_status_segments', return_value=()),
+                patch('kitty.tab_bar.window_entries', side_effect=lambda width=18: tuple(
+                    (' ' + ('window title ' + str(i))[:width] + ' ', 'kilix_activate_window:' + str(i))
+                    for i in range(3))),
+            ):
+                bar = TabBar(1)
+                bar.layout()
+                bar.update(tuple(TabBarData(title='page', tab_id=i+1, is_active=i == 0) for i in range(count)))
+                self.ae(len(bar.window_extents), 3)
+                page_end = max(e.x.end for e in bar.tab_extents if e.y.start == 0)
+                for extent in bar.window_extents:
+                    self.ae(extent.y.start, 0)
+                    self.assertGreaterEqual(extent.x.start, page_end)
+                    self.assertLessEqual(extent.x.end, bar.right_status_start)
+                    self.ae(bar.action_at(extent.x.start * 10 + 5, 5), extent.action)
+
     def test_resource_timer_does_no_process_work_when_disabled(self) -> None:
         kilix_memory._LAST_LABELS = {1: ('old', 'old')}
         with (

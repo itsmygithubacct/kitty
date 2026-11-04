@@ -946,7 +946,7 @@ class TabBar:
         # Hold back part of the first row for the native-window taskbar before
         # the pages are laid out. Pages are sized to fill whatever they are
         # given, so without a reservation they take the whole bar and the
-        # taskbar has nowhere to draw. Capped at a third: pages keep priority.
+        # taskbar has nowhere to draw. Capped at half: pages and native windows share the first row.
         self.window_reserve = 0
         if not self.is_vertical:
             wanted = sum(max(0, wcswidth(t)) + 1 for t, _ in window_entries())
@@ -1184,11 +1184,10 @@ class TabBar:
         if not entries:
             return
         s = self.screen
-        if self.tab_extents:
-            last = self.tab_extents[-1]
-            line, x = last.y.end, last.x.end
-        else:
-            line, x = 0, self.left_status_end
+        # The reservation belongs to row zero, even when pages wrap.
+        line = 0
+        x = max((extent.x.end for extent in self.tab_extents
+                 if extent.y.start == 0), default=self.left_status_end)
         if line >= s.lines:
             return
         limit = self.right_status_start if line == 0 else s.columns
@@ -1227,7 +1226,7 @@ class TabBar:
                     break
                 used += need
                 shown += 1
-            if shown:
+            if shown == len(entries):
                 break
         if not shown:
             return
