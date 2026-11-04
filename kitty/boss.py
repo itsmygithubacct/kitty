@@ -1355,6 +1355,8 @@ class Boss:
         window = self.window_for_dispatch or self.active_window
         if window is None:
             return
+        if self.confirm_qemu_close(window):
+            return
         if not window.child.is_pty_brokered:
             self.close_window_with_confirmation()
             return
@@ -1365,6 +1367,54 @@ class Boss:
         self.confirm(
             message, self.handle_kilix_persistent_close_confirmation,
             window.id, window=window, title=_('Close persistent pane?'))
+
+    def confirm_qemu_close(self, window: Window) -> bool:
+        monitor = window.user_vars.get('kilix_qemu_monitor')
+        if not monitor:
+            return False
+
+        def chosen(choice: str) -> None:
+            current = self.window_id_map.get(window.id)
+            if current is not window or current.user_vars.get('kilix_qemu_monitor') != monitor:
+                return
+            if choice == 'f':
+                self.handle_kilix_persistent_close_confirmation(True, window.id)
+            elif choice == 's':
+                # QMP runs off the UI thread. An acknowledgement is only a
+                # guest power-button request, never permission to kill QEMU.
+                from queue import Queue
+                from threading import Thread
+                from .qemu_shutdown import request_shutdown
+                results: Queue[str] = Queue()
+
+                def request() -> None:
+                    try:
+                        request_shutdown(monitor)
+                    except Exception as error:
+                        results.put(str(error))
+                    else:
+                        results.put('')
+
+                def completed(timer_id: int) -> None:
+                    if results.empty():
+                        add_timer(completed, 0.1, False)
+                        return
+                    error = results.get_nowait()
+                    if error:
+                        self.show_error(_('Could not shut down VM'),
+                                        error + '\nThe pane remains open. No forced shutdown was attempted.')
+
+                Thread(target=request, daemon=True).start()
+                add_timer(completed, 0.1, False)
+
+        self.choose(
+            _('Are you sure you want to close this pane? It is running a QEMU VM.\n'
+              'Shut down VM requests a graceful guest shutdown and leaves the pane open '
+              'until QEMU exits. If the guest does not respond, the pane stays open.\n'
+              'Force close immediately terminates the VM and may lose unsaved data.'),
+            chosen, 's:Shut down VM', 'f:Force close', 'c:Cancel',
+            window=window, default='c', title=_('Close VM pane?'))
+        return True
 
     def handle_kilix_persistent_close_confirmation(
         self, confirmed: bool, window_id: int
@@ -1415,6 +1465,8 @@ class Boss:
     def close_window_with_confirmation(self, ignore_shell: bool = False) -> None:
         window = self.window_for_dispatch or self.active_window
         if window is None:
+            return
+        if self.confirm_qemu_close(window):
             return
         msg = self.close_windows_with_confirmation_msg((window,), window)[0]
         if not msg and not ignore_shell:
@@ -1861,6 +1913,8 @@ class Boss:
         )
 
     def confirm_tab_close(self, tab: Tab) -> None:
+        if len(tab) == 1 and tab.active_window is not None and self.confirm_qemu_close(tab.active_window):
+            return
         msg, num_active_windows = self.close_windows_with_confirmation_msg(tab, tab.active_window)
         x = get_options().confirm_os_window_close[0]
         num = num_active_windows if x < 0 else len(tab)
