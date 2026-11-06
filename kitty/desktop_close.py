@@ -79,13 +79,23 @@ def show(boss, window=None, tab=None):
                 boss.close_tab_no_confirm(tab)
             else:
                 boss.handle_kilix_persistent_close_confirmation(True, provider.id)
+        elif choice == 'b' and tab is not None:
+            boss.background_tab(tab)
         elif choice in ('s', 'r', 'l'):
             request_action(boss, choice)
 
+    choices = ['y:Yes', 'n:No']
+    if tab is not None:
+        choices.append('b:Background')
+        detail = (
+            'Yes closes the tab. Background keeps its panes running and hides the tab. '
+            'Choose a system action to shut down, reboot, or log out of Pleb.')
+    else:
+        detail = 'Yes closes the tab. Choose a system action to shut down, reboot, or log out of Pleb.'
+    choices.extend(('s:System shut down', 'r:System reboot', 'l:Log out of Pleb'))
     overlay = boss.choose(
-        'Are you sure you want to close this desktop tab?\n'
-        'Yes closes the tab. Choose a system action to shut down, reboot, or log out of Pleb.',
-        chosen, 'y:Yes', 'n:No', 's:System shut down', 'r:System reboot', 'l:Log out of Pleb',
+        'Are you sure you want to close this desktop tab?\n' + detail,
+        chosen, *choices,
         window=provider, default='n', title='Close desktop tab?')
     if tab is not None and overlay is not None:
         tab.confirm_close_window_id = overlay.id

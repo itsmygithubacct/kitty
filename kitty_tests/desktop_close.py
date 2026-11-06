@@ -41,15 +41,22 @@ class DesktopClose(BaseTest):
         self.assertFalse(close.show(self.boss, tab=Tab([self.other])))
         self.boss.choose.assert_not_called()
 
-    def test_provider_in_inactive_split_gets_all_five_choices_and_no_is_default(self):
+    def test_provider_tab_offers_background_and_keeps_no_as_default(self):
         callback = self.prompt(tab=self.tab)
         self.assertEqual(self.boss.choose.call_args.args[2:],
-                         ('y:Yes', 'n:No', 's:System shut down', 'r:System reboot', 'l:Log out of Pleb'))
+                         ('y:Yes', 'n:No', 'b:Background', 's:System shut down', 'r:System reboot', 'l:Log out of Pleb'))
+        self.assertIn('Background keeps its panes running', self.boss.choose.call_args.args[0])
         self.assertEqual(self.boss.choose.call_args.kwargs['default'], 'n')
         with patch.object(close, 'request_action') as action:
             for answer in ('n', '', 'invalid'):
                 callback(answer)
             action.assert_not_called()
+        self.boss.close_tab_no_confirm.assert_not_called()
+
+    def test_background_hides_the_tab_instead_of_closing_it(self):
+        self.boss.background_tab = Mock()
+        self.prompt(tab=self.tab)('b')
+        self.boss.background_tab.assert_called_once_with(self.tab)
         self.boss.close_tab_no_confirm.assert_not_called()
 
     def test_yes_only_closes_the_original_tab(self):
@@ -60,6 +67,9 @@ class DesktopClose(BaseTest):
 
     def test_pane_yes_uses_persistent_close(self):
         self.prompt(window=self.provider)('y')
+        self.assertEqual(self.boss.choose.call_args.args[2:],
+                         ('y:Yes', 'n:No', 's:System shut down', 'r:System reboot', 'l:Log out of Pleb'))
+        self.assertNotIn('Background', self.boss.choose.call_args.args[0])
         self.boss.handle_kilix_persistent_close_confirmation.assert_called_once_with(True, 3)
 
     def test_system_choices_do_not_close_the_desktop(self):
@@ -75,6 +85,7 @@ class DesktopClose(BaseTest):
         with patch.object(close, 'request_action') as action:
             self.boss.window_id_map[3] = SimpleNamespace(id=3, user_vars={close.MARKER: '1'})
             callback('s')
+            callback('b')
             self.boss.window_id_map[3] = self.provider
             self.provider.user_vars.clear()
             callback('r')
@@ -87,7 +98,7 @@ class DesktopClose(BaseTest):
         self.provider.user_vars.clear()
         self.provider.user_vars[close.MARKER] = 'second-launch'
         with patch.object(close, 'request_action') as action:
-            for choice in ('y', 's', 'r', 'l'):
+            for choice in ('y', 'b', 's', 'r', 'l'):
                 callback(choice)
             action.assert_not_called()
         self.boss.close_tab_no_confirm.assert_not_called()
@@ -96,6 +107,7 @@ class DesktopClose(BaseTest):
         callback = self.prompt(tab=self.tab)
         self.boss.all_tabs = []
         with patch.object(close, 'request_action') as action:
+            callback('b')
             callback('l')
             action.assert_not_called()
 

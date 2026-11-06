@@ -215,6 +215,8 @@ class Tab:  # {{{
         # typed into any selected pane is copied to the other selected panes in
         # this tab. Overlays are deliberately never members.
         self.kilix_synchronized_input_ids: set[int] = set()
+        # Hidden from the tab bar. Its panes keep running until it is restored.
+        self.backgrounded = False
         from .kilix_chrome.settings import chrome_enabled
         self.kilix_synchronized_input_control_enabled = chrome_enabled(
             'KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT')
@@ -1527,6 +1529,9 @@ class TabManager:  # {{{
             idx = self.tabs.index(tab)
         except Exception:
             return False
+        # Focusing a backgrounded tab is how it comes back onto the bar.
+        if tab.backgrounded:
+            tab.backgrounded = False
         self.set_active_tab_idx(idx)
         h = self.active_tab_history
         if for_keep_focus and len(h) > 2 and h[-2] == for_keep_focus.id and h[-1] != for_keep_focus.id:
@@ -1536,12 +1541,14 @@ class TabManager:  # {{{
 
     @property
     def tabs_to_be_shown_in_tab_bar(self) -> Iterable[Tab]:
+        hidden = any(getattr(t, 'backgrounded', False) for t in self.tabs)
         f = get_options().tab_bar_filter
-        if f:
-            at = self.active_tab
-            m = frozenset(get_boss().match_tabs(f, all_tabs=self))
-            return (t for t in self if t is at or t in m)
-        return self.tabs
+        if not f and not hidden:
+            return self.tabs
+        at = self.active_tab
+        matched = frozenset(get_boss().match_tabs(f, all_tabs=self)) if f else None
+        return (t for t in self.tabs
+                if not getattr(t, 'backgrounded', False) and (matched is None or t is at or t in matched))
 
     def next_tab(self, delta: int = 1) -> None:
         if (len(tabs := tuple(self.tabs_to_be_shown_in_tab_bar))) == len(self.tabs):
@@ -2071,6 +2078,11 @@ class TabManager:  # {{{
                 set_tab_being_dragged()  # clear potential drag from a press on a tab
             if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 2:
                 self.new_tab()
+                self.recent_tab_bar_mouse_events.clear()
+            return
+        if button == GLFW_MOUSE_BUTTON_RIGHT:
+            if action == GLFW_RELEASE and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_RIGHT):
+                get_boss().show_tab_bar_menu(tab)
                 self.recent_tab_bar_mouse_events.clear()
             return
         if button == GLFW_MOUSE_BUTTON_LEFT:

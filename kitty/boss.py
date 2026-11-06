@@ -444,6 +444,30 @@ def focus_os_window(os_window_id: int, also_raise: bool = True, activation_token
     return _focus_os_window(os_window_id, also_raise, activation_token)
 
 
+# Accelerators for the backgrounded-tab list. z stays free for Back.
+_BACKGROUND_KEYS = '123456789abcdefghijklmnopqrstuvwxy'
+
+
+def backgrounded_tab_label(tab: Tab) -> str:
+    """Tab title plus the pane titles a person uses to recognize it."""
+    name = (getattr(tab, 'effective_title', '') or '').replace('\n', ' ').strip() or 'tab'
+    panes: list[str] = []
+    for window in tab:
+        if getattr(window, 'overlay_for', None):
+            continue
+        title = (getattr(window, 'title', '') or '').replace('\n', ' ').strip()
+        if title:
+            panes.append(title[:40])
+    if not panes or (len(panes) == 1 and panes[0] == name):
+        return name[:80]
+    if len(panes) == 1:
+        return f'{name} — {panes[0]}'[:120]
+    body = ', '.join(panes[:4])
+    if len(panes) > 4:
+        body += f' +{len(panes) - 4}'
+    return f'{name} — {body}'[:160]
+
+
 class Boss:
 
     def __init__(
@@ -1527,23 +1551,34 @@ class Boss:
 
     def confirm(
         self, msg: str,  # can contain newlines and ANSI formatting
-        callback: Callable[..., None],  # called with True or False and *args
+        callback: Callable[..., None],  # True/False, or the response letter when extra_choices is set
         *args: Any,  # passed to the callback function
         window: Window | None = None,  # the window associated with the confirmation
         confirm_on_cancel: bool = False,  # on closing window
         confirm_on_accept: bool = True,  # on pressing enter
-        title: str = ''  # window title
+        title: str = '',  # window title
+        extra_choices: Sequence[str] = (),
     ) -> Window:
-        result: bool = False
+        # extra_choices are ask-kitten choices (``letter;color:text``) drawn
+        # beside Yes and No. The callback then receives the response letter,
+        # or '' on cancel, instead of a bool.
+        result: bool | str = False
 
         def callback_(res: dict[str, Any], x: int, boss: Boss) -> None:
             nonlocal result
-            result = res.get('response') == 'y'
+            response = res.get('response') or ''
+            result = response if extra_choices else response == 'y'
 
         def on_popup_overlay_removal(wid: int, boss: Boss) -> None:
             callback(result, *args)
 
-        cmd = ['--type=yesno', '--message', msg, '--default', 'y' if confirm_on_accept else 'n']
+        if extra_choices:
+            cmd = ['--type=choices', '--message', msg, '--default', 'y' if confirm_on_accept else 'n',
+                   '-c', 'y;green:Yes', '-c', 'n;red:No']
+            for choice in extra_choices:
+                cmd.extend(('-c', choice))
+        else:
+            cmd = ['--type=yesno', '--message', msg, '--default', 'y' if confirm_on_accept else 'n']
         if title:
             cmd += ['--title', title]
         w = self.run_kitten_with_metadata(
@@ -1716,12 +1751,26 @@ class Boss:
             'q': self._kilix_start_power,
         })
 
+    def _backgrounded_tabs(self) -> list[Tab]:
+        managers = getattr(self, 'os_window_map', None)
+        if not managers:
+            return []
+        found: list[Tab] = []
+        for tm in managers.values():
+            for tab in tm:
+                if getattr(tab, 'backgrounded', False):
+                    found.append(tab)
+        return found
+
     def _kilix_start_sessions(self, window: 'Window') -> None:
+        count = len(self._backgrounded_tabs())
+        backgrounded = 'g:Backgrounded tabs' if count == 0 else f'g:Backgrounded tabs ({count})'
         self._kilix_start_choose(window, 'Kilix Start — Sessions', (
-            'p:Kilix persistent panes', 't:Tmux session manager',
+            backgrounded, 'p:Kilix persistent panes', 't:Tmux session manager',
             'a:Attach Kilix text session…', 'v:View session read-only…',
             'x:Session transcripts [X]', 'n:New named session…', 'z:◂ Back [Z]',
         ), {
+            'g': self._kilix_start_backgrounded,
             'p': 'launch --type=tab --title "PTY Sessions" kilix pty',
             't': 'launch --type=tab --title "Tmux Manager" kilix tmux',
             'a': 'launch --type=tab --hold kilix attach',
@@ -1729,6 +1778,130 @@ class Boss:
             'x': 'launch --type=tab --hold --title Transcripts kilix transcript list',
             'n': 'launch --type=tab --hold kilix serve',
             'z': self._kilix_start_main,
+        })
+
+    def _kilix_start_backgrounded(self, window: 'Window') -> None:
+        tabs = self._backgrounded_tabs()
+        if not tabs:
+            self._kilix_start_choose(window, 'Backgrounded tabs', (
+                'z:No backgrounded tabs [Z]',
+            ), {'z': self._kilix_start_sessions})
+            return
+        shown = tabs[:len(_BACKGROUND_KEYS)]
+        choices: list[str] = []
+        actions: dict[str, Callable[['Window'], None]] = {}
+        for index, tab in enumerate(shown):
+            key = _BACKGROUND_KEYS[index]
+            choices.append(f'{key}:{key} {backgrounded_tab_label(tab)}')
+            actions[key] = lambda _owner, tab_id=tab.id: self.restore_backgrounded_tab(tab_id)
+        choices.append('z:◂ Back [Z]')
+        actions['z'] = self._kilix_start_sessions
+        title = 'Backgrounded tabs'
+        if len(tabs) > len(shown):
+            title = f'Backgrounded tabs ({len(shown)} of {len(tabs)})'
+        self._kilix_start_choose(window, title, tuple(choices), actions)
+
+    def background_tab(self, tab: Tab) -> None:
+        """Hide a tab without closing its panes."""
+        if getattr(tab, 'backgrounded', False):
+            return
+        tm = tab.tab_manager_ref()
+        if tm is None or tab not in tm.tabs:
+            return
+        visible = [other for other in tm.tabs if other is not tab and not getattr(other, 'backgrounded', False)]
+        tab.backgrounded = True
+        if tm.active_tab is tab:
+            switched = False
+            if visible:
+                replacement = visible[0]
+                passed = False
+                for other in tm.tabs:
+                    if other is tab:
+                        passed = True
+                        continue
+                    if passed and other in visible:
+                        replacement = other
+                        break
+                switched = bool(tm.set_active_tab(replacement))
+            else:
+                tm.new_tab()
+                switched = tm.active_tab is not tab
+            if not switched:
+                tab.backgrounded = False
+                return
+        # Switching away records the tab we left. Remove it afterwards, or the
+        # previous-tab shortcut focuses it and brings it back onto the bar.
+        history = getattr(tm, 'active_tab_history', None)
+        if history is not None:
+            kept = [tab_id for tab_id in history if tab_id != tab.id]
+            history.clear()
+            history.extend(kept)
+        tm.mark_tab_bar_dirty()
+
+    def restore_backgrounded_tab(self, tab_id: int) -> None:
+        tab = self.tab_for_id(tab_id)
+        if tab is None:
+            return
+        tm = tab.tab_manager_ref()
+        if tm is not None and tm.set_active_tab(tab):
+            self.focus_os_window(tab.os_window_id)
+
+    def show_tab_bar_menu(self, tab: Tab) -> None:
+        """Right-click menu for one tab in the page strip."""
+        host = self.active_window or tab.active_window
+        if host is None:
+            return
+        tab_id = tab.id
+        name = (tab.effective_title or '').replace('\n', ' ').strip()
+        title = f'Tab — {name}' if name else 'Tab'
+
+        def rename(_owner: Window) -> None:
+            target = self.tab_for_id(tab_id)
+            if target is None:
+                return
+            tm = target.tab_manager_ref()
+            if tm is not None:
+                tm.set_active_tab(target)
+            window = target.active_window
+            if window is None:
+                return
+            self.window_for_dispatch = window
+            try:
+                self.set_tab_title()
+            finally:
+                self.window_for_dispatch = None
+
+        def background(_owner: Window) -> None:
+            target = self.tab_for_id(tab_id)
+            if target is not None:
+                self.background_tab(target)
+
+        def close(_owner: Window) -> None:
+            target = self.tab_for_id(tab_id)
+            if target is not None:
+                self.close_tab(target)
+
+        def make_new(_owner: Window) -> None:
+            target = self.tab_for_id(tab_id)
+            tm = target.tab_manager_ref() if target is not None else None
+            if tm is None or target is None:
+                return
+            tm.set_active_tab(target)
+            tm.new_tab(location='after')
+
+        def close_others(_owner: Window) -> None:
+            target = self.tab_for_id(tab_id)
+            tm = target.tab_manager_ref() if target is not None else None
+            if tm is None or target is None:
+                return
+            for other in tuple(tm.tabs):
+                if other is not target and not getattr(other, 'backgrounded', False):
+                    self.close_tab(other)
+
+        self._kilix_start_choose(host, title, (
+            'r:Rename', 'b:Background tab', 'c:Close tab', 'n:New tab', 'o:Close others',
+        ), {
+            'r': rename, 'b': background, 'c': close, 'n': make_new, 'o': close_others,
         })
 
     def _kilix_start_programs(self, window: 'Window') -> None:
@@ -1946,19 +2119,23 @@ class Boss:
                 tab.set_active_window(w)
                 return
         msg = _('Are you sure you want to close this tab?') + ' ' + msg
-        w = self.confirm(msg, self.handle_close_tab_confirmation, tab.id, window=tab.active_window, title=_('Close tab?'))
+        msg += '\n' + _('Background keeps its panes running and hides the tab.')
+        w = self.confirm(
+            msg, self.handle_close_tab_confirmation, tab.id, window=tab.active_window,
+            title=_('Close tab?'), extra_choices=('b;yellow:Background',))
         tab.confirm_close_window_id = w.id
 
-    def handle_close_tab_confirmation(self, confirmed: bool, tab_id: int) -> None:
+    def handle_close_tab_confirmation(self, confirmed: bool | str, tab_id: int) -> None:
         for tab in self.all_tabs:
             if tab.id == tab_id:
                 tab.confirm_close_window_id = 0
                 break
         else:
             return
-        if not confirmed:
-            return
-        self.close_tab_no_confirm(tab)
+        if confirmed is True or confirmed == 'y':
+            self.close_tab_no_confirm(tab)
+        elif confirmed == 'b':
+            self.background_tab(tab)
 
     def close_tab_no_confirm(self, tab: Tab) -> None:
         if self.current_visual_select is not None and self.current_visual_select.tab_id == tab.id:
