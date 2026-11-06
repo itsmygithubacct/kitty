@@ -22,7 +22,7 @@ class TestKilixClock(BaseTest):
 
     def setUp(self):
         super().setUp()
-        clock_format = patch("kittens.kilix_clock.main.chrome_value", return_value="%Y-%m-%d %I:%M %p")
+        clock_format = patch("kittens.kilix_clock.main.chrome_value", return_value="%I:%M %p")
         clock_format.start()
         self.addCleanup(clock_format.stop)
 

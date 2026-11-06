@@ -112,7 +112,7 @@ class TestKilixChrome(BaseTest):
             with patch.dict(os.environ, {'GPU_TERMINAL_SETTINGS_FILE': str(filename)}):
                 for hour, expected in ((0, '12:05 AM'), (12, '12:05 PM'), (23, '11:05 PM')):
                     with patch('kitty.kilix_chrome.providers.local_now', return_value=datetime(2026, 9, 27, hour, 5)):
-                        self.ae(clock_segment(), f' 2026-09-27 {expected} ')
+                        self.ae(clock_segment(), f' {expected} ')
                 filename.write_text('KILIX_CHROME_CLOCK_FORMAT=%H:%M\n')
                 with patch('kitty.kilix_chrome.providers.local_now', return_value=datetime(2026, 9, 27, 23, 5)):
                     self.ae(clock_segment(), ' 23:05 ')

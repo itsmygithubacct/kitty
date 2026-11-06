@@ -179,6 +179,24 @@ class TestKilixWeather(BaseTest):
         self.assertTrue(process.stdout.closed)
         self.assertIsNone(self.weather.process)
 
+    def test_code_3_bar_is_cloud_and_card_keeps_overcast(self):
+        now = 1_700_000_000.0
+        self.weather.zip = '00501'
+        self.weather.reading = module.Reading('00501', 'Test place', 10, 3, now, now)
+        with patch.object(module.time, 'time', return_value=now):
+            self.ae(self.weather.text(), ' 50°F ☁️ ')
+            self.assertNotIn('Overcast', self.weather.text())
+            self.assertNotIn('Unknown conditions', self.weather.text())
+        self.weather.publish()
+        with patch.object(module.time, 'time', return_value=now):
+            self.assertIn('Overcast', '\n'.join(module.weather_card()))
+        self.weather.reading = module.Reading('00501', 'Test place', 10, 4, now, now)
+        with patch.object(module.time, 'time', return_value=now):
+            fallback = self.weather.text()
+        self.ae(fallback, ' 50°F ? ')
+        self.assertNotIn('Unknown conditions', fallback)
+        self.assertEqual(set(module.COMPACT_CONDITIONS), set(module.CONDITIONS))
+
     def test_one_timer_for_all_windows_and_no_synchronous_fetch(self):
         self.config['KILIX_WEATHER_ZIP'] = ''
         self.save()

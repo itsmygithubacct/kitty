@@ -42,7 +42,7 @@ def utc_offset_text(now: datetime) -> str:
 
 
 def clock_text(now: datetime) -> str:
-    fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%Y-%m-%d %I:%M %p')
+    fmt = chrome_value('KILIX_CHROME_CLOCK_FORMAT', '%I:%M %p')
     return now.strftime('%I:%M:%S %p' if '%I' in fmt else '%H:%M:%S')
 
 
