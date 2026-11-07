@@ -60,12 +60,14 @@ TTS_ENGINES = ('espeak', 'mbrola', 'piper', 'off')
 TTS_RATES = ('120', '150', '170', '200', '240')
 TTS_EXTENTS = ('screen', 'scrollback', 'selection')
 STT_ENGINES = ('vosk', 'vibevoice', 'whisper', 'whistle', 'off')
-STT_MODELS = ('small-en-us', 'lgraph-en-us', 'vibevoice-asr-bitnet', 'whisper-small-en', 'whistle')
+STT_MODELS = ('small-en-us', 'lgraph-en-us', 'vibevoice-asr-bitnet',
+              'whisper-small-en', 'whisper-medium-en', 'whistle')
 STT_MODEL_ENGINES = {
     'small-en-us': 'vosk',
     'lgraph-en-us': 'vosk',
     'vibevoice-asr-bitnet': 'vibevoice',
     'whisper-small-en': 'whisper',
+    'whisper-medium-en': 'whisper',
     'whistle': 'whistle',
 }
 STT_MODEL_BYTES = {
@@ -73,6 +75,7 @@ STT_MODEL_BYTES = {
     'lgraph-en-us': 130557655,
     'vibevoice-asr-bitnet': 1705771590,
     'whisper-small-en': 486100128,
+    'whisper-medium-en': 1530459085,
     'whistle': 16937647,
 }
 STT_MODEL_REQUIRED_FILES = {
@@ -84,11 +87,13 @@ STT_MODEL_REQUIRED_FILES = {
     ),
     'whistle': ('whistle.cact',),
     'whisper-small-en': ('model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt'),
+    'whisper-medium-en': ('model.bin', 'config.json', 'tokenizer.json', 'vocabulary.txt'),
 }
 # Where `kilix models install` puts a model kilix-voice uses in place, relative
 # to the Kilix data directory; kilix-voice prefers a copy under voice/models.
 STT_MODEL_CONTENT_DIRS = {
     'whisper-small-en': ('desktop-apps', 'assets', 'faster-whisper-small-en'),
+    'whisper-medium-en': ('desktop-apps', 'assets', 'faster-whisper-medium-en'),
     'whistle': ('desktop-apps', 'assets', 'whistle'),
 }
 STT_MAX_SECONDS = ('15', '30', '60', '120')
@@ -932,9 +937,10 @@ def begin_dictation(window_id: int) -> str | None:
         elif engine == 'whistle' and not _whistle_present():
             detail = 'The Whistle runtime is missing. Install it with `kilix stt --install whistle`.'
         elif engine == 'whisper' and not _whisper_present():
+            chosen = model if STT_MODEL_ENGINES.get(model) == 'whisper' else 'whisper-small-en'
             detail = (
                 'Whisper needs its runtime. Run `kilix stt --install '
-                'whisper-small-en`, which also fetches any missing weights.')
+                f'{chosen}`, which also fetches any missing weights.')
         elif STT_MODEL_ENGINES.get(model) != engine:
             detail = (
                 f'{model} needs the {STT_MODEL_ENGINES.get(model, "matching")} '
