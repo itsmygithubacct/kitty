@@ -43,6 +43,17 @@ CONDITIONS = {
     95: 'Thunderstorm', 96: 'Thunderstorm / hail', 97: 'Heavy thunderstorm',
     99: 'Thunderstorm / hail',
 }
+# Top-bar symbols only. Cards and city lookup keep the words in CONDITIONS.
+COMPACT_CONDITIONS = {
+    0: '☀️', 1: '🌤️', 2: '⛅️', 3: '☁️',
+    45: '🌫️', 48: '🌫️',
+    51: '🌦️', 53: '🌦️', 55: '🌦️', 56: '🌦️', 57: '🌦️',
+    61: '🌧️', 63: '🌧️', 65: '🌧️', 66: '🌧️', 67: '🌧️',
+    80: '🌧️', 81: '🌧️', 82: '🌧️',
+    71: '🌨️', 73: '🌨️', 75: '🌨️', 77: '🌨️', 85: '🌨️', 86: '🌨️',
+    95: '⛈️', 96: '⛈️', 97: '⛈️', 99: '⛈️',
+}
+COMPACT_FALLBACK = '?'
 
 
 def valid_zip(value: str) -> bool:
@@ -97,6 +108,9 @@ class Reading:
     @property
     def condition(self) -> str:
         return CONDITIONS.get(self.code, 'Unknown conditions')
+
+    def compact(self) -> str:
+        return COMPACT_CONDITIONS.get(self.code, COMPACT_FALLBACK)
 
 
 def json_request(url: str) -> dict:
@@ -314,7 +328,8 @@ class Weather:
             return ' Weather: ZIP '
         if self.reading is not None:
             stale = bool(self.error) or self.reading.stale(time.time())
-            return f' {self.reading.temperature()} {self.reading.condition}{" (stale)" if stale else ""} '
+            mark = ' (stale)' if stale else ''
+            return f' {self.reading.temperature()} {self.reading.compact()}{mark} '
         return ' Weather: unavailable ' if self.error else ' Weather: loading… '
 
     def stop(self) -> None:
