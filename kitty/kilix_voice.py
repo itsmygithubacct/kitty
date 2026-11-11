@@ -311,6 +311,27 @@ def _piper_present() -> bool:
     return bool(which('kilix-piper-tts'))
 
 
+_FEMALE02_BYTES = 63522221
+
+
+def _female02_weights() -> bool:
+    """True when the catalog onnx is present. This does not hash it."""
+    root = os.environ.get('KILIX_DATA_HOME') or os.path.join(_storage_home(), 'data')
+    path = os.path.join(root, 'desktop-apps', 'assets', 'kilix-female-02',
+                        'kilix-female-02.onnx')
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return False
+        return os.path.getsize(path) == _FEMALE02_BYTES
+    except OSError:
+        return False
+
+
+def _female02_needed() -> bool:
+    return (tts_engine() == 'piper' and tts_voice() == 'kilix-female-02'
+            and not (_piper_present() and _female02_weights()))
+
+
 def _tts_available(engine: str) -> bool:
     if engine == 'off':
         return False
@@ -723,11 +744,26 @@ def _handle_unknown_speech_status(message: str) -> None:
 
 
 def speech_install_offer() -> ModelInstallOffer | None:
-    """Confirm Piper on first read-aloud. Yes opens the licence install."""
-    if tts_engine() != 'piper' or _piper_present():
+    """Confirm the saved Piper voice on first read-aloud. Yes opens the licence."""
+    if tts_engine() != 'piper':
         return None
     kilix = kilix_launcher()
     if not kilix:
+        return None
+    if tts_voice() == 'kilix-female-02':
+        if _piper_present() and _female02_weights():
+            return None
+        return ModelInstallOffer(
+            model='kilix-female-02',
+            size=_FEMALE02_BYTES,
+            argv=(kilix, 'tts', '--install=kilix-female-02'),
+            message=(
+                'Read-aloud is set to Kilix Female-02, which is not installed.\n\n'
+                'Install Kilix Female-02 now? Its licence is shown in a terminal. '
+                'Nothing is downloaded unless you accept it.'
+            ),
+        )
+    if _piper_present():
         return None
     return ModelInstallOffer(
         model='piper-en-us-kristin-medium',
@@ -767,9 +803,13 @@ def speak(text: str) -> str | None:
     text = text.strip()
     if not text:
         return flag_error('This pane has no text to read.')
-    if not _availability()['speak']:
+    if _female02_needed() or not _availability()['speak']:
         if (offer := speech_install_offer()) is not None and _offer_speech_install(offer):
             return None
+        if tts_voice() == 'kilix-female-02':
+            return flag_error(
+                'Read-aloud is set to Kilix Female-02, which is not installed. '
+                'Run `kilix tts --install=kilix-female-02`, then `kilix voice doctor`.')
         if tts_engine() == 'piper':
             return flag_error(
                 'Read-aloud is set to the Piper voice, which is not installed. '
