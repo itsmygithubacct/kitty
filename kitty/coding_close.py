@@ -227,6 +227,6 @@ def show(boss, window):
                 'Close pane terminates the session without opening a recovery terminal.\n'
                 'Close and give path to rollout log keeps a recovery receipt in another terminal.\n'
                 'Background to tmux preserves captured launch settings and resumes only after the original client exits.',
-                chosen, 'x:Close pane', 'l:Close and give path to rollout log', 'b:Background to tmux', 'c:Cancel',
+                chosen, 'x:Close pane (exit)', 'l:Close and give path to rollout log', 'b:Background to tmux', 'c:Cancel',
                 window=window, default='c', title='Close coding pane?')
     return True
