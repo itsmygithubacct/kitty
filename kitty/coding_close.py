@@ -88,10 +88,6 @@ def show(boss, window):
     from .fast_data_types import add_timer
     from .tabs import SpecialWindow
 
-    if not window.child.is_pty_brokered:
-        boss.show_error('Cannot transfer coding pane',
-                        'A broker with descendant cessation support is required. The original pane remains open.')
-        return True
     snapshot = window.as_dict()
     broker = snapshot.get('env', {}).get('KITTY_PTY_BROKER_SESSION', '')
     foreground = snapshot['foreground_processes']
@@ -105,7 +101,16 @@ def show(boss, window):
                 and now['foreground_processes'] == foreground)
 
     def chosen(choice):
-        if choice not in ('l', 'b') or not same_window() or window.id in _busy:
+        if choice not in ('x', 'l', 'b') or not same_window() or window.id in _busy:
+            return
+        if choice == 'x':
+            # Explicit close does not require a log, helper, or replacement.
+            # Keep the broker's normal acknowledgement/error handling.
+            boss.close_window_explicitly_with_error(window)
+            return
+        if not window.child.is_pty_brokered:
+            boss.show_error('Cannot transfer coding pane',
+                            'A broker with descendant cessation support is required. Choose Close pane to close without transferring.')
             return
         home = os.environ.get('KILIX_HOME', '')
         helper = Path(home) / 'config/coding_handoff.py'
@@ -219,8 +224,9 @@ def show(boss, window):
         add_timer(completed, .1, False)
 
     boss.choose('Close this coding conversation?\n'
+                'Close pane terminates the session without opening a recovery terminal.\n'
                 'Close and give path to rollout log keeps a recovery receipt in another terminal.\n'
                 'Background to tmux preserves captured launch settings and resumes only after the original client exits.',
-                chosen, 'l:Close and give path to rollout log', 'b:Background to tmux', 'c:Cancel',
+                chosen, 'x:Close pane', 'l:Close and give path to rollout log', 'b:Background to tmux', 'c:Cancel',
                 window=window, default='c', title='Close coding pane?')
     return True
