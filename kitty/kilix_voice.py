@@ -722,12 +722,54 @@ def _handle_unknown_speech_status(message: str) -> None:
             f'{message} Kilix will keep the speaking indicator active and retry.')
 
 
+def speech_install_offer() -> ModelInstallOffer | None:
+    """Confirm Piper on first read-aloud. Yes opens the licence install."""
+    if tts_engine() != 'piper' or _piper_present():
+        return None
+    kilix = kilix_launcher()
+    if not kilix:
+        return None
+    return ModelInstallOffer(
+        model='piper-en-us-kristin-medium',
+        size=0,
+        argv=(kilix, 'tts', '--enable-kristin'),
+        message=(
+            'Read-aloud is set to the Piper voice, which is not installed.\n\n'
+            'Install Piper Kristin now? Its licence is shown in a terminal. '
+            'Nothing is downloaded unless you accept it.'
+        ),
+    )
+
+
+def _offer_speech_install(offer: ModelInstallOffer) -> bool:
+    try:
+        from .fast_data_types import get_boss
+        boss = get_boss()
+        window = getattr(boss, 'active_window', None)
+    except (ImportError, AttributeError, RuntimeError, OSError):
+        return False
+    if window is None:
+        return False
+    boss.confirm(
+        offer.message,
+        launch_model_install,
+        window.id,
+        offer.argv,
+        offer.model,
+        window=window,
+        title='Install speech model?',
+    )
+    return True
+
+
 def speak(text: str) -> str | None:
     """Ask the daemon to read `text`. Returns an error message, or None."""
     text = text.strip()
     if not text:
         return flag_error('This pane has no text to read.')
     if not _availability()['speak']:
+        if (offer := speech_install_offer()) is not None and _offer_speech_install(offer):
+            return None
         if tts_engine() == 'piper':
             return flag_error(
                 'Read-aloud is set to the Piper voice, which is not installed. '
