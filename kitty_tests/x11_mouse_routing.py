@@ -84,7 +84,7 @@ for case in ('stale_slave_master', 'slave_no_scroll', 'smooth_scroll', 'highres_
              'disabled_raw', 'disabled_relative', 'core_fallback_duplicate', 'unknown_window_warp', 'emulated_wheel_position', 'core_wheel_fallback', 'real_button_position',
              'first_wheel_after_focus', 'first_wheel_after_entry', 'refresh_failure_and_matching',
              'focus_outside_then_enter', 'entry_discards_valid_baselines', 'leave_after_entering_sibling', 'second_master_pointer',
-             'destroy_clears_pointer_window', 'entry_query_race'):
+             'destroy_clears_pointer_window', 'entry_query_race', 'one_query_for_all_devices'):
     setattr(X11MouseRouting, 'test_' + case, lambda self, name=case: self.check_case(name))
 
 if __name__ == '__main__':

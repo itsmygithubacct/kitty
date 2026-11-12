@@ -56,16 +56,24 @@ static int position_count, scroll_count, timer_cancels, momentum_cancels, moment
 static bool momentum_enabled;
 static int click_count, query_count, free_count;
 static bool query_failure;
-static XIValuatorClassInfo seed_class;
-static XIAnyClassInfo *seed_classes[1];
-static XIDeviceInfo seed_device;
+static XIValuatorClassInfo seed_class, second_class, master_class;
+static XIAnyClassInfo *seed_classes[1], *second_classes[1], *master_classes[1];
+static XIDeviceInfo seed_device, all_devices[3];
+/* The server knows master 2 and slaves 14 and 15, and answers per id. A master's classes
+   copy those of its last slave, sourceid included, so master 2 also has valuator 2. */
+static bool two_devices;
 static inline void _glfwGrabErrorHandlerX11(void) {}
 static inline void _glfwReleaseErrorHandlerX11(void) {}
 /* Each query uses up one request number; events default to the last request processed. */
 static unsigned long next_request, event_serial;
 static inline unsigned long fixture_next_request(Display *display) { (void)display; return next_request; }
 static inline XIDeviceInfo *fixture_query(Display *display,int device,int *count) {
-    (void)display; (void)device; query_count++; next_request++;
+    (void)display; query_count++; next_request++;
+    if (two_devices && !query_failure) {
+        if (device==XIAllDevices) { *count=3; return all_devices; }
+        for (int i=0; i<3; i++) if (all_devices[i].deviceid==device) { *count=1; return all_devices+i; }
+        *count=0; return NULL;
+    }
     *count=query_failure ? 0 : 1; return query_failure ? NULL : &seed_device;
 }
 #define XNextRequest fixture_next_request
@@ -152,6 +160,14 @@ static void reset(void) {
     seed_class=(XIValuatorClassInfo){.type=XIValuatorClass,.sourceid=14,.number=2,.value=10};
     seed_classes[0]=(XIAnyClassInfo*)&seed_class;
     seed_device=(XIDeviceInfo){.deviceid=14,.num_classes=1,.classes=seed_classes};
+    second_class=(XIValuatorClassInfo){.type=XIValuatorClass,.sourceid=15,.number=3,.value=40};
+    second_classes[0]=(XIAnyClassInfo*)&second_class;
+    master_class=(XIValuatorClassInfo){.type=XIValuatorClass,.sourceid=14,.number=2,.value=999};
+    master_classes[0]=(XIAnyClassInfo*)&master_class;
+    all_devices[0]=(XIDeviceInfo){.deviceid=2,.use=XIMasterPointer,.num_classes=1,.classes=master_classes};
+    all_devices[1]=seed_device;
+    all_devices[2]=(XIDeviceInfo){.deviceid=15,.num_classes=1,.classes=second_classes};
+    two_devices=false;
     momentum_enabled=false; window.id=42; window.callbacks.cursorPos=position_callback;
     window.x11.handle=42;
     _glfw.x11.xi.master_pointer_id=2;
@@ -318,6 +334,18 @@ int main(int argc,char **argv) {
         event_serial=99; scroll(14,11); assert(scroll_count==0);
         scroll(14,12); assert(scroll_count==1 && last_scroll.y_offset==-1);
         event_serial=0; scroll(14,13); assert(scroll_count==2 && last_scroll.y_offset==-1);
+    } else if (!strcmp(argv[1],"one_query_for_all_devices")) {
+        /* Each query is a round trip and so is the XSync after it: ask once for every device,
+           and take each slave's values from its own entry, not from its master's copy. */
+        XIScrollDevice *a=scroll_device(GLFW_SCROLL_OFFSET_LINES);
+        XIScrollDevice *b=&_glfw.x11.xi.scroll_devices[1]; _glfw.x11.xi.num_scroll_devices=2;
+        *b=*a; b->deviceid=b->sourceid=15; b->valuators[0].number=3;
+        two_devices=true;
+        XEvent en={0}; enter(&en,&window);
+        assert(query_count==1 && free_count==1);
+        assert(a->valuators[0].initialized && a->valuators[0].value==10);
+        assert(b->valuators[0].initialized && b->valuators[0].value==40);
+        scroll(14,11); assert(scroll_count==1 && last_scroll.y_offset==-1);
     } else if (!strcmp(argv[1],"destroy_clears_pointer_window")) {
         /* After XDeleteContext the closed window's LeaveNotify is never dispatched, so
            destruction must forget it, or FocusIn would query with the pointer outside. */
