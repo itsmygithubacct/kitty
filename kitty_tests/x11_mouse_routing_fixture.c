@@ -9,6 +9,14 @@
 #include <X11/extensions/XInput2.h>
 
 #define GLFW_CURSOR_DISABLED 1
+#define GLFW_CURSOR_HIDDEN 2
+#define GLFW_PRESS 1
+#define GLFW_RELEASE 0
+#define GLFW_MOUSE_BUTTON_LEFT 0
+#define GLFW_MOUSE_BUTTON_RIGHT 1
+#define GLFW_MOUSE_BUTTON_MIDDLE 2
+#define Button6 6
+#define Button7 7
 #define GLFW_SCROLL_OFFEST_HIGHRES 1
 #define GLFW_SCROLL_OFFEST_V120 2
 #define GLFW_SCROLL_OFFSET_LINES 3
@@ -22,6 +30,7 @@ struct _GLFWwindow {
     unsigned long long id;
     int cursorMode;
     bool rawMouseMotion;
+    int mouseButtons[8];
     double virtualCursorPosX, virtualCursorPosY;
     struct { int warpCursorPosX, warpCursorPosY, lastCursorPosX, lastCursorPosY; } x11;
     struct { void (*cursorPos)(GLFWwindow*,double,double); } callbacks;
@@ -42,6 +51,27 @@ static struct { unsigned long long window_id, timer_id; GLFWScrollEvent last_eve
 static _GLFWwindow window;
 static int position_count, scroll_count, timer_cancels, momentum_cancels, momentum_count;
 static bool momentum_enabled;
+static int click_count, query_count, free_count;
+static bool query_failure;
+static XIValuatorClassInfo seed_class;
+static XIAnyClassInfo *seed_classes[1];
+static XIDeviceInfo seed_device;
+static inline void _glfwGrabErrorHandlerX11(void) {}
+static inline void _glfwReleaseErrorHandlerX11(void) {}
+static inline XIDeviceInfo *fixture_query(Display *display,int device,int *count) {
+    (void)display; (void)device; query_count++;
+    *count=query_failure ? 0 : 1; return query_failure ? NULL : &seed_device;
+}
+static inline void fixture_free(XIDeviceInfo *info) { (void)info; free_count++; }
+#define XIQueryDevice fixture_query
+#define XIFreeDeviceInfo fixture_free
+static void _glfwInputMouseClick(_GLFWwindow *w,int button,int action,int mods) { (void)w; (void)button; (void)action; (void)mods; click_count++; }
+static void handle_drag_button_release(unsigned long time) { (void)time; }
+static void updateCursorImage(_GLFWwindow *w) { (void)w; }
+static void _glfwInputCursorEnter(_GLFWwindow *w,bool entered) { (void)w; (void)entered; }
+static void _glfwInputWindowFocus(_GLFWwindow *w,bool focused) { (void)w; (void)focused; }
+static void disableCursor(_GLFWwindow *w) { (void)w; }
+/* REFRESH_FUNCTIONS */
 static GLFWScrollEvent last_scroll;
 static const int momentum_scroll_gesture_detection_timeout_ms = 100;
 static void position_callback(GLFWwindow *w, double x, double y) { (void)w; (void)x; (void)y; position_count++; }
@@ -77,10 +107,26 @@ static void raw(XEvent *event) {
 static void core(XEvent *event, _GLFWwindow *window) {
 /* CORE_DISPATCH_BODY */
 }
+static void press(XEvent *event, _GLFWwindow *window) {
+/* PRESS_BODY */
+}
+static void release(XEvent *event, _GLFWwindow *window) {
+/* RELEASE_BODY */
+}
+static void enter(XEvent *event, _GLFWwindow *window) {
+/* ENTER_BODY */
+}
+static void focus(XEvent *event, _GLFWwindow *window) {
+/* FOCUS_BODY */
+}
 static void reset(void) {
     memset(&_glfw,0,sizeof(_glfw)); memset(&window,0,sizeof(window));
     memset(&x11_momentum_scroll_state,0,sizeof(x11_momentum_scroll_state));
     position_count=scroll_count=timer_cancels=momentum_cancels=momentum_count=0;
+    click_count=query_count=free_count=0; query_failure=false;
+    seed_class=(XIValuatorClassInfo){.type=XIValuatorClass,.sourceid=14,.number=2,.value=10};
+    seed_classes[0]=(XIAnyClassInfo*)&seed_class;
+    seed_device=(XIDeviceInfo){.deviceid=14,.num_classes=1,.classes=seed_classes};
     momentum_enabled=false; window.id=42; window.callbacks.cursorPos=position_callback;
     _glfw.x11.xi.master_pointer_id=2;
     _glfw.x11.contentScaleX=2; _glfw.x11.contentScaleY=3;
@@ -159,6 +205,46 @@ int main(int argc,char **argv) {
         motion(2,300,200); assert(position_count==1);
         motion(2,310,210); assert(position_count==2);
         ev.xmotion.x=310; ev.xmotion.y=210; core(&ev,&window); assert(position_count==2);
+    } else if (!strcmp(argv[1],"emulated_wheel_position")) {
+        set_position(247,526); scroll_device(GLFW_SCROLL_OFFSET_LINES);
+        for (unsigned button=4; button<=7; button++) {
+            XEvent ev={0}; ev.xbutton.button=button; ev.xbutton.x=246; ev.xbutton.y=526;
+            press(&ev,&window); release(&ev,&window);
+        }
+        assert(position_count==0 && scroll_count==0 && click_count==0);
+        assert(window.virtualCursorPosX==247 && timer_cancels==0);
+    } else if (!strcmp(argv[1],"core_wheel_fallback")) {
+        XEvent ev={0}; ev.xbutton.button=Button4; ev.xbutton.x=11; ev.xbutton.y=22;
+        press(&ev,&window); release(&ev,&window);
+        assert(position_count==1 && scroll_count==1 && last_scroll.y_offset==1 && click_count==0);
+    } else if (!strcmp(argv[1],"real_button_position")) {
+        scroll_device(GLFW_SCROLL_OFFSET_LINES);
+        XEvent ev={0}; ev.xbutton.button=Button1; ev.xbutton.x=30; ev.xbutton.y=40;
+        press(&ev,&window); assert(position_count==1 && click_count==1 && window.virtualCursorPosX==30);
+        ev.xbutton.x=31; release(&ev,&window);
+        assert(position_count==2 && click_count==2 && window.virtualCursorPosX==31);
+        window.cursorMode=GLFW_CURSOR_DISABLED; ev.xbutton.x=100; press(&ev,&window);
+        assert(position_count==2 && click_count==3 && window.virtualCursorPosX==31);
+    } else if (!strcmp(argv[1],"first_wheel_after_focus")) {
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); d->valuators[0].initialized=true; d->valuators[0].is_vertical=false;
+        resetScrollValuators();
+        XEvent ev={0}; ev.xfocus.mode=NotifyNormal; focus(&ev,&window);
+        assert(query_count==1 && free_count==1);
+        scroll(14,11); assert(scroll_count==1 && last_scroll.x_offset==-1);
+        focus(&ev,&window); assert(query_count==1); /* valid baselines are not queried again */
+    } else if (!strcmp(argv[1],"first_wheel_after_entry")) {
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); d->valuators[0].initialized=true;
+        resetScrollValuators(); seed_class.value=20;
+        XEvent ev={0}; ev.xcrossing.x=50; ev.xcrossing.y=60; enter(&ev,&window);
+        scroll(14,21); assert(scroll_count==1 && last_scroll.y_offset==-1 && query_count==1);
+    } else if (!strcmp(argv[1],"refresh_failure_and_matching")) {
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES);
+        XEvent ev={0}; ev.xfocus.mode=NotifyGrab; focus(&ev,&window); assert(query_count==0);
+        ev.xfocus.mode=NotifyNormal; query_failure=true; focus(&ev,&window);
+        assert(query_count==1 && free_count==0 && !d->valuators[0].initialized);
+        query_failure=false; seed_class.sourceid=99; focus(&ev,&window); assert(!d->valuators[0].initialized);
+        seed_class.sourceid=14; seed_class.value=NAN; focus(&ev,&window); assert(!d->valuators[0].initialized);
+        seed_class.value=20; focus(&ev,&window); assert(d->valuators[0].initialized && d->valuators[0].value==20);
     } else if (!strcmp(argv[1],"unknown_window_warp")) {
         XIDeviceEvent de={.deviceid=2,.sourceid=14,.event=77,.event_x=900,.event_y=800};
         XEvent ev={0}; ev.xcookie.data=&de; route(&ev); assert(position_count==0);
