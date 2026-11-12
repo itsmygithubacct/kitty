@@ -35,7 +35,8 @@ class X11MouseRouting(unittest.TestCase):
             raise unittest.SkipTest('C compiler is unavailable')
         fixture_path = Path(__file__).with_name('x11_mouse_routing_fixture.c')
         root = Path(os.environ.get('X11_MOUSE_SOURCE', Path(__file__).resolve().parent.parent))
-        if not fixture_path.is_file() or not (root/'glfw/x11_window.c').is_file():
+        if not fixture_path.is_file() or not all((root/name).is_file() for name in (
+                'glfw/x11_window.c', 'glfw/x11_platform.h', 'glfw/input.c')):
             raise unittest.SkipTest('X11 sources are unavailable')
         try:
             flags = subprocess.run(['pkg-config', '--cflags', 'x11', 'xi'], capture_output=True, text=True, timeout=30)
@@ -62,6 +63,7 @@ class X11MouseRouting(unittest.TestCase):
             'ENTER_BODY': body(source, 'case EnterNotify:'),
             'FOCUS_BODY': body(source, 'case FocusIn:'),
             'LEAVE_BODY': body(source, 'case LeaveNotify:'),
+            'DESTROY_BODY': body(source, 'void _glfwPlatformDestroyWindow(_GLFWwindow* window)'),
         }
         for name, value in pieces.items():
             fixture = fixture.replace('/* ' + name + ' */', value)
@@ -81,7 +83,8 @@ class X11MouseRouting(unittest.TestCase):
 for case in ('stale_slave_master', 'slave_no_scroll', 'smooth_scroll', 'highres_momentum', 'v120_scroll',
              'disabled_raw', 'disabled_relative', 'core_fallback_duplicate', 'unknown_window_warp', 'emulated_wheel_position', 'core_wheel_fallback', 'real_button_position',
              'first_wheel_after_focus', 'first_wheel_after_entry', 'refresh_failure_and_matching',
-             'focus_outside_then_enter', 'entry_discards_valid_baselines', 'leave_after_entering_sibling', 'second_master_pointer'):
+             'focus_outside_then_enter', 'entry_discards_valid_baselines', 'leave_after_entering_sibling', 'second_master_pointer',
+             'destroy_clears_pointer_window'):
     setattr(X11MouseRouting, 'test_' + case, lambda self, name=case: self.check_case(name))
 
 if __name__ == '__main__':

@@ -32,8 +32,10 @@ struct _GLFWwindow {
     bool rawMouseMotion;
     int mouseButtons[8];
     double virtualCursorPosX, virtualCursorPosY;
-    struct { Window handle; int warpCursorPosX, warpCursorPosY, lastCursorPosX, lastCursorPosY; } x11;
+    struct { Window handle; Colormap colormap; int warpCursorPosX, warpCursorPosY, lastCursorPosX, lastCursorPosY; } x11;
     struct { void (*cursorPos)(GLFWwindow*,double,double); } callbacks;
+    struct { void (*destroy)(_GLFWwindow*); } context;
+    void *monitor;
 };
 /* SCROLL_TYPES */
 static struct {
@@ -72,6 +74,16 @@ static void updateCursorImage(_GLFWwindow *w) { (void)w; }
 static void _glfwInputCursorEnter(_GLFWwindow *w,bool entered) { (void)w; (void)entered; }
 static void _glfwInputWindowFocus(_GLFWwindow *w,bool focused) { (void)w; (void)focused; }
 static void disableCursor(_GLFWwindow *w) { (void)w; }
+static int destroyed_handles;
+static void releaseMonitor(_GLFWwindow *w) { (void)w; }
+static int fixture_delete_context(Display *d, Window w, int context) { (void)d; (void)context; if (w) destroyed_handles++; return 0; }
+static int fixture_window_request(Display *d, Window w) { (void)d; (void)w; return 1; }
+static int fixture_flush(Display *d) { (void)d; return 1; }
+#define XDeleteContext fixture_delete_context
+#define XUnmapWindow fixture_window_request
+#define XDestroyWindow fixture_window_request
+#define XFreeColormap fixture_window_request
+#define XFlush fixture_flush
 /* REFRESH_FUNCTIONS */
 static GLFWScrollEvent last_scroll;
 static const int momentum_scroll_gesture_detection_timeout_ms = 100;
@@ -124,11 +136,14 @@ static void leave(XEvent *event, _GLFWwindow *window) {
     (void)event;
 /* LEAVE_BODY */
 }
+static void destroy(_GLFWwindow *window) {
+/* DESTROY_BODY */
+}
 static void reset(void) {
     memset(&_glfw,0,sizeof(_glfw)); memset(&window,0,sizeof(window));
     memset(&x11_momentum_scroll_state,0,sizeof(x11_momentum_scroll_state));
     position_count=scroll_count=timer_cancels=momentum_cancels=momentum_count=0;
-    click_count=query_count=free_count=0; query_failure=false;
+    click_count=query_count=free_count=destroyed_handles=0; query_failure=false;
     seed_class=(XIValuatorClassInfo){.type=XIValuatorClass,.sourceid=14,.number=2,.value=10};
     seed_classes[0]=(XIAnyClassInfo*)&seed_class;
     seed_device=(XIDeviceInfo){.deviceid=14,.num_classes=1,.classes=seed_classes};
@@ -287,6 +302,16 @@ int main(int argc,char **argv) {
         motion(2,600,500); assert(position_count==1 && window.virtualCursorPosX==600);
         motion(8,700,400); assert(position_count==2 && window.virtualCursorPosX==700 && window.virtualCursorPosY==400);
         motion(14,1,1); motion(9,1,1); assert(position_count==2);
+    } else if (!strcmp(argv[1],"destroy_clears_pointer_window")) {
+        /* After XDeleteContext the closed window's LeaveNotify is never dispatched, so
+           destruction must forget it, or FocusIn would query with the pointer outside. */
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES);
+        _glfw.x11.xi.pointer_window=42;
+        _GLFWwindow other=window; other.x11.handle=77;
+        destroy(&other); assert(destroyed_handles==1 && _glfw.x11.xi.pointer_window==42);
+        destroy(&window); assert(destroyed_handles==2 && window.x11.handle==0 && _glfw.x11.xi.pointer_window==None);
+        XEvent ev={0}; ev.xfocus.mode=NotifyNormal; focus(&ev,&other);
+        assert(query_count==0 && !d->valuators[0].initialized);
     } else if (!strcmp(argv[1],"unknown_window_warp")) {
         XIDeviceEvent de={.deviceid=2,.sourceid=14,.event=77,.event_x=900,.event_y=800};
         XEvent ev={0}; ev.xcookie.data=&de; route(&ev); assert(position_count==0);
