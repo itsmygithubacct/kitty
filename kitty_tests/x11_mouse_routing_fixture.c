@@ -61,10 +61,14 @@ static XIAnyClassInfo *seed_classes[1];
 static XIDeviceInfo seed_device;
 static inline void _glfwGrabErrorHandlerX11(void) {}
 static inline void _glfwReleaseErrorHandlerX11(void) {}
+/* Each query uses up one request number; events default to the last request processed. */
+static unsigned long next_request, event_serial;
+static inline unsigned long fixture_next_request(Display *display) { (void)display; return next_request; }
 static inline XIDeviceInfo *fixture_query(Display *display,int device,int *count) {
-    (void)display; (void)device; query_count++;
+    (void)display; (void)device; query_count++; next_request++;
     *count=query_failure ? 0 : 1; return query_failure ? NULL : &seed_device;
 }
+#define XNextRequest fixture_next_request
 static inline void fixture_free(XIDeviceInfo *info) { (void)info; free_count++; }
 #define XIQueryDevice fixture_query
 #define XIFreeDeviceInfo fixture_free
@@ -144,6 +148,7 @@ static void reset(void) {
     memset(&x11_momentum_scroll_state,0,sizeof(x11_momentum_scroll_state));
     position_count=scroll_count=timer_cancels=momentum_cancels=momentum_count=0;
     click_count=query_count=free_count=destroyed_handles=0; query_failure=false;
+    next_request=100; event_serial=0;
     seed_class=(XIValuatorClassInfo){.type=XIValuatorClass,.sourceid=14,.number=2,.value=10};
     seed_classes[0]=(XIAnyClassInfo*)&seed_class;
     seed_device=(XIDeviceInfo){.deviceid=14,.num_classes=1,.classes=seed_classes};
@@ -170,7 +175,7 @@ static XIScrollDevice *scroll_device(int type) {
 }
 static void scroll(int device,double value) {
     unsigned char mask=4;
-    XIDeviceEvent de={.deviceid=device,.sourceid=14,.event=42,.event_x=999,.event_y=999};
+    XIDeviceEvent de={.serial=event_serial ? event_serial : next_request-1,.deviceid=device,.sourceid=14,.event=42,.event_x=999,.event_y=999};
     de.valuators.mask=&mask; de.valuators.mask_len=1; de.valuators.values=&value;
     XEvent ev={0}; ev.xcookie.data=&de; route(&ev);
 }
@@ -304,6 +309,15 @@ int main(int argc,char **argv) {
         motion(2,600,500); assert(position_count==1 && window.virtualCursorPosX==600);
         motion(8,700,400); assert(position_count==2 && window.virtualCursorPosX==700 && window.virtualCursorPosY==400);
         motion(14,1,1); motion(9,1,1); assert(position_count==2);
+    } else if (!strcmp(argv[1],"entry_query_race")) {
+        /* Two notches (11, 12) were generated after the EnterNotify but before the server
+           answered the query (request 100), so its reply (12) already counts them. */
+        scroll_device(GLFW_SCROLL_OFFSET_LINES); seed_class.value=12;
+        XEvent en={0}; en.xcrossing.x=50; en.xcrossing.y=60; enter(&en,&window);
+        assert(query_count==1 && next_request==101);
+        event_serial=99; scroll(14,11); assert(scroll_count==0);
+        scroll(14,12); assert(scroll_count==1 && last_scroll.y_offset==-1);
+        event_serial=0; scroll(14,13); assert(scroll_count==2 && last_scroll.y_offset==-1);
     } else if (!strcmp(argv[1],"destroy_clears_pointer_window")) {
         /* After XDeleteContext the closed window's LeaveNotify is never dispatched, so
            destruction must forget it, or FocusIn would query with the pointer outside. */

@@ -583,6 +583,7 @@ refreshScrollValuators(void) {
         if (!needs_refresh) continue;
         int count = 0;
         _glfwGrabErrorHandlerX11();
+        const unsigned long serial = XNextRequest(_glfw.x11.display);
         XIDeviceInfo *devices = XIQueryDevice(_glfw.x11.display, d->deviceid, &count);
         if (devices) {
             for (int n = 0; n < count; n++) {
@@ -597,6 +598,7 @@ refreshScrollValuators(void) {
                         if (!v->initialized && v->number == vi->number) {
                             v->value = vi->value;
                             v->initialized = true;
+                            v->refresh_serial = serial;
                         }
                     }
                 }
@@ -1466,6 +1468,14 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
                 if (t->number == i) { v = t; break; }
             }
             if (!v) continue;
+            // A queried baseline already counts every event the server
+            // generated before it answered, and those events can still be
+            // queued behind the EnterNotify or FocusIn. Measured against it
+            // their deltas are zero or reversed, so the first of them becomes
+            // the baseline instead, as for an uninitialized valuator.
+            if (v->refresh_serial && (long)(de->serial - v->refresh_serial) < 0)
+                v->initialized = false;
+            v->refresh_serial = 0;
             if (!v->initialized) {
                 v->initialized = true;
                 v->value = value;
