@@ -1383,8 +1383,20 @@ number_has_fractional_part(double x) {
 
 static void
 handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
+    if (de->deviceid == _glfw.x11.xi.master_pointer_id) {
+        // Slave XI_Motion can carry the master's previous position. Only the
+        // master event has authoritative window coordinates for pointer motion.
+        // Scroll-only master events must not cancel momentum started by a slave.
+        const int x = (int)de->event_x, y = (int)de->event_y;
+        if (x != window->x11.lastCursorPosX || y != window->x11.lastCursorPosY) {
+            x11_cancel_momentum_scroll_timer();
+            glfw_cancel_momentum_scroll();
+        }
+        handle_mouse_move_event(window, x, y);
+        return;
+    }
+    // Slave events supply per-device scroll valuators, never pointer position.
     XIScrollDevice *d = NULL;
-    bool scroll_valuator_found = false;
     for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
         XIScrollDevice *t = &_glfw.x11.xi.scroll_devices[i];
         if (t->deviceid == de->deviceid && t->sourceid == de->sourceid) {
@@ -1405,7 +1417,6 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
                 if (t->number == i) { v = t; break; }
             }
             if (!v) continue;
-            scroll_valuator_found = true;
             if (!v->initialized) {
                 v->initialized = true;
                 v->value = value;
@@ -1483,11 +1494,6 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
                 _glfwInputScroll(window, &ev);
             }
         }
-    }
-    if (!scroll_valuator_found) {
-        x11_cancel_momentum_scroll_timer();
-        glfw_cancel_momentum_scroll();
-        handle_mouse_move_event(window, (int)de->event_x, (int)de->event_y);
     }
 }
 
@@ -2214,12 +2220,10 @@ static void processEvent(XEvent *event)
                 else if (event->xcookie.evtype == XI_Motion)
                 {
                     XIDeviceEvent* de = (XIDeviceEvent*)event->xcookie.data;
-                    if (de->deviceid != _glfw.x11.xi.master_pointer_id) {
-                        // Find the window for this event
-                        _GLFWwindow* window = NULL;
-                        if (XFindContext(_glfw.x11.display, de->event, _glfw.x11.context, (XPointer*)&window) == 0)
-                            handle_xi_motion_event(window, de);
-                    }
+                    // Route master position and slave scroll valuators separately.
+                    _GLFWwindow* window = NULL;
+                    if (XFindContext(_glfw.x11.display, de->event, _glfw.x11.context, (XPointer*)&window) == 0)
+                        handle_xi_motion_event(window, de);
                 }
                 // Handle XI_HierarchyChanged for device hotplug
                 else if (event->xcookie.evtype == XI_HierarchyChanged)
