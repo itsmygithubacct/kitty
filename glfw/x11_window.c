@@ -567,6 +567,43 @@ resetScrollValuators(void) {
     }
 }
 
+// Refresh invalidated baselines before input resumes, not from the first
+// scroll event (which would discard that event's delta). Keep device metadata
+// and scroll-type detection; only update matching, uninitialized valuators.
+static void
+refreshScrollValuators(void) {
+    for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
+        XIScrollDevice *d = &_glfw.x11.xi.scroll_devices[i];
+        bool needs_refresh = false;
+        for (unsigned k = 0; k < d->num_valuators; k++)
+            if (!d->valuators[k].initialized) needs_refresh = true;
+        if (!needs_refresh) continue;
+        int count = 0;
+        _glfwGrabErrorHandlerX11();
+        XIDeviceInfo *devices = XIQueryDevice(_glfw.x11.display, d->deviceid, &count);
+        if (devices) {
+            for (int n = 0; n < count; n++) {
+                XIDeviceInfo *device = devices + n;
+                if (device->deviceid != d->deviceid) continue;
+                for (int c = 0; c < device->num_classes; c++) {
+                    if (device->classes[c]->type != XIValuatorClass) continue;
+                    XIValuatorClassInfo *vi = (XIValuatorClassInfo*)device->classes[c];
+                    if (vi->sourceid != d->sourceid || !isfinite(vi->value)) continue;
+                    for (unsigned k = 0; k < d->num_valuators; k++) {
+                        XIScrollValuator *v = d->valuators + k;
+                        if (!v->initialized && v->number == vi->number) {
+                            v->value = vi->value;
+                            v->initialized = true;
+                        }
+                    }
+                }
+            }
+            XIFreeDeviceInfo(devices);
+        }
+        _glfwReleaseErrorHandlerX11();
+    }
+}
+
 // Apply disabled cursor mode to a focused window
 //
 static void disableCursor(_GLFWwindow* window)
@@ -2394,6 +2431,12 @@ static void processEvent(XEvent *event)
 
         case ButtonPress:
         {
+            // XI scroll valuators already handle emulated wheel buttons. Their
+            // core coordinates can differ from the authoritative XI position.
+            // Ignore the whole event before it can generate a spurious motion.
+            if (_glfw.x11.xi.num_scroll_devices &&
+                event->xbutton.button >= Button4 && event->xbutton.button <= Button7)
+                return;
             const int mods = translateState(event->xbutton.state);
 
             // A pointer warp or window move need not deliver a preceding
@@ -2455,6 +2498,12 @@ static void processEvent(XEvent *event)
 
         case ButtonRelease:
         {
+            // XI scroll valuators already handle emulated wheel buttons. Their
+            // core coordinates can differ from the authoritative XI position.
+            // Ignore the whole event before it can generate a spurious motion.
+            if (_glfw.x11.xi.num_scroll_devices &&
+                event->xbutton.button >= Button4 && event->xbutton.button <= Button7)
+                return;
             const int mods = translateState(event->xbutton.state);
 
             // Handle drag drop on button release
@@ -2508,6 +2557,7 @@ static void processEvent(XEvent *event)
 
         case EnterNotify:
         {
+            refreshScrollValuators();
             // XEnterWindowEvent is XCrossingEvent
             const int x = event->xcrossing.x;
             const int y = event->xcrossing.y;
@@ -2656,6 +2706,8 @@ static void processEvent(XEvent *event)
                 // key chords and window dragging
                 return;
             }
+
+            refreshScrollValuators();
 
             if (window->cursorMode == GLFW_CURSOR_DISABLED)
                 disableCursor(window);

@@ -40,6 +40,11 @@ class X11MouseRouting(unittest.TestCase):
             'XI_DISPATCH_BODY': body(source, 'else if (event->xcookie.evtype == XI_Motion)'),
             'RAW_DISPATCH_BODY': body(source, 'if (event->xcookie.evtype == XI_RawMotion)'),
             'CORE_DISPATCH_BODY': body(source, 'case MotionNotify:'),
+            'PRESS_BODY': body(source, 'case ButtonPress:'),
+            'RELEASE_BODY': body(source, 'case ButtonRelease:'),
+            'REFRESH_FUNCTIONS': source[source.index('static void\nresetScrollValuators'):source.index('// Apply disabled cursor mode to a focused window')],
+            'ENTER_BODY': body(source, 'case EnterNotify:'),
+            'FOCUS_BODY': body(source, 'case FocusIn:'),
         }
         for name, value in pieces.items():
             fixture = fixture.replace('/* ' + name + ' */', value)
@@ -56,7 +61,8 @@ class X11MouseRouting(unittest.TestCase):
 
 
 for case in ('stale_slave_master', 'slave_no_scroll', 'smooth_scroll', 'highres_momentum', 'v120_scroll',
-             'disabled_raw', 'disabled_relative', 'core_fallback_duplicate', 'unknown_window_warp'):
+             'disabled_raw', 'disabled_relative', 'core_fallback_duplicate', 'unknown_window_warp', 'emulated_wheel_position', 'core_wheel_fallback', 'real_button_position',
+             'first_wheel_after_focus', 'first_wheel_after_entry', 'refresh_failure_and_matching'):
     setattr(X11MouseRouting, 'test_' + case, lambda self, name=case: self.check_case(name))
 
 if __name__ == '__main__':
