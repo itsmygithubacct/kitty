@@ -161,9 +161,12 @@ read_xi_scroll_devices(void) {
     _glfwGrabErrorHandlerX11();
     XIDeviceInfo* devices = XIQueryDevice(_glfw.x11.display, XIAllDevices, &deviceCount);
     if (!devices) { _glfwReleaseErrorHandlerX11(); return; }
+    _glfw.x11.xi.num_master_pointers = 0;
     for (int i = 0; i < deviceCount; i++) {
         XIDeviceInfo* device = &devices[i];
-        if (device->use == XIMasterPointer) _glfw.x11.xi.master_pointer_id = device->deviceid;
+        if (device->use == XIMasterPointer &&
+            _glfw.x11.xi.num_master_pointers < arraysz(_glfw.x11.xi.master_pointer_ids))
+            _glfw.x11.xi.master_pointer_ids[_glfw.x11.xi.num_master_pointers++] = device->deviceid;
         if (device->use != XISlavePointer || !device->enabled) continue;
         Atom actual_type;
         int actual_format;
