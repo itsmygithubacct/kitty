@@ -237,6 +237,8 @@ typedef struct AtomArray {
 
 typedef struct XIScrollValuator {
     double increment, value, min, max; int number, resolution, mode; bool is_vertical, initialized;
+    // Request serial of the XIQueryDevice that set value, 0 once an event has.
+    unsigned long refresh_serial;
 } XIScrollValuator;
 
 typedef struct XIScrollDevice {
