@@ -2599,8 +2599,11 @@ static void processEvent(XEvent *event)
 
         case LeaveNotify:
         {
-            // When the pointer went straight into another of our windows and
-            // that EnterNotify came first, its fresh baselines must survive.
+            // Keep the baselines when pointer_window is another of our windows,
+            // whose EnterNotify was handled first. This is defensive for one
+            // pointer, whose LeaveNotify the server sends before its
+            // EnterNotify. It does happen with a second master pointer, which
+            // can set pointer_window (see the known limit in x11_platform.h).
             if (_glfw.x11.xi.pointer_window == window->x11.handle ||
                 _glfw.x11.xi.pointer_window == None) {
                 _glfw.x11.xi.pointer_window = None;

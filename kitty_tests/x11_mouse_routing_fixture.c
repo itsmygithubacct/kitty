@@ -287,7 +287,9 @@ int main(int argc,char **argv) {
         assert(query_count==1 && d->valuators[0].value==30);
         scroll(14,31); assert(scroll_count==1 && last_scroll.y_offset==-1);
     } else if (!strcmp(argv[1],"leave_after_entering_sibling")) {
-        /* EnterNotify for another of our windows arrived before this LeaveNotify. */
+        /* pointer_window is another of our windows when this LeaveNotify comes. One pointer's
+           crossings never arrive in that order (LeaveNotify first); a second master pointer's
+           EnterNotify can set it. The branch is defensive; this pins what it does. */
         XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); d->valuators[0].initialized=true; d->valuators[0].value=10;
         _glfw.x11.xi.pointer_window=77;
         XEvent ev={0}; leave(&ev,&window);
