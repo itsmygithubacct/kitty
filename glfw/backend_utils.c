@@ -8,6 +8,7 @@
 #define _GNU_SOURCE
 #include "backend_utils.h"
 #include "internal.h"
+#include "x11_mouse_trace.h"
 #include "memfd.h"
 
 #include <stdlib.h>
@@ -328,8 +329,10 @@ pollForEvents(EventLoopData *eld, monotonic_t timeout, watch_callback_func displ
     while(1) {
         if (timeout >= 0) {
             errno = 0;
+            x11_mouse_trace("poll_enter", "timeout_ns=%lld display_fd=%d watches=%lu", (long long)timeout, eld->fds[0].fd, (unsigned long)eld->watches_count);
             result = pollWithTimeout(eld->fds, eld->watches_count, timeout);
             int saved_errno = errno;
+            x11_mouse_trace("poll_return", "result=%d errno=%d display_revents=%d", result, saved_errno, (int)eld->fds[0].revents);
             if (display_callback) display_callback(result, eld->fds[0].revents && eld->watches[0].events, NULL);
             dispatchTimers(eld);
             if (result > 0) {
@@ -343,8 +346,10 @@ pollForEvents(EventLoopData *eld, monotonic_t timeout, watch_callback_func displ
             break;
         } else {
             errno = 0;
+            x11_mouse_trace("poll_enter", "timeout_ns=-1 display_fd=%d watches=%lu", eld->fds[0].fd, (unsigned long)eld->watches_count);
             result = poll(eld->fds, eld->watches_count, -1);
             int saved_errno = errno;
+            x11_mouse_trace("poll_return", "result=%d errno=%d display_revents=%d", result, saved_errno, (int)eld->fds[0].revents);
             if (display_callback) display_callback(result, eld->fds[0].revents && eld->watches[0].events, NULL);
             dispatchTimers(eld);
             if (result > 0) {
@@ -355,6 +360,7 @@ pollForEvents(EventLoopData *eld, monotonic_t timeout, watch_callback_func displ
             break;
         }
     }
+    x11_mouse_trace("poll_callbacks_done", "read_ok=%d display_revents=%d wakeup_ready=%d", read_ok, (int)eld->fds[0].revents, (int)eld->wakeup_fd_ready);
     return read_ok;
 }
 

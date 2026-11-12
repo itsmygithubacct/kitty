@@ -29,6 +29,7 @@
 
 #define _GNU_SOURCE
 #include "internal.h"
+#include "x11_mouse_trace.h"
 #include "math.h"
 #include "backend_utils.h"
 #include "linux_notify.h"
@@ -95,6 +96,14 @@ x11_cancel_momentum_scroll_timer(void) {
 //
 static unsigned _glfwDispatchX11Events(void);
 
+static void trace_x11_queue(const char *phase) {
+    if (x11_mouse_trace_fd() < 0) return;
+    /* QueuedAlready only observes Xlib's queue; do not force a read or flush. */
+    int queued = XEventsQueued(_glfw.x11.display, QueuedAlready);
+    x11_mouse_trace(phase, "xlib_queued=%d display_fd=%d", queued, ConnectionNumber(_glfw.x11.display));
+}
+
+
 // Forward declarations for drag source helper functions
 static void xdnd_handle_selection_request(const XSelectionRequestEvent *request);
 static bool xdnd_send_increment(XPropertyEvent *event);
@@ -112,15 +121,21 @@ static bool render_drag_thumbnail_to_pixmap(const GLFWimage* thumbnail);
 static void
 handleEvents(monotonic_t timeout) {
     EVDBG("starting handleEvents(%.2f)", monotonic_t_to_s_double(timeout));
+    trace_x11_queue("handle_before_poll");
+    x11_mouse_trace("handle_timeout", "timeout_ns=%lld", (long long)timeout);
     int display_read_ok = pollForEvents(&_glfw.x11.eventLoopData, timeout, NULL);
+    x11_mouse_trace("handle_after_poll", "display_read_ok=%d display_revents=%d", display_read_ok, (int)_glfw.x11.eventLoopData.fds[0].revents);
+    trace_x11_queue("handle_after_poll_queue");
     EVDBG("display_read_ok: %d", display_read_ok);
     if (display_read_ok) {
         unsigned dispatched = _glfwDispatchX11Events();
         (void)dispatched;
         EVDBG("dispatched %u X11 events", dispatched);
     }
+    trace_x11_queue("handle_before_bus");
     glfw_ibus_dispatch(&_glfw.x11.xkb.ibus);
     glfw_dbus_session_bus_dispatch();
+    trace_x11_queue("handle_after_bus");
     EVDBG("other dispatch done");
     if (_glfw.x11.eventLoopData.wakeup_fd_ready) check_for_wakeup_events(&_glfw.x11.eventLoopData);
 }
@@ -1362,6 +1377,9 @@ static void onConfigChange(void)
 
 static void
 handle_mouse_move_event(_GLFWwindow *window, const int x, const int y) {
+    x11_mouse_trace("motion_handler", "window=%lu x=%d y=%d cursor_mode=%d warp_x=%d warp_y=%d last_x=%d last_y=%d",
+                    window->x11.handle, x, y, window->cursorMode, window->x11.warpCursorPosX, window->x11.warpCursorPosY,
+                    window->x11.lastCursorPosX, window->x11.lastCursorPosY);
     if (x != window->x11.warpCursorPosX || y != window->x11.warpCursorPosY) {
         // The cursor was moved by something other than GLFW
         if (window->cursorMode == GLFW_CURSOR_DISABLED) {
@@ -2214,6 +2232,9 @@ static void processEvent(XEvent *event)
                 else if (event->xcookie.evtype == XI_Motion)
                 {
                     XIDeviceEvent* de = (XIDeviceEvent*)event->xcookie.data;
+                    x11_mouse_trace("xi_motion", "serial=%lu server_ms=%lu window=%lu device=%d source=%d master=%d x=%.6f y=%.6f root_x=%.6f root_y=%.6f flags=%d",
+                                    event->xany.serial, de->time, de->event, de->deviceid, de->sourceid,
+                                    _glfw.x11.xi.master_pointer_id, de->event_x, de->event_y, de->root_x, de->root_y, de->flags);
                     if (de->deviceid != _glfw.x11.xi.master_pointer_id) {
                         // Find the window for this event
                         _GLFWwindow* window = NULL;
@@ -3663,11 +3684,19 @@ void _glfwPlatformSetWindowOpacity(_GLFWwindow* window, float opacity)
 static unsigned
 dispatch_x11_queued_events(int num_events) {
     unsigned dispatched = num_events > 0 ? num_events : 0;
+    x11_mouse_trace("batch_begin", "snapshot_count=%d", num_events);
     while (num_events-- > 0) {
         XEvent event;
         XNextEvent(_glfw.x11.display, &event);
+        x11_mouse_trace("dequeued", "type=%d serial=%lu send_event=%d remaining=%d", event.type, event.xany.serial, event.xany.send_event, num_events);
+        if (event.type == MotionNotify)
+            x11_mouse_trace("core_motion", "serial=%lu server_ms=%lu window=%lu x=%d y=%d root_x=%d root_y=%d state=%u hint=%d",
+                            event.xmotion.serial, event.xmotion.time, event.xmotion.window, event.xmotion.x, event.xmotion.y,
+                            event.xmotion.x_root, event.xmotion.y_root, event.xmotion.state, (int)event.xmotion.is_hint);
         processEvent(&event);
+        trace_x11_queue("after_process_event");
     }
+    trace_x11_queue("batch_end");
     return dispatched;
 }
 
@@ -3680,6 +3709,7 @@ _glfwDispatchX11Events(void) {
     if (_glfw.joysticksInitialized)
         _glfwDetectJoystickConnectionLinux();
 #endif
+    trace_x11_queue("dispatch_begin");
     dispatched += dispatch_x11_queued_events(XEventsQueued(_glfw.x11.display, QueuedAfterFlush));
 
     window = _glfw.x11.disabledCursorWindow;
@@ -3697,11 +3727,15 @@ _glfwDispatchX11Events(void) {
         }
     }
 
+    trace_x11_queue("before_flush");
     XFlush(_glfw.x11.display);
+    trace_x11_queue("after_flush");
     // XFlush can cause events to be queued, we don't use QueuedAfterFlush here
     // as something might have inserted events into the queue, but we want to guarantee
     // a flush.
     dispatched += dispatch_x11_queued_events(XEventsQueued(_glfw.x11.display, QueuedAlready));
+    trace_x11_queue("dispatch_end");
+    x11_mouse_trace("dispatch_count", "dispatched=%u", dispatched);
     return dispatched;
 }
 

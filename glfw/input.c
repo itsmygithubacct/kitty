@@ -28,6 +28,7 @@
 //========================================================================
 
 #include "internal.h"
+#include "x11_mouse_trace.h"
 #include "../kitty/monotonic.h"
 
 #include <assert.h>
@@ -388,14 +389,20 @@ void _glfwInputMouseClick(_GLFWwindow* window, int button, int action, int mods)
 //
 void _glfwInputCursorPos(_GLFWwindow* window, double xpos, double ypos)
 {
+    x11_mouse_trace("cursor_input", "window_id=%llu x=%.6f y=%.6f previous_x=%.6f previous_y=%.6f duplicate=%d",
+                    (unsigned long long)window->id, xpos, ypos, window->virtualCursorPosX, window->virtualCursorPosY,
+                    window->virtualCursorPosX == xpos && window->virtualCursorPosY == ypos);
     if (window->virtualCursorPosX == xpos && window->virtualCursorPosY == ypos)
         return;
 
     window->virtualCursorPosX = xpos;
     window->virtualCursorPosY = ypos;
 
-    if (window->callbacks.cursorPos)
+    if (window->callbacks.cursorPos) {
+        x11_mouse_trace("cursor_callback_enter", "window_id=%llu x=%.6f y=%.6f", (unsigned long long)window->id, xpos, ypos);
         window->callbacks.cursorPos((GLFWwindow*) window, xpos, ypos);
+        x11_mouse_trace("cursor_callback_exit", "window_id=%llu x=%.6f y=%.6f", (unsigned long long)window->id, xpos, ypos);
+    }
 }
 
 // Notifies shared code of a cursor enter/leave event
