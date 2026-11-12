@@ -526,7 +526,11 @@ typedef struct _GLFWlibraryX11
         PFN_XIGetProperty GetProperty;
         XIScrollDevice scroll_devices[16];
         unsigned num_scroll_devices;
-        int master_pointer_id;
+        // Every master pointer (there are several under MPX) and the Kilix
+        // window the pointer is currently inside, if any.
+        int master_pointer_ids[8];
+        unsigned num_master_pointers;
+        Window pointer_window;
         Atom LIBINPUT_SCROLL_METHOD_ENABLED, LIBINPUT_TAPPING;
     } xi;
 

@@ -32,14 +32,15 @@ struct _GLFWwindow {
     bool rawMouseMotion;
     int mouseButtons[8];
     double virtualCursorPosX, virtualCursorPosY;
-    struct { int warpCursorPosX, warpCursorPosY, lastCursorPosX, lastCursorPosY; } x11;
+    struct { Window handle; int warpCursorPosX, warpCursorPosY, lastCursorPosX, lastCursorPosY; } x11;
     struct { void (*cursorPos)(GLFWwindow*,double,double); } callbacks;
 };
 /* SCROLL_TYPES */
 static struct {
     struct {
         _GLFWwindow *disabledCursorWindow;
-        struct { unsigned num_scroll_devices; int master_pointer_id; XIScrollDevice scroll_devices[16]; } xi;
+        /* master_pointer_id is kept so that X11_MOUSE_SOURCE can compile earlier revisions. */
+        struct { unsigned num_scroll_devices, num_master_pointers; int master_pointer_id, master_pointer_ids[8]; Window pointer_window; XIScrollDevice scroll_devices[16]; } xi;
         double contentScaleX,contentScaleY;
         Display *display;
         int context;
@@ -119,6 +120,10 @@ static void enter(XEvent *event, _GLFWwindow *window) {
 static void focus(XEvent *event, _GLFWwindow *window) {
 /* FOCUS_BODY */
 }
+static void leave(XEvent *event, _GLFWwindow *window) {
+    (void)event;
+/* LEAVE_BODY */
+}
 static void reset(void) {
     memset(&_glfw,0,sizeof(_glfw)); memset(&window,0,sizeof(window));
     memset(&x11_momentum_scroll_state,0,sizeof(x11_momentum_scroll_state));
@@ -128,7 +133,9 @@ static void reset(void) {
     seed_classes[0]=(XIAnyClassInfo*)&seed_class;
     seed_device=(XIDeviceInfo){.deviceid=14,.num_classes=1,.classes=seed_classes};
     momentum_enabled=false; window.id=42; window.callbacks.cursorPos=position_callback;
+    window.x11.handle=42;
     _glfw.x11.xi.master_pointer_id=2;
+    _glfw.x11.xi.master_pointer_ids[0]=2; _glfw.x11.xi.num_master_pointers=1;
     _glfw.x11.contentScaleX=2; _glfw.x11.contentScaleY=3;
 }
 static void motion(int device,int x,int y) {
@@ -227,7 +234,7 @@ int main(int argc,char **argv) {
         assert(position_count==2 && click_count==3 && window.virtualCursorPosX==31);
     } else if (!strcmp(argv[1],"first_wheel_after_focus")) {
         XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); d->valuators[0].initialized=true; d->valuators[0].is_vertical=false;
-        resetScrollValuators();
+        resetScrollValuators(); _glfw.x11.xi.pointer_window=42;
         XEvent ev={0}; ev.xfocus.mode=NotifyNormal; focus(&ev,&window);
         assert(query_count==1 && free_count==1);
         scroll(14,11); assert(scroll_count==1 && last_scroll.x_offset==-1);
@@ -238,13 +245,48 @@ int main(int argc,char **argv) {
         XEvent ev={0}; ev.xcrossing.x=50; ev.xcrossing.y=60; enter(&ev,&window);
         scroll(14,21); assert(scroll_count==1 && last_scroll.y_offset==-1 && query_count==1);
     } else if (!strcmp(argv[1],"refresh_failure_and_matching")) {
-        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES);
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); _glfw.x11.xi.pointer_window=42;
         XEvent ev={0}; ev.xfocus.mode=NotifyGrab; focus(&ev,&window); assert(query_count==0);
         ev.xfocus.mode=NotifyNormal; query_failure=true; focus(&ev,&window);
         assert(query_count==1 && free_count==0 && !d->valuators[0].initialized);
         query_failure=false; seed_class.sourceid=99; focus(&ev,&window); assert(!d->valuators[0].initialized);
         seed_class.sourceid=14; seed_class.value=NAN; focus(&ev,&window); assert(!d->valuators[0].initialized);
         seed_class.value=20; focus(&ev,&window); assert(d->valuators[0].initialized && d->valuators[0].value==20);
+    } else if (!strcmp(argv[1],"focus_outside_then_enter")) {
+        /* Alt+Tab to the window, scroll another window 20 notches, then come in. */
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); d->valuators[0].initialized=true; d->valuators[0].value=10;
+        _glfw.x11.xi.pointer_window=42;
+        XEvent ev={0}; leave(&ev,&window);
+        assert(_glfw.x11.xi.pointer_window==None && !d->valuators[0].initialized);
+        ev.xfocus.mode=NotifyNormal; focus(&ev,&window);
+        assert(query_count==0 && !d->valuators[0].initialized);
+        seed_class.value=30;
+        XEvent en={0}; en.xcrossing.x=50; en.xcrossing.y=60; enter(&en,&window);
+        assert(query_count==1 && _glfw.x11.xi.pointer_window==42);
+        scroll(14,31); assert(scroll_count==1 && last_scroll.y_offset==-1);
+    } else if (!strcmp(argv[1],"entry_discards_valid_baselines")) {
+        /* Startup and hotplug seed baselines wherever the pointer is. */
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); d->valuators[0].initialized=true; d->valuators[0].value=10;
+        seed_class.value=30;
+        XEvent en={0}; en.xcrossing.x=50; en.xcrossing.y=60; enter(&en,&window);
+        assert(query_count==1 && d->valuators[0].value==30);
+        scroll(14,31); assert(scroll_count==1 && last_scroll.y_offset==-1);
+    } else if (!strcmp(argv[1],"leave_after_entering_sibling")) {
+        /* EnterNotify for another of our windows arrived before this LeaveNotify. */
+        XIScrollDevice *d=scroll_device(GLFW_SCROLL_OFFSET_LINES); d->valuators[0].initialized=true; d->valuators[0].value=10;
+        _glfw.x11.xi.pointer_window=77;
+        XEvent ev={0}; leave(&ev,&window);
+        assert(_glfw.x11.xi.pointer_window==77 && d->valuators[0].initialized);
+        scroll(14,11); assert(scroll_count==1 && last_scroll.y_offset==-1);
+        _glfw.x11.xi.pointer_window=None; leave(&ev,&window); assert(!d->valuators[0].initialized);
+    } else if (!strcmp(argv[1],"second_master_pointer")) {
+        /* MPX: both master pointers position, in either listing order. */
+        _glfw.x11.xi.master_pointer_id=8;
+        _glfw.x11.xi.master_pointer_ids[1]=8; _glfw.x11.xi.num_master_pointers=2;
+        set_position(10,10);
+        motion(2,600,500); assert(position_count==1 && window.virtualCursorPosX==600);
+        motion(8,700,400); assert(position_count==2 && window.virtualCursorPosX==700 && window.virtualCursorPosY==400);
+        motion(14,1,1); motion(9,1,1); assert(position_count==2);
     } else if (!strcmp(argv[1],"unknown_window_warp")) {
         XIDeviceEvent de={.deviceid=2,.sourceid=14,.event=77,.event_x=900,.event_y=800};
         XEvent ev={0}; ev.xcookie.data=&de; route(&ev); assert(position_count==0);

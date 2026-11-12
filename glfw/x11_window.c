@@ -570,6 +570,9 @@ resetScrollValuators(void) {
 // Refresh invalidated baselines before input resumes, not from the first
 // scroll event (which would discard that event's delta). Keep device metadata
 // and scroll-type detection; only update matching, uninitialized valuators.
+// Only call this while the pointer is inside one of our windows: a device's
+// valuators keep moving when the user scrolls other windows, and no event
+// tells us, so a baseline taken while the pointer is elsewhere goes stale.
 static void
 refreshScrollValuators(void) {
     for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
@@ -1420,9 +1423,16 @@ number_has_fractional_part(double x) {
     return fabs(x - round(x)) >= 1e-6;
 }
 
+static bool
+is_master_pointer(int deviceid) {
+    for (unsigned i = 0; i < _glfw.x11.xi.num_master_pointers; i++)
+        if (_glfw.x11.xi.master_pointer_ids[i] == deviceid) return true;
+    return false;
+}
+
 static void
 handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
-    if (de->deviceid == _glfw.x11.xi.master_pointer_id) {
+    if (is_master_pointer(de->deviceid)) {
         // Slave XI_Motion can carry the master's previous position. Only the
         // master event has authoritative window coordinates for pointer motion.
         // Scroll-only master events must not cancel momentum started by a slave.
@@ -2431,8 +2441,12 @@ static void processEvent(XEvent *event)
 
         case ButtonPress:
         {
-            // XI scroll valuators already handle emulated wheel buttons. Their
-            // core coordinates can differ from the authoritative XI position.
+            // With a scroll-class device present, scrolling comes from its XI
+            // valuators and core wheel buttons are taken to be the server's
+            // emulation of them, whose coordinates can differ from the XI
+            // position. This is a heuristic: XIPointerEmulated is not visible
+            // here, so wheel buttons from a device without scroll classes
+            // (XTest, some tablet pads) are dropped too, as they were before.
             // Ignore the whole event before it can generate a spurious motion.
             if (_glfw.x11.xi.num_scroll_devices &&
                 event->xbutton.button >= Button4 && event->xbutton.button <= Button7)
@@ -2498,8 +2512,12 @@ static void processEvent(XEvent *event)
 
         case ButtonRelease:
         {
-            // XI scroll valuators already handle emulated wheel buttons. Their
-            // core coordinates can differ from the authoritative XI position.
+            // With a scroll-class device present, scrolling comes from its XI
+            // valuators and core wheel buttons are taken to be the server's
+            // emulation of them, whose coordinates can differ from the XI
+            // position. This is a heuristic: XIPointerEmulated is not visible
+            // here, so wheel buttons from a device without scroll classes
+            // (XTest, some tablet pads) are dropped too, as they were before.
             // Ignore the whole event before it can generate a spurious motion.
             if (_glfw.x11.xi.num_scroll_devices &&
                 event->xbutton.button >= Button4 && event->xbutton.button <= Button7)
@@ -2557,6 +2575,10 @@ static void processEvent(XEvent *event)
 
         case EnterNotify:
         {
+            // Scrolling done elsewhere moved the valuators without any event
+            // reaching us, so every entry discards the old baselines.
+            _glfw.x11.xi.pointer_window = window->x11.handle;
+            resetScrollValuators();
             refreshScrollValuators();
             // XEnterWindowEvent is XCrossingEvent
             const int x = event->xcrossing.x;
@@ -2577,7 +2599,13 @@ static void processEvent(XEvent *event)
 
         case LeaveNotify:
         {
-            resetScrollValuators();
+            // When the pointer went straight into another of our windows and
+            // that EnterNotify came first, its fresh baselines must survive.
+            if (_glfw.x11.xi.pointer_window == window->x11.handle ||
+                _glfw.x11.xi.pointer_window == None) {
+                _glfw.x11.xi.pointer_window = None;
+                resetScrollValuators();
+            }
             _glfwInputCursorEnter(window, false);
             return;
         }
@@ -2707,7 +2735,8 @@ static void processEvent(XEvent *event)
                 return;
             }
 
-            refreshScrollValuators();
+            // Keyboard focus says nothing about where the pointer is.
+            if (_glfw.x11.xi.pointer_window != None) refreshScrollValuators();
 
             if (window->cursorMode == GLFW_CURSOR_DISABLED)
                 disableCursor(window);
@@ -2965,6 +2994,9 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
 {
     if (_glfw.x11.disabledCursorWindow == window)
         _glfw.x11.disabledCursorWindow = NULL;
+
+    if (window->x11.handle && _glfw.x11.xi.pointer_window == window->x11.handle)
+        _glfw.x11.xi.pointer_window = None;
 
     if (window->monitor)
         releaseMonitor(window);
