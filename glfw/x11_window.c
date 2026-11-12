@@ -575,19 +575,24 @@ resetScrollValuators(void) {
 // tells us, so a baseline taken while the pointer is elsewhere goes stale.
 static void
 refreshScrollValuators(void) {
+    bool needs_refresh = false;
     for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
-        XIScrollDevice *d = &_glfw.x11.xi.scroll_devices[i];
-        bool needs_refresh = false;
+        const XIScrollDevice *d = &_glfw.x11.xi.scroll_devices[i];
         for (unsigned k = 0; k < d->num_valuators; k++)
             if (!d->valuators[k].initialized) needs_refresh = true;
-        if (!needs_refresh) continue;
-        int count = 0;
-        _glfwGrabErrorHandlerX11();
-        const unsigned long serial = XNextRequest(_glfw.x11.display);
-        XIDeviceInfo *devices = XIQueryDevice(_glfw.x11.display, d->deviceid, &count);
-        if (devices) {
-            for (int n = 0; n < count; n++) {
-                XIDeviceInfo *device = devices + n;
+    }
+    if (!needs_refresh) return;
+    // One query covers every device. A query per device costs a round trip
+    // plus the XSync that releases the error handler, for each scroll device.
+    int count = 0;
+    _glfwGrabErrorHandlerX11();
+    const unsigned long serial = XNextRequest(_glfw.x11.display);
+    XIDeviceInfo *devices = XIQueryDevice(_glfw.x11.display, XIAllDevices, &count);
+    if (devices) {
+        for (int n = 0; n < count; n++) {
+            XIDeviceInfo *device = devices + n;
+            for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
+                XIScrollDevice *d = &_glfw.x11.xi.scroll_devices[i];
                 if (device->deviceid != d->deviceid) continue;
                 for (int c = 0; c < device->num_classes; c++) {
                     if (device->classes[c]->type != XIValuatorClass) continue;
@@ -603,10 +608,10 @@ refreshScrollValuators(void) {
                     }
                 }
             }
-            XIFreeDeviceInfo(devices);
         }
-        _glfwReleaseErrorHandlerX11();
+        XIFreeDeviceInfo(devices);
     }
+    _glfwReleaseErrorHandlerX11();
 }
 
 // Apply disabled cursor mode to a focused window
