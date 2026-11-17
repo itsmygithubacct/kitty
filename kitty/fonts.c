@@ -1103,6 +1103,11 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     ensure_glyph_render_scratch_space(rf.scale * global_glyph_render_scratch.lc->count);
     unsigned num_glyphs = 0, num_cells = rf.scale;
     const bool neuronte = neuronte_only(), bold = gpu_cell->attrs.bold, italic = gpu_cell->attrs.italic;
+    if (neuronte && cpu_cell->is_multicell && cpu_cell->x >= cell_scale(cpu_cell)) {
+        // A character two cells wide is drawn in its first cell only.
+        for (unsigned i = 0; i < rf.scale; i++) gpu_cell[i].sprite_idx = 0;
+        return;
+    }
     if (neuronte) {
         // One cell, one character: the first of the cell. Marks that follow
         // it and variation selectors are not drawn.
