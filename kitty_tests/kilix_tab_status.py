@@ -881,6 +881,257 @@ class TestStandIns(BaseTest):
                 self.ae(seen.pop()[3], expected)
 
 
+class TestGpuPrototype(BaseTest):
+    # KILIX_NEURONTE_GPU=auto: Neuronte's backend loader draws the bulk sizes; off unless asked for.
+
+    def nets(self, held: set[int], cpu_calls: list[int]) -> neuronte.Nets:
+        class Library:
+            def neuronte_untrained(self, handle: object, codepoint: int) -> int:
+                return 0 if codepoint in held else 1
+
+            def neuronte_coverage(self, handle: object, codepoint: int, width: int, height: int, samples: int, buf: object) -> int:
+                cpu_calls.append(codepoint)
+                return 0
+
+        nets = neuronte.Nets('', [])
+        nets.lib = Library()  # type: ignore[assignment]
+        nets.path_of[7] = '/weights/x.nrt'
+        return nets
+
+    def test_off_unless_asked_and_absent_library_is_not_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            with patch.dict(os.environ, {'GPU_TERMINAL_SETTINGS_FILE': os.path.join(root, 'none')}):
+                os.environ.pop(neuronte.GPU_KEY, None)
+                self.ae(neuronte.chrome_value(neuronte.GPU_KEY, 'off'), 'off')
+            drawer = neuronte.BackendDrawer(os.path.join(root, neuronte.BACKEND_LIBRARY), os.path.join(root, 'log'))
+            self.assertIsNone(drawer.lib)
+            self.assertIn('cannot load the backend loader', drawer.problem)
+            self.assertIsNone(drawer.coverage(os.path.join(root, 'x.nrt'), [0x25cf], 10, 20))
+            self.ae(drawer.choice(), (False, drawer.problem))
+            drawer.close()
+
+    def test_one_launch_draws_the_listed_symbols_the_file_holds(self) -> None:
+        import ctypes
+        cpu_calls: list[int] = []
+        launches: list[tuple[str, tuple[int, ...], int, int]] = []
+
+        class Drawer:
+            def coverage(self, path: str, codepoints: list[int], width: int, height: int) -> list[bytes] | None:
+                launches.append((path, tuple(codepoints), width, height))
+                return [bytes([cp & 0xff]) * (width * height) for cp in codepoints]
+
+        nets = self.nets({0xf028, 0xf073, 0xf0e7}, cpu_calls)
+        nets.gpu = Drawer()  # type: ignore[assignment]
+        handle = ctypes.c_void_p(7)
+        listed = (0xeab9, 0xf028, 0xf073, 0xf0e7)
+        self.ae(nets.bulk_coverage(handle, 0xf073, 4, 8, listed), bytes([0x73]) * 32)
+        # the character asked for first, then the listed ones the file holds; not 0xeab9
+        self.ae(launches, [('/weights/x.nrt', (0xf073, 0xf028, 0xf0e7), 4, 8)])
+        self.ae(nets.bulk_coverage(handle, 0xf028, 4, 8, listed), bytes([0x28]) * 32)
+        self.ae(len(launches), 1)                 # kept from the first launch
+        nets.bulk_coverage(handle, 0xf028, 5, 8, listed)
+        self.ae(len(launches), 2)                 # another size is another launch
+        self.ae(cpu_calls, [])
+        # a size asked for once stays on the CPU
+        nets.coverage_from(handle, 0xf028, 6, 8)
+        self.ae((len(launches), cpu_calls), (2, [0xf028]))
+
+    def test_the_cells_file_is_asked_before_the_gpu(self) -> None:
+        import ctypes
+        cpu_calls: list[int] = []
+        launches: list[tuple[int, ...]] = []
+
+        class Drawer:
+            def coverage(self, path: str, codepoints: list[int], width: int, height: int) -> list[bytes] | None:
+                launches.append(tuple(codepoints))
+                return [b'\x01' * (width * height) for _ in codepoints]
+
+        nets = self.nets({0xf028, 0xf073}, cpu_calls)
+        nets.gpu = Drawer()  # type: ignore[assignment]
+        held = {0xf028: b'\x07' * 32}
+        nets.from_cells = lambda handle, codepoint, width, height: held.get(codepoint)  # type: ignore[method-assign]
+        handle = ctypes.c_void_p(7)
+        self.ae(nets.bulk_coverage(handle, 0xf028, 4, 8, (0xf028, 0xf073)), b'\x07' * 32)
+        self.ae((launches, cpu_calls), ([], []))          # kept in the file: nothing is drawn anywhere
+        self.ae(nets.bulk_coverage(handle, 0xf073, 4, 8, (0xf028, 0xf073)), b'\x01' * 32)
+        self.ae(launches, [(0xf073, 0xf028)])             # not in the file: the prototype's path, as before
+
+    def fake_drawer(self, root: str, state: dict[str, object]) -> neuronte.BackendDrawer:
+        # a drawer whose loader is a stand-in that reports `state` (gpu, ready, reason, code) as it stands
+        class Loader:
+            def __init__(self) -> None:
+                self.opened = self.closed = 0
+                self.asked: list[int] = []
+                self.expected: list[int] = []
+
+            def neuronte_backend_open(self, path: bytes, width: int, height: int, handle: object) -> int:
+                self.opened += 1
+                if state.get('open', 0) == 0:
+                    handle._obj.value = 40 + self.opened  # type: ignore[attr-defined]
+                return int(state.get('open', 0))  # type: ignore[call-overload]
+
+            def neuronte_backend_coverage(self, handle: object, scalars: object, count: int, buf: object) -> int:
+                self.asked.append(count)
+                for k in range(len(buf)):  # type: ignore[arg-type]
+                    buf[k] = 1.0  # type: ignore[index]
+                state['gpu_glyphs' if state['ready'] else 'cpu_glyphs'] = (
+                    int(state.get('gpu_glyphs' if state['ready'] else 'cpu_glyphs', 0)) + count)  # type: ignore[call-overload]
+                return int(state.get('code', 0))  # type: ignore[call-overload]
+
+            def neuronte_backend_expect(self, handle: object, count: int) -> None:
+                self.expected.append(count)
+
+            def neuronte_backend_info(self, handle: object, info: object) -> None:
+                i = info._obj  # type: ignore[attr-defined]
+                i.gpu, i.ready = int(bool(state['gpu'])), int(bool(state['ready']))
+                i.min_glyphs = int(state.get('min_glyphs', 1))  # type: ignore[call-overload]
+                i.reason = str(state.get('reason', '')).encode()
+                i.backend = b'gpu-test' if state['gpu'] else b'cpu'
+                i.from_cpu, i.from_gpu = int(state.get('cpu_glyphs', 0)), int(state.get('gpu_glyphs', 0))  # type: ignore[call-overload]
+
+            def neuronte_backend_choice(self, info: object) -> int:
+                self.neuronte_backend_info(None, info)
+                return int(bool(state['gpu']))
+
+            def neuronte_backend_close(self, handle: object) -> None:
+                self.closed += 1
+
+        drawer = neuronte.BackendDrawer('', os.path.join(root, 'log'))
+        drawer.problem = ''
+        drawer.lib = Loader()  # type: ignore[assignment]
+        return drawer
+
+    def events(self, root: str) -> list[dict[str, object]]:
+        with open(os.path.join(root, 'log')) as f:
+            return [json.loads(line) for line in f]
+
+    def test_the_cpu_draws_whenever_the_loader_would(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            state: dict[str, object] = {'gpu': False, 'ready': False, 'reason': 'on battery'}
+            drawer = self.fake_drawer(root, state)
+            # on battery, warming, no backend.conf, a lost device: the loader says so, and nothing is asked of it
+            self.assertIsNone(drawer.coverage('/w/x.nrt', [65, 66], 2, 2))
+            self.assertIsNone(drawer.coverage('/w/x.nrt', [67], 2, 2))
+            self.ae(drawer.lib.asked, [])                               # type: ignore[union-attr]
+            self.ae(drawer.choice(), (False, 'on battery'))
+            # back on mains: the GPU is wanted but not open yet, so only what is needed now is asked
+            state.update(gpu=True, reason='a GPU was measured faster')
+            self.ae(drawer.coverage('/w/x.nrt', [65, 66, 67], 2, 2), [b'\xff' * 4])
+            self.ae(drawer.lib.asked, [1])                              # type: ignore[union-attr]
+            self.ae(drawer.lib.expected, [3])                           # type: ignore[union-attr]  # as a part of a job of three
+            # open: everything listed goes in one call
+            state.update(ready=True)
+            self.ae(drawer.coverage('/w/x.nrt', [65, 66, 67], 2, 2), [b'\xff' * 4] * 3)
+            self.ae(drawer.lib.asked, [1, 3])                           # type: ignore[union-attr]
+            self.ae(drawer.lib.expected, [3])                           # type: ignore[union-attr]
+            # a GPU that is only worth it for larger jobs than this one is not asked at all
+            state.update(min_glyphs=4)
+            self.assertIsNone(drawer.coverage('/w/x.nrt', [65, 66, 67], 2, 2))
+            self.ae(drawer.coverage('/w/x.nrt', [65, 66, 67, 68], 2, 2), [b'\xff' * 4] * 4)
+            self.ae(drawer.lib.asked, [1, 3, 4])                        # type: ignore[union-attr]
+            state.update(min_glyphs=1)
+            # the device fails: the loader answers that call from the CPU and reports the CPU from then on
+            state.update(gpu=False, ready=False, reason='device lost')
+            self.assertIsNone(drawer.coverage('/w/x.nrt', [65], 2, 2))
+            self.ae(drawer.lib.asked, [1, 3, 4])                        # type: ignore[union-attr]
+            self.ae(drawer.lib.opened, 1)                               # type: ignore[union-attr]
+            drawer.close()
+            self.ae(drawer.lib.closed, 1)                               # type: ignore[union-attr]
+            log = self.events(root)
+            self.ae([e['event'] for e in log], ['state', 'state', 'draw', 'state', 'draw', 'draw', 'state'])
+            self.ae([e['reason'] for e in log if e['event'] == 'state'],
+                    ['on battery', 'a GPU was measured faster', 'a GPU was measured faster', 'device lost'])
+            self.ae([(e['glyphs'], e['cpu'], e['gpu']) for e in log if e['event'] == 'draw'], [(1, 1, 0), (3, 0, 3), (4, 0, 4)])
+
+    def test_a_refused_file_and_a_failed_call_fall_back(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            state: dict[str, object] = {'gpu': True, 'ready': True, 'open': -2}
+            drawer = self.fake_drawer(root, state)
+            self.assertIsNone(drawer.coverage('/w/x.nrt', [65], 2, 2))      # the loader cannot open the file
+            self.assertIsNone(drawer.coverage('/w/x.nrt', [65], 2, 2))
+            self.ae(drawer.lib.opened, 1)                                   # type: ignore[union-attr]  # asked once
+            state.update(open=0, code=-1)
+            self.assertIsNone(drawer.coverage('/w/y.nrt', [65], 2, 2))      # a call the loader fails
+            state.update(code=0)
+            self.ae(drawer.coverage('/w/y.nrt', [65], 2, 2), [b'\xff' * 4])
+            self.ae([e['event'] for e in self.events(root)], ['refused', 'state', 'failed', 'draw'])
+
+    def test_handles_are_kept_a_few_at_a_time(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            drawer = self.fake_drawer(root, {'gpu': True, 'ready': True})
+            for size in range(2, 2 + drawer.MAX_HANDLES + 3):
+                self.ae(drawer.coverage('/w/x.nrt', [65], size, size), [b'\xff' * (size * size)])
+            self.ae(len(drawer.handles), drawer.MAX_HANDLES)
+            self.ae(drawer.lib.closed, 3)                                   # type: ignore[union-attr]
+
+    def test_the_real_loader_with_a_stand_in_gpu(self) -> None:
+        # the loader itself, a stand-in for the GPU library and a weights file, when the environment names them
+        loader, fake, weights = (os.environ.get(k, '') for k in ('NEURONTE_BACKEND_LIB', 'NEURONTE_FAKE_GPU_LIB', 'NEURONTE_TEST_NRT'))
+        library = os.environ.get('NEURONTE_LIB', '')
+        if not all(os.path.isfile(p) for p in (loader, fake, weights, library)):
+            self.skipTest('NEURONTE_BACKEND_LIB, NEURONTE_FAKE_GPU_LIB, NEURONTE_TEST_NRT and NEURONTE_LIB are not all set')
+
+        def identity(path: str) -> str:
+            st = os.stat(path)
+            return f'{st.st_size}:{st.st_mtime_ns}'
+
+        with tempfile.TemporaryDirectory() as root:
+            def supply(name: str, **files: str) -> None:
+                os.makedirs(os.path.join(root, 'power', name), exist_ok=True)
+                for key, value in files.items():
+                    with open(os.path.join(root, 'power', name, key), 'w') as f:
+                        f.write(value + '\n')
+            # what Neuronte's setup would have written for a machine whose GPU won
+            common = f'gpu.backend=cuda\ngpu.library={fake}\ngpu.library.id={identity(fake)}\ngpu.driver=test driver\n'
+            with open(os.path.join(root, 'backend.conf'), 'w') as f:
+                f.write('version=1\n' + common + 'gpu.identical=yes\nmin_glyphs=1\nbattery=cpu\nwake_ms=0\nreason=a test\n')
+            with open(os.path.join(root, 'warm.stamp'), 'w') as f:
+                f.write('version=1\n' + common + f'warm.{os.path.basename(weights)}={identity(weights)}\n')
+            supply('BAT0', type='Battery', status='Discharging', capacity='97')
+            supply('mouse', type='Battery', scope='Device', status='Discharging', capacity='12')
+            env = {
+                'NEURONTE_BACKEND_CONF': os.path.join(root, 'backend.conf'),
+                'NEURONTE_BACKEND_WARM_STAMP': os.path.join(root, 'warm.stamp'),
+                'NEURONTE_BACKEND_TEST_DRIVER': 'test driver', 'NEURONTE_BACKEND_POWER_DIR': os.path.join(root, 'power'),
+                'NEURONTE_SETUP_CONF': os.path.join(root, 'none'), 'XDG_CONFIG_HOME': root, 'NEURONTE_BACKEND_KICK': '0',
+                'FAKE_GPU_LOG': os.path.join(root, 'gpu.log'),
+            }
+            with patch.dict(os.environ, env):
+                os.environ.pop('NEURONTE_BACKEND', None)
+                nets = neuronte.Nets(library, [weights])
+                self.ae(nets.problems, [])
+                handle = nets.handles[0][1]
+                held = [cp for cp in range(0x20, 0x10000) if nets.lib.neuronte_untrained(handle, cp) == 0][:40]  # type: ignore[union-attr]
+                on_cpu = [nets.from_cpu(handle, cp, 9, 18) for cp in held]
+                drawer = neuronte.BackendDrawer(loader, os.path.join(root, 'log'))
+                self.ae(drawer.problem, '')
+                # discharging: the CPU, whatever the charge, and the GPU library is not even loaded
+                self.ae(drawer.choice(), (False, 'on battery'))
+                self.assertIsNone(drawer.coverage(weights, held, 9, 18))
+                self.assertFalse(os.path.exists(env['FAKE_GPU_LOG']))
+                drawer.close()
+                # on mains: the same bytes as the CPU library, from the GPU once it is open
+                supply('BAT0', status='Charging')
+                drawer = neuronte.BackendDrawer(loader, os.path.join(root, 'log'))
+                self.ae(drawer.choice(), (True, 'a test'))
+                deadline = time.monotonic() + 20
+                while True:
+                    masks = drawer.coverage(weights, held, 9, 18)
+                    assert masks is not None
+                    self.ae(masks, on_cpu[:len(masks)])
+                    if len(masks) == len(held) or time.monotonic() > deadline:
+                        break
+                    time.sleep(0.02)
+                self.ae(len(masks), len(held))                  # the GPU opened, and the whole list went in one call
+                with open(env['FAKE_GPU_LOG']) as f:
+                    said = f.read()
+                self.assertIn('open 9x18', said)
+                self.assertIn(f'coverage {len(held)} glyphs', said)
+                drawer.close()
+                draws = [e for e in self.events(root) if e['event'] == 'draw']
+                self.ae((draws[-1]['glyphs'], draws[-1]['gpu'], draws[-1]['cpu']), (len(held), len(held), 0))
+
+
 class TestGlyphHook(FontBaseTest):
 
     def setUp(self) -> None:

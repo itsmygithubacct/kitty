@@ -52,13 +52,30 @@ leaves them alone. Colour nets have no cells files.
 
 The Neuronte handle is not thread-safe. Everything here runs on the engine's
 main thread, which is the only thread that renders cells.
+
+A prototype, off by default: ``KILIX_NEURONTE_GPU=auto`` sends the drawings
+the engine asks for in bulk (a symbol at the cell's size, or at the two-cell
+size) through Neuronte's backend loader, ``libneuronte-backend``, instead of
+straight to the CPU library. The loader follows what Neuronte's setup
+measured on this machine: a GPU where one is faster and gives the CPU
+library's bytes, else the CPU. It is the loader, not this file, that keeps
+to the CPU while the machine runs from its battery, while the GPU is being
+opened (which it does on a thread of its own), and after a device failed.
+While a GPU is open, the first symbol asked for at a size draws every listed
+symbol the file holds in one call, and the rest are kept. Whenever the
+loader would draw on the CPU anyway, this file draws on the CPU itself as
+before, one symbol at a time as they are asked for. The two give the same
+bytes.
 """
 
 from __future__ import annotations
 
 import ctypes
+import json
 import math
 import os
+import time
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 
 from .kilix_chrome.settings import chrome_value
@@ -86,6 +103,10 @@ CELLS_SAMPLES, CELLS_STYLE, CELLS_SNAP_FILE = 0, 0, -1
 # when they have all nine, else the emoji font. on: one colour, by the nets.
 # off: the emoji font.
 WEATHER_KEY = 'KILIX_NEURONTE_WEATHER'
+GPU_KEY = 'KILIX_NEURONTE_GPU'            # off (default) or auto: a prototype, see the module's notes
+GPU_LOG_ENV = 'KILIX_NEURONTE_GPU_LOG'    # a file that gets one JSON line per call and per change of state
+BACKEND_LIBRARY = 'libneuronte-backend.so.0'
+GPU_CHECK_ENV = 'KILIX_NEURONTE_GPU_CHECK'  # 1: also draw on the CPU and count the masks that differ
 _OFF = ('0', 'no', 'false', 'off', 'disabled', 'none')
 _ON = ('1', 'yes', 'true', 'on')
 WEATHER_COLOUR, WEATHER_ONE_COLOUR, WEATHER_FONT = 'colour', 'one-colour', 'font'
@@ -365,6 +386,151 @@ def cells_path(directory: str, weights_path: str) -> str:
     return os.path.join(directory, (name[:-4] if name.endswith('.nrt') else name) + '.cells')
 
 
+class _BackendInfo(ctypes.Structure):
+    # struct neuronte_backend_info of neuronte_backend.h
+    _fields_ = [
+        ('gpu', ctypes.c_int), ('min_glyphs', ctypes.c_int), ('backend', ctypes.c_char * 32),
+        ('device', ctypes.c_char * 128), ('reason', ctypes.c_char * 256), ('from_cells', ctypes.c_uint64),
+        ('from_cpu', ctypes.c_uint64), ('from_gpu', ctypes.c_uint64), ('ready', ctypes.c_int),
+    ]
+
+
+class BackendDrawer:
+    """Prototype: coverage through Neuronte's backend loader, one handle per weight file and size.
+
+    The loader decides between a GPU and the CPU from what Neuronte's setup
+    measured, and looks after the battery, a GPU that is slow to open and a
+    device that fails. ``coverage`` returns None whenever the loader would
+    draw on the CPU, and the caller then draws on the CPU itself.
+    """
+
+    MAX_HANDLES = 6
+    MAX_BATCH = 256
+
+    def __init__(self, library_path: str, log_path: str = '') -> None:
+        self.lib: ctypes.CDLL | None = None
+        self.problem = ''
+        self.handles: OrderedDict[tuple[str, int, int], ctypes.c_void_p] = OrderedDict()
+        self.refused: set[tuple[str, int, int]] = set()
+        self.said: dict[tuple[str, int, int], tuple[int, int, bytes]] = {}
+        self.log_path = log_path
+        self.calls = self.glyphs = 0
+        try:
+            lib = ctypes.CDLL(library_path)
+            lib.neuronte_backend_open.argtypes = [
+                ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+            lib.neuronte_backend_open.restype = ctypes.c_int
+            lib.neuronte_backend_coverage.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int, ctypes.POINTER(ctypes.c_float)]
+            lib.neuronte_backend_coverage.restype = ctypes.c_int
+            lib.neuronte_backend_expect.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            lib.neuronte_backend_expect.restype = None
+            lib.neuronte_backend_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(_BackendInfo)]
+            lib.neuronte_backend_info.restype = None
+            lib.neuronte_backend_close.argtypes = [ctypes.c_void_p]
+            lib.neuronte_backend_close.restype = None
+            lib.neuronte_backend_choice.argtypes = [ctypes.POINTER(_BackendInfo)]
+            lib.neuronte_backend_choice.restype = ctypes.c_int
+        except (OSError, AttributeError) as error:
+            self.problem = f'cannot load the backend loader {library_path}: {error}'
+            return
+        self.lib = lib
+
+    def log(self, **fields: object) -> None:
+        if self.log_path:
+            try:
+                with open(self.log_path, 'a') as f:
+                    f.write(json.dumps({'time': time.time(), **fields}) + '\n')
+            except OSError:
+                pass
+
+    def choice(self) -> tuple[bool, str]:
+        """What the loader would do on this machine now, and why, opening nothing."""
+        if self.lib is None:
+            return False, self.problem
+        info = _BackendInfo()
+        self.lib.neuronte_backend_choice(ctypes.byref(info))
+        return bool(info.gpu), info.reason.decode('utf-8', 'replace')
+
+    def handle_for(self, path: str, width: int, height: int) -> ctypes.c_void_p | None:
+        key = (path, width, height)
+        if key in self.handles:
+            self.handles.move_to_end(key)
+            return self.handles[key]
+        if self.lib is None or key in self.refused:
+            return None
+        handle = ctypes.c_void_p()
+        code = self.lib.neuronte_backend_open(os.fsencode(path), width, height, ctypes.byref(handle))
+        if code != 0 or not handle:
+            self.refused.add(key)
+            self.log(event='refused', file=os.path.basename(path), cell=[width, height], code=code)
+            return None
+        while len(self.handles) >= self.MAX_HANDLES:
+            old_key, old = self.handles.popitem(last=False)
+            self.said.pop(old_key, None)
+            self.lib.neuronte_backend_close(old)
+        self.handles[key] = handle
+        return handle
+
+    def state(self, key: tuple[str, int, int], handle: ctypes.c_void_p) -> _BackendInfo:
+        """What the handle is doing now; a change (to the CPU, to a GPU, a GPU now open) is logged once."""
+        assert self.lib is not None
+        info = _BackendInfo()
+        self.lib.neuronte_backend_info(handle, ctypes.byref(info))
+        now = (info.gpu, info.ready, info.reason)
+        if self.said.get(key) != now:
+            self.said[key] = now
+            self.log(event='state', file=os.path.basename(key[0]), cell=[key[1], key[2]], gpu=bool(info.gpu),
+                     ready=bool(info.ready), backend=info.backend.decode(), device=info.device.decode('utf-8', 'replace'),
+                     reason=info.reason.decode('utf-8', 'replace'))
+        return info
+
+    def coverage(self, path: str, codepoints: Sequence[int], width: int, height: int) -> list[bytes] | None:
+        """Masks for the first of ``codepoints``, and for all of them when a GPU is open; None when
+        the loader would draw on the CPU, which the caller then does itself."""
+        if not codepoints:
+            return None
+        handle = self.handle_for(path, width, height)
+        if handle is None or self.lib is None:
+            return None
+        key = (path, width, height)
+        before = self.state(key, handle)
+        job = list(codepoints[:self.MAX_BATCH])
+        if not before.gpu or len(job) < before.min_glyphs:
+            return None                   # the CPU, or a GPU that is only worth it for more than this
+        # While the GPU is not open the loader draws on the CPU, so only what is needed now is
+        # asked for, as a part of the whole job; the loader opens the GPU by itself once the CPU
+        # has worked long enough on such parts.
+        asked = job if before.ready else job[:1]
+        if not before.ready:
+            self.lib.neuronte_backend_expect(handle, len(job))
+        count, plane = len(asked), width * height
+        scalars = (ctypes.c_uint32 * count)(*asked)
+        buf = (ctypes.c_float * (count * plane))()
+        start = time.monotonic_ns()
+        code = self.lib.neuronte_backend_coverage(handle, scalars, count, buf)
+        took = time.monotonic_ns() - start
+        if code != 0:
+            self.log(event='failed', file=os.path.basename(path), cell=[width, height], glyphs=count, code=code)
+            return None
+        after = self.state(key, handle)
+        self.calls += 1
+        self.glyphs += count
+        self.log(event='draw', file=os.path.basename(path), cell=[width, height], glyphs=count, ns=took,
+                 cpu=after.from_cpu - before.from_cpu, gpu=after.from_gpu - before.from_gpu,
+                 cells=after.from_cells - before.from_cells)
+        return [
+            bytes(min(255, max(0, int(value * 255.0 + 0.5))) for value in buf[i * plane:(i + 1) * plane])
+            for i in range(count)]
+
+    def close(self) -> None:
+        if self.lib is not None:
+            for handle in self.handles.values():
+                self.lib.neuronte_backend_close(handle)
+        self.handles.clear()
+        self.said.clear()
+
+
 class Nets:
     """The opened weight files, asked in order."""
 
@@ -379,6 +545,10 @@ class Nets:
         # Colour files: name, handle, the most layers a glyph has, the palette.
         self.colour_handles: list[tuple[str, ctypes.c_void_p, int, list[tuple[int, int, int]]]] = []
         self.problems: list[str] = []
+        self.gpu: BackendDrawer | None = None      # the prototype, when the setting asks for it
+        self.path_of: dict[int, str] = {}          # a handle's weight file
+        self.kept: dict[tuple[int, int, int, int], bytes] = {}   # masks a launch drew ahead of being asked
+        self.checked = self.differing = 0
         if not library_path or not os.path.isfile(library_path):
             self.problems.append(f'no Neuronte library at {library_path or "(unset)"}')
             return
@@ -411,6 +581,7 @@ class Nets:
                 lib.neuronte_close(handle)
                 continue
             self.handles.append((os.path.basename(path), handle))
+            self.path_of[handle.value or 0] = path
         if colour_paths:
             self.open_colour_files(colour_paths)
         if cells_dir:
@@ -527,6 +698,55 @@ class Nets:
             return None
         if (kept := self.from_cells(handle, codepoint, width, height)) is not None:
             return kept
+        return self.from_cpu(handle, codepoint, width, height)
+
+    def bulk_coverage(
+        self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int, with_it: Sequence[int],
+    ) -> bytes | None:
+        """The character's mask at a size asked for again and again; ``with_it`` names what is likely next."""
+        if self.lib is None or not (MIN_CELL <= width <= MAX_CELL and MIN_CELL <= height <= MAX_CELL):
+            return None
+        if (kept := self.from_cells(handle, codepoint, width, height)) is not None:
+            return kept                   # the cells file before any drawing, as for a single mask
+        if self.gpu is not None:
+            mask = self.from_gpu(handle, codepoint, width, height, with_it)
+            if mask is not None:
+                return mask
+        return self.from_cpu(handle, codepoint, width, height)
+
+    def from_gpu(
+        self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int, with_it: Sequence[int],
+    ) -> bytes | None:
+        """One call draws the character and, when a GPU is open, those of ``with_it`` the file holds; the rest are kept."""
+        assert self.gpu is not None and self.lib is not None
+        key = (handle.value or 0, codepoint, width, height)
+        if key in self.kept:
+            return self.kept[key]
+        path = self.path_of.get(handle.value or 0)
+        if path is None:
+            return None
+        wanted = [codepoint] + [
+            cp for cp in with_it if cp != codepoint and self.lib.neuronte_untrained(handle, cp) == 0]
+        masks = self.gpu.coverage(path, wanted[:BackendDrawer.MAX_BATCH], width, height)
+        if masks is None:
+            return None
+        if len(self.kept) > 4096:
+            self.kept.clear()
+        for cp, mask in zip(wanted, masks):
+            self.kept[(handle.value or 0, cp, width, height)] = mask
+        if os.environ.get(GPU_CHECK_ENV) == '1':
+            start = time.monotonic_ns()
+            on_cpu = [self.from_cpu(handle, cp, width, height) for cp in wanted]
+            took = time.monotonic_ns() - start
+            differ = sum(a != b for a, b in zip(masks, on_cpu))
+            self.checked += len(masks)
+            self.differing += differ
+            self.gpu.log(event='check', file=os.path.basename(path), cell=[width, height], glyphs=len(masks),
+                         differ=differ, cpu_ns=took)
+        return masks[0]
+
+    def from_cpu(self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int) -> bytes | None:
+        assert self.lib is not None
         buf = (ctypes.c_float * (width * height))()
         if self.lib.neuronte_coverage(handle, codepoint, width, height, 0, buf) != 0:
             return None
@@ -639,9 +859,20 @@ class GlyphSource:
         if cells == 2:
             return self.draw_two_cells(codepoint, width, height)
         if self.nets is not None and (found := self.one_cell_net(codepoint)) is not None:
-            if (mask := self.nets.coverage_from(found[1], codepoint, width, height)) is not None:
+            # The cell's size is asked for again and again: the symbols the bars print go with it.
+            if (mask := self.in_bulk(found[1], codepoint, width, height, CHROME_CODEPOINTS)) is not None:
                 return mask
         return stand_in(codepoint, width, height) if self.use_stand_ins else None
+
+    def in_bulk(
+        self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int, with_it: Sequence[int],
+    ) -> bytes | None:
+        """A mask at one of the sizes every symbol is asked for at: the GPU prototype's work, when it is on."""
+        assert self.nets is not None
+        bulk = getattr(self.nets, 'bulk_coverage', None)
+        if bulk is None:
+            return self.nets.coverage_from(handle, codepoint, width, height)
+        return bulk(handle, codepoint, width, height, with_it)
 
     def draw_two_cells(self, codepoint: int, width: int, height: int) -> bytes | None:
         found = self.two_cell_net(codepoint)
@@ -649,7 +880,7 @@ class GlyphSource:
             return None
         _, handle, made = found
         if made:
-            tall = self.nets.coverage_from(handle, codepoint, width, height * ROWS_PER_PIXEL)
+            tall = self.in_bulk(handle, codepoint, width, height * ROWS_PER_PIXEL, tuple(sorted(TWO_CELL_SYMBOLS)))
             return None if tall is None else pair_rows(tall, width, height)
         return self.enlarged(handle, codepoint, width, height)
 
@@ -697,6 +928,23 @@ def build_source(environ: dict[str, str] | os._Environ[str] = os.environ) -> Gly
         library, weight_paths(root, chrome_value(WEIGHTS_KEY, WEIGHTS_DEFAULT) or WEIGHTS_DEFAULT),
         weight_paths(root, colour_files) if weather == WEATHER_COLOUR else (),
         cells_directory(environ, chrome_value(CELLS_KEY, 'auto')))
+    gpu_mode = chrome_value(GPU_KEY, 'off').strip().lower()
+    if nets.handles and gpu_mode in ('auto', 'device'):
+        # The prototype. NEURONTE_BACKEND_LIB names the loader; else the one built beside Neuronte's
+        # sources; else the system's. Which GPU library it loads, if any, is setup's choice.
+        beside = os.path.join(os.path.dirname(root), 'neuronte-gpu', 'build', 'chooser', BACKEND_LIBRARY)
+        drawer = BackendDrawer(
+            environ.get('NEURONTE_BACKEND_LIB') or (beside if os.path.isfile(beside) else BACKEND_LIBRARY),
+            environ.get(GPU_LOG_ENV, ''))
+        if drawer.lib is None:
+            nets.problems.append(f'{GPU_KEY}={gpu_mode}: {drawer.problem}; the CPU draws')
+            drawer.log(event='unavailable', reason=drawer.problem)
+        else:
+            gpu, reason = drawer.choice()
+            drawer.log(event='choice', gpu=gpu, reason=reason)
+            nets.gpu = drawer
+    elif nets.handles and gpu_mode not in _OFF:
+        nets.problems.append(f'{GPU_KEY}={gpu_mode}: not a value this build knows (off or auto); the CPU draws')
     two_cell_files = chrome_value(TWO_CELL_WEIGHTS_KEY, TWO_CELL_WEIGHTS_DEFAULT) or TWO_CELL_WEIGHTS_DEFAULT
     return GlyphSource(
         nets if nets.handles or nets.colour_handles else None,
