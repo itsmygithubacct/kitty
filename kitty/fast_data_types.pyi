@@ -1018,6 +1018,14 @@ def set_font_data(
 ) -> None:
     pass
 
+def set_kilix_glyph_source(
+    chars: Tuple[int, ...],
+    can_draw: Optional[Callable[[int], bool]],
+    draw: Optional[Callable[[int, int, int], Optional[bytes]]],
+) -> None:
+    pass
+
+
 def get_fallback_font(text: str, bold: bool, italic: bool) -> Any:
     pass
 
@@ -1224,6 +1232,9 @@ class Screen:
         pass
 
     def has_focus(self) -> bool:
+        pass
+
+    def kilix_last_output_at(self) -> float:
         pass
 
     def has_activity_since_last_focus(self) -> bool:

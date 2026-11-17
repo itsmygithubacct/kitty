@@ -4,7 +4,8 @@
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from kitty import kilix_battery, kilix_gpu, kilix_memory
 from kitty.boss import Boss, kilix_desktop_owns_start_menu
@@ -20,6 +21,7 @@ from kitty.kilix_battery import (
 from kitty.kilix_chrome import settings as chrome_settings
 from kitty.kilix_gpu import GPU_WIDGET_ACTION
 from kitty.kilix_memory import MEMORY_WIDGET_ACTION
+from kitty.kilix_tab_status import parse_settings
 from kitty.tab_bar import TabBar, TabBarData, as_rgb
 from kitty.utils import color_as_int
 
@@ -75,11 +77,32 @@ class TestTabBar(BaseTest):
             patch('kitty.kilix_gpu.pane_gpu_mode', return_value='off'),
             patch('kitty.kilix_telemetry.refresh_panes') as refresh,
             patch('kitty.kilix_memory._refresh_process_cache') as scan,
+            patch('kitty.kilix_tab_status.settings', return_value=parse_settings(lambda key, default: '0')),
         ):
             kilix_memory._memory_timer()
         refresh.assert_not_called()
         scan.assert_not_called()
         self.ae(kilix_memory._LAST_LABELS, {})
+
+    def test_resource_timer_still_samples_for_the_tab_status_mark(self) -> None:
+        # Every chip off, the mark on: the one pass over the panes still runs,
+        # because the mark's colour is that sample.
+        loads = MagicMock()
+        boss = SimpleNamespace(all_tab_managers=())
+        with (
+            patch('kitty.kilix_memory.pane_memory_mode', return_value='off'),
+            patch('kitty.kilix_cpu.pane_cpu_mode', return_value='off'),
+            patch('kitty.kilix_gpu.pane_gpu_mode', return_value='off'),
+            patch('kitty.kilix_telemetry.refresh_panes', return_value=False) as refresh,
+            patch('kitty.kilix_memory._refresh_process_cache') as scan,
+            patch('kitty.fast_data_types.get_boss', return_value=boss),
+            patch('kitty.kilix_tab_status.settings', return_value=parse_settings(lambda key, default: default)),
+            patch('kitty.kilix_tab_status.note_loads', loads),
+        ):
+            kilix_memory._memory_timer()
+        refresh.assert_called_once_with((), register=False)
+        scan.assert_called_once_with(force=True)
+        loads.assert_called_once_with(kilix_memory.pane_cpu_cores)
 
     def test_windows_key_routes_to_desktop_owned_start_menus(self) -> None:
         class Child:
@@ -425,23 +448,23 @@ class TestTabBar(BaseTest):
         ):
             tb = TabBar(1)
             tb.layout()
-            # Ten tabs per row: the eleventh starts the second row, even on a
+            # Eight tabs per row: the ninth starts the second row, even on a
             # bar wide enough for all of them, and the new-tab button follows
             # the last tab instead of starting a row of its own.
             new_tab = TabBarData(title='+')
             tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 12)) + (new_tab,))
 
             self.ae(len(tb.tab_extents), 12)
-            self.ae(tb.tab_extents[9].y, (0, 0))
-            self.ae(tb.tab_extents[10].y, (1, 1))
+            self.ae(tb.tab_extents[7].y, (0, 0))
+            self.ae(tb.tab_extents[8].y, (1, 1))
             self.ae(tb.tab_extents[11].y, (1, 1))
             last = tb.tab_extents[10]
             self.ae(tb.tab_id_at(last.x.start * 10 + 5, 185), 11)
             self.ae(tb.drag_order_coordinate(20, 181), (181, 20))
 
-            tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 21)) + (new_tab,))
-            self.ae(len(tb.tab_extents), 21)
-            self.ae([e.y.start for e in tb.tab_extents], [0] * 10 + [1] * 11)
+            tb.update(tuple(TabBarData(title=f'tab-{i}', tab_id=i) for i in range(1, 17)) + (new_tab,))
+            self.ae(len(tb.tab_extents), 17)
+            self.ae([e.y.start for e in tb.tab_extents], [0] * 8 + [1] * 9)
 
             viewport.return_value = (region(0, 0, 3600, 200), hidden, 3600, 200, 10, 20)
             tb.layout()
@@ -482,7 +505,7 @@ class TestTabBar(BaseTest):
             # IDs are intentionally unrelated to positions. Reordering and
             # removing tabs must recompute the displayed navigation indices.
             tabs = tuple(TabBarData(title=f'page-{i}', tab_id=i) for i in range(101, 122))
-            cases = [tabs[:n] for n in (10, 11, 12, 20, 21)]
+            cases = [tabs[:n] for n in (8, 9, 10, 16, 17, 21)]
             cases += [tabs[::-1], tabs[1:]]
             for current in cases:
                 with self.subTest(tab_ids=tuple(t.tab_id for t in current)):
@@ -495,13 +518,13 @@ class TestTabBar(BaseTest):
                     self.ae([(c.args[2].tab_id, c.args[5]) for c in draw.call_args_list], expected * 2)
                     self.ae(len(tb.tab_extents), len(data))
                     for i, (tab, extent) in enumerate(zip(current, tb.tab_extents), 1):
-                        row = (i - 1) // 10
+                        row = (i - 1) // 8
                         self.ae(extent.y, (row, row))
                         label = str(tb.screen.line(row))[extent.x.start:extent.x.end + 1]
                         self.assertIn(f'{i}:{tab.title}', label)
                         self.ae(tb.tab_id_at(extent.x.start * 10 + 5, 150 + row * 20), tab.tab_id)
                     plus = tb.tab_extents[-1]
-                    self.ae(plus.y.start, (len(current) - 1) // 10)
+                    self.ae(plus.y.start, (len(current) - 1) // 8)
                     self.assertEqual(str(tb.screen.line(plus.y.start))[plus.x.start:plus.x.end + 1].strip(), '+')
 
     def test_vertical_tab_bar_hit_testing(self) -> None:

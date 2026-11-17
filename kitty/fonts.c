@@ -754,6 +754,94 @@ in_symbol_maps(FontGroup *fg, char_type ch) {
 
 static bool allow_use_of_box_fonts = true;
 
+// kilix fork: characters drawn by an outside source {{{
+//
+// Python hands over a sorted list of characters it may be able to draw (the
+// Neuronte nets, see kilix_neuronte.py) and two callables. A listed character
+// is asked about once, the first time a cell holds it; from then on it either
+// takes the box-drawing path below, where the source fills the cell's alpha
+// mask, or it is left to the fonts as if it had never been listed. Text that
+// uses none of these characters pays one range comparison per cell.
+typedef struct { char_type ch; uint8_t state; } KilixGlyph;
+enum { KILIX_GLYPH_UNKNOWN = 0, KILIX_GLYPH_DRAWN = 1, KILIX_GLYPH_NOT_DRAWN = 2 };
+#define KILIX_GLYPH_ID_BASE 0x3000u
+#define KILIX_GLYPH_MAX_COUNT 0x8000u
+static struct {
+    KilixGlyph *items; size_t count;
+    char_type lo, hi;
+    PyObject *can_draw, *draw;
+} kilix_glyphs = {.lo = 1, .hi = 0};
+
+static KilixGlyph*
+kilix_glyph_for(char_type ch) {
+    if (ch < kilix_glyphs.lo || ch > kilix_glyphs.hi) return NULL;
+    size_t lo = 0, hi = kilix_glyphs.count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (kilix_glyphs.items[mid].ch < ch) lo = mid + 1; else hi = mid;
+    }
+    return (lo < kilix_glyphs.count && kilix_glyphs.items[lo].ch == ch) ? kilix_glyphs.items + lo : NULL;
+}
+
+static bool
+kilix_glyph_is_drawn(char_type ch) {
+    KilixGlyph *g = kilix_glyph_for(ch);
+    if (!g) return false;
+    if (g->state == KILIX_GLYPH_UNKNOWN) {
+        g->state = KILIX_GLYPH_NOT_DRAWN;
+        if (kilix_glyphs.can_draw) {
+            PyObject *ret = PyObject_CallFunction(kilix_glyphs.can_draw, "I", (unsigned int)ch);
+            if (ret == NULL) PyErr_Print();
+            else { if (PyObject_IsTrue(ret) == 1) g->state = KILIX_GLYPH_DRAWN; Py_DECREF(ret); }
+        }
+    }
+    return g->state == KILIX_GLYPH_DRAWN;
+}
+
+// Fill width * height bytes of coverage for ch. False leaves buf untouched.
+static bool
+kilix_glyph_render(char_type ch, uint8_t *buf, unsigned width, unsigned height) {
+    if (!kilix_glyphs.draw || !kilix_glyph_is_drawn(ch)) return false;
+    PyObject *ret = PyObject_CallFunction(kilix_glyphs.draw, "III", (unsigned int)ch, width, height);
+    if (ret == NULL) { PyErr_Print(); return false; }
+    bool ok = PyBytes_Check(ret) && (size_t)PyBytes_GET_SIZE(ret) == (size_t)width * height;
+    if (ok) memcpy(buf, PyBytes_AS_STRING(ret), (size_t)width * height);
+    Py_DECREF(ret);
+    return ok;
+}
+
+static PyObject*
+set_kilix_glyph_source(PyObject *self UNUSED, PyObject *args) {
+    PyObject *chars, *can_draw, *draw;
+    if (!PyArg_ParseTuple(args, "O!OO", &PyTuple_Type, &chars, &can_draw, &draw)) return NULL;
+    const size_t count = (size_t)PyTuple_GET_SIZE(chars);
+    if (count > KILIX_GLYPH_MAX_COUNT) { PyErr_SetString(PyExc_ValueError, "too many characters"); return NULL; }
+    KilixGlyph *items = NULL;
+    if (count) {
+        items = calloc(count, sizeof(KilixGlyph));
+        if (!items) return PyErr_NoMemory();
+        for (size_t i = 0; i < count; i++) {
+            unsigned long ch = PyLong_AsUnsignedLong(PyTuple_GET_ITEM(chars, i));
+            if (PyErr_Occurred()) { free(items); return NULL; }
+            if (ch > 0x10ffff || (i && ch <= items[i - 1].ch)) {
+                free(items);
+                PyErr_SetString(PyExc_ValueError, "characters must be Unicode scalars in strictly ascending order");
+                return NULL;
+            }
+            items[i].ch = (char_type)ch;
+        }
+    }
+    free(kilix_glyphs.items);
+    kilix_glyphs.items = items; kilix_glyphs.count = count;
+    kilix_glyphs.lo = count ? items[0].ch : 1; kilix_glyphs.hi = count ? items[count - 1].ch : 0;
+    Py_CLEAR(kilix_glyphs.can_draw); Py_CLEAR(kilix_glyphs.draw);
+    if (count && can_draw != Py_None && draw != Py_None) {
+        kilix_glyphs.can_draw = Py_NewRef(can_draw); kilix_glyphs.draw = Py_NewRef(draw);
+    }
+    Py_RETURN_NONE;
+}
+// }}}
+
 // Decides which 'font' to use for a given cell.
 //
 // Possible results:
@@ -767,6 +855,9 @@ font_for_cell(FontGroup *fg, const CPUCell *cpu_cell, const GPUCell *gpu_cell, b
     *is_main_font = false;
     *is_emoji_presentation = false;
     text_in_cell(cpu_cell, tc, lc);
+    // kilix fork: a character an outside source draws. A colour emoji keeps
+    // its emoji font; the same character asked for as text does not.
+    if (allow_use_of_box_fonts && kilix_glyph_is_drawn(lc->chars[0]) && !has_emoji_presentation(cpu_cell, lc)) return BOX_FONT;
 START_ALLOW_CASE_RANGE
     ssize_t ans;
     switch(lc->chars[0]) {
@@ -820,6 +911,10 @@ END_ALLOW_CASE_RANGE
 // Gives a unique (arbitrary) id to a box glyph
 static glyph_index
 box_glyph_id(char_type ch) {
+    {   // kilix fork: ids above every box character for outside-drawn characters
+        const KilixGlyph *g = kilix_glyph_for(ch);
+        if (g && g->state == KILIX_GLYPH_DRAWN) return (glyph_index)(KILIX_GLYPH_ID_BASE + (g - kilix_glyphs.items));
+    }
 START_ALLOW_CASE_RANGE
     switch(ch) {
         case 0x2500 ... 0x25ff:
@@ -1134,7 +1229,8 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     for (unsigned i = 0, cnum = 0; i < num_glyphs; i++) {
         unsigned int ch = global_glyph_render_scratch.lc->chars[cnum++];
         while (!ch) ch = global_glyph_render_scratch.lc->chars[cnum++];
-        render_box_char(ch, fg->canvas.alpha_mask, src.right, src.bottom, fg->logical_dpi_x, fg->logical_dpi_y, scale);
+        if (!kilix_glyph_render(ch, fg->canvas.alpha_mask, src.right, src.bottom))
+            render_box_char(ch, fg->canvas.alpha_mask, src.right, src.bottom, fg->logical_dpi_x, fg->logical_dpi_y, scale);
         dest.left = i * scaled_metrics.cell_width + right_shift; dest.right = dest.left + scaled_metrics.cell_width;
         render_alpha_mask(fg->canvas.alpha_mask, fg->canvas.buf, &src, &dest, src.right, mask_stride, 0xffffff);
     }
@@ -2519,6 +2615,7 @@ pyrender_box_char(PyObject *self UNUSED, PyObject *args) {
 
 static PyMethodDef module_methods[] = {
     METHODB(set_font_data, METH_VARARGS),
+    METHODB(set_kilix_glyph_source, METH_VARARGS),
     METHODB(sprite_idx_to_pos, METH_VARARGS),
     METHODB(free_font_data, METH_NOARGS),
     METHODB(create_test_font_group, METH_VARARGS),

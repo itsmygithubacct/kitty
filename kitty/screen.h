@@ -208,6 +208,7 @@ typedef struct {
     CharsetState charset;
     ListOfChars *lc;
     monotonic_t parsing_at;
+    monotonic_t kilix_last_output_at;  // kilix fork: when the child last printed, for the tab status mark
     ExtraCursors extra_cursors;
     struct {
         bool active;

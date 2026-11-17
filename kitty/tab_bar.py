@@ -43,6 +43,7 @@ from .kilix_chrome.registry import segments_for
 from .kilix_chrome.settings import chrome_value
 from .kilix_system_load import system_gpu_bar_segment, system_load_segment
 from .kilix_voice import dictate_segment, speak_segment
+from .kilix_tab_status import fields_for_tab
 from .kilix_windows import MINIMISED_GLYPH, window_entries
 from .progress import ProgressState
 from .rgb import alpha_blend, color_as_sgr, color_from_int, to_color
@@ -75,7 +76,77 @@ class TabBarData(NamedTuple):
     active_session_name: str = ''
 
 
-MAX_TABS_PER_ROW = 10
+MAX_TABS_PER_ROW = 8  # state.c counts rows with the same number
+POWERLINE_BUTTON_EXTRA = 3  # a pad, a space and the separator after a button's title
+
+
+class NativeWindowLayout(NamedTuple):
+    title_width: int  # longest title asked of window_entries()
+    slot: int         # cells each entry is padded to
+    shown: int
+    hidden: int
+    used: int         # cells drawn, the " +N" note included
+
+
+def native_window_layout(
+    entries_for: Callable[[int], Sequence[tuple[str, str]]], configured_title_width: int,
+    separator_width: int, available: int,
+) -> NativeWindowLayout:
+    """Fit the native-window taskbar into ``available`` cells.
+
+    The same answer sizes the reservation and draws the entries, so the cells
+    held back from the tabs are exactly the cells the taskbar fills. Labels
+    stay readable: rather than shrinking every one to a stub, as many as fit
+    are shown and the rest are counted.
+    """
+    best = NativeWindowLayout(0, 0, 0, 0, 0)
+    for title_width in range(max(6, configured_title_width), 5, -2):
+        entries = entries_for(title_width)
+        if not entries:
+            return best
+        # No wider than the longest label: a short title is not padded out.
+        slot = max(max(0, wcswidth(text)) for text, _ in entries)
+        shown = used = 0
+        while shown < len(entries):
+            need = slot if shown == 0 else slot + separator_width
+            if used + need > available:
+                break
+            used += need
+            shown += 1
+        hidden = len(entries) - shown
+        if shown and hidden:
+            note = len(f' +{hidden}')
+            if used + note <= available:
+                used += note
+        best = NativeWindowLayout(title_width, slot, shown, hidden, used)
+        if not hidden:
+            break
+    return best
+
+
+def tab_slot_lengths(budget: int, fixed: Sequence[int | None]) -> list[int]:
+    """Share ``budget`` cells of a row between its tabs.
+
+    ``fixed`` has one item per tab: None for a real tab, or the length a
+    button (the new-tab "+") needs. Buttons take what they need; the real tabs
+    split the rest evenly, and the cells an even split leaves over go one each
+    to the last tabs, so the row ends where its space ends. Each returned
+    length excludes the one cell that separates a tab from the next.
+    """
+    real = sum(1 for length in fixed if length is None)
+    rest = budget - sum(length + 1 for length in fixed if length is not None)
+    if real == 0:
+        return [max(1, length or 1) for length in fixed]
+    base, extra = divmod(max(0, rest), real)
+    ans: list[int] = []
+    seen = 0
+    for length in fixed:
+        if length is None:
+            seen += 1
+            ans.append(max(1, base - 1 + (1 if seen > real - extra else 0)))
+        else:
+            ans.append(max(1, length))
+    return ans
 
 
 def split_tab_bar_rows(data: Sequence[TabBarData]) -> tuple[tuple[TabBarData, ...], ...]:
@@ -382,12 +453,20 @@ def apply_title_template(draw_data: DrawData, tab: TabBarData, index: int, max_t
         'max_title_length': max_title_length,
         'keyboard_mode': boss.mappings.current_keyboard_mode_name,
     }
+    # kilix fork: status (the coloured moon or dot and a space), status_symbol,
+    # status_color, load_level, tab_working, tab_idle_seconds, tab_load_cores
+    eval_locals.update(fields_for_tab(tab.tab_id))
     template = draw_data.title_template
     if tab.is_active and draw_data.active_title_template is not None:
         template = draw_data.active_title_template
     prefix = ''
     for default_prefix in ('bell_symbol', 'activity_symbol', 'secure_input_symbol'):
         if eval_locals[default_prefix] and not template_has_field(template, default_prefix):
+            # kilix fork: a template that draws the status mark already says
+            # whether the tab is working; the unseen-output dot is not added.
+            if default_prefix == 'activity_symbol' and (
+                    template_has_field(template, 'status') or template_has_field(template, 'status_symbol')):
+                continue
             prefix += '{' + default_prefix + '}'
     if prefix:
         template = '{fmt.fg.red}' + prefix + '{fmt.fg.tab}' + template
@@ -947,12 +1026,12 @@ class TabBar:
         # the pages are laid out. Pages are sized to fill whatever they are
         # given, so without a reservation they take the whole bar and the
         # taskbar has nowhere to draw. Capped at half: pages and native windows share the first row.
+        # The reservation is the width the taskbar will draw, to the cell, so
+        # no blank run is left between it and the status widgets.
         self.window_reserve = 0
         if not self.is_vertical:
-            wanted = sum(max(0, wcswidth(t)) + 1 for t, _ in window_entries())
-            if wanted:
-                usable = max(0, self.right_status_start - self.left_status_end)
-                self.window_reserve = min(wanted, usable // 2)
+            usable = max(0, self.right_status_start - self.left_status_end)
+            self.window_reserve = self.native_window_layout(usable // 2).used
 
         def row_start(line: int) -> int:
             return self.left_status_end if line == 0 else 0
@@ -1010,6 +1089,15 @@ class TabBar:
                 # page keeps the same slot, which is what makes the strip read
                 # as an even row rather than a ragged one. draw_tab_with_powerline
                 # pads the title to fill it.
+            if self.draw_func is draw_tab_with_powerline:
+                # A button (the new-tab "+") is not a page: it takes the cells
+                # it needs, and the pages share every other cell of the row.
+                # The powerline tab is its title, a pad and the separator.
+                # A row that starts at the window's edge opens with one cell
+                # of padding, which the first tab draws beyond its length.
+                max_tab_lengths = tab_slot_lengths(limit - start - (1 if start == 0 else 0), [
+                    None if tab.tab_id >= 0 else max(0, wcswidth(tab.title)) + POWERLINE_BUTTON_EXTRA
+                    for tab in row_data])
             if extra > 0:
                 if ideal_tab_lengths[active_idx] > max_tab_lengths[active_idx]:
                     d = min(extra, ideal_tab_lengths[active_idx] - max_tab_lengths[active_idx])
@@ -1169,6 +1257,19 @@ class TabBar:
         s.cursor.fg = s.cursor.bg = 0
         self.left_action_extents = tuple(extents)
 
+    def native_window_separator(self) -> str:
+        _, soft_separator = powerline_symbols.get(
+            self.draw_data.powerline_style, ('', ''))
+        return f' {soft_separator} '
+
+    def native_window_layout(self, available: int) -> NativeWindowLayout:
+        try:
+            title_w = int(chrome_value('KILIX_CHROME_WINDOWS_MAX_TITLE', '14') or 14)
+        except Exception:
+            title_w = 14
+        return native_window_layout(
+            window_entries, title_w, max(0, wcswidth(self.native_window_separator())), available)
+
     def draw_native_window_entries(self) -> None:
         """Continue the tab row with the native X11 windows Openbox manages.
 
@@ -1180,8 +1281,7 @@ class TabBar:
         click activates the window instead of selecting a nonexistent tab.
         """
         self.window_extents = ()
-        entries = window_entries()
-        if not entries:
+        if not window_entries():
             return
         s = self.screen
         # The reservation belongs to row zero, even when pages wrap.
@@ -1201,38 +1301,14 @@ class TabBar:
         item_bg = as_rgb(color_as_int(opts.inactive_tab_background))
         live_fg = as_rgb(color_as_int(opts.foreground))
         dim_fg = as_rgb(color_as_int(opts.inactive_tab_foreground))
-        _, soft_separator = powerline_symbols.get(
-            self.draw_data.powerline_style, ('', ''))
-        sep = f' {soft_separator} '
-        sep_w = max(0, wcswidth(sep))
-
-        try:
-            title_w = int(chrome_value('KILIX_CHROME_WINDOWS_MAX_TITLE', '14') or 14)
-        except Exception:
-            title_w = 14
-        # Rather than shrinking every label until they all fit -- which is how
-        # this ended up as a row of three-character stubs -- keep the labels
-        # readable and show only as many as the space allows, then say how many
-        # were left over.
-        slot = 0
-        shown = 0
-        for title_w in range(max(6, title_w), 5, -2):
-            slot = title_w + 2
-            shown = 0
-            used = 0
-            while shown < len(entries):
-                need = slot if shown == 0 else slot + sep_w
-                if used + need > available:
-                    break
-                used += need
-                shown += 1
-            if shown == len(entries):
-                break
-        if not shown:
+        sep = self.native_window_separator()
+        # The layout that sized the reservation in update(), asked again for
+        # the cells actually left, so the two cannot disagree.
+        layout = self.native_window_layout(available)
+        if not layout.shown:
             return
-
-        entries = window_entries(title_w)
-        hidden = len(entries) - shown
+        slot, shown, hidden = layout.slot, layout.shown, layout.hidden
+        entries = window_entries(layout.title_width)
         extents: list[ActionExtent] = []
         s.cursor.y = line
         s.cursor.x = x
@@ -1249,7 +1325,7 @@ class TabBar:
             draw_attributed_string(text.ljust(slot)[:slot], s)
             extents.append(
                 ActionExtent(action, CellRange(before, s.cursor.x), CellRange(line, line)))
-        if hidden > 0 and s.cursor.x + 4 <= limit - 1:
+        if hidden > 0 and s.cursor.x + len(f' +{hidden}') <= limit - 1:
             s.cursor.bg = default_bg
             s.cursor.fg = dim_fg
             draw_attributed_string(f' +{hidden}', s)

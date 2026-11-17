@@ -110,7 +110,10 @@ class Reading:
         return CONDITIONS.get(self.code, 'Unknown conditions')
 
     def compact(self) -> str:
-        return COMPACT_CONDITIONS.get(self.code, COMPACT_FALLBACK)
+        from ..kilix_neuronte import WEATHER_SYMBOLS, text_form
+        # One colour, drawn by Neuronte, once its nets hold the whole set;
+        # until then the colour emoji font draws them as before.
+        return text_form(COMPACT_CONDITIONS.get(self.code, COMPACT_FALLBACK), WEATHER_SYMBOLS)
 
 
 def json_request(url: str) -> dict:

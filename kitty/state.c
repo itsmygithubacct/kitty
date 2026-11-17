@@ -13,7 +13,7 @@
 
 GlobalState global_state = {{0}};
 
-#define KILIX_TAB_BAR_TABS_PER_ROW 10
+#define KILIX_TAB_BAR_TABS_PER_ROW 8
 
 #define REMOVER(array, qid, count, destroy, capacity) { \
     for (size_t i = 0; i < count; i++) { \

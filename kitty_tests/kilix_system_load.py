@@ -257,20 +257,20 @@ class TestTabRows(BaseTest):
     def shape(self, rows: tuple[tuple[TabBarData, ...], ...]) -> list[int]:
         return [sum(1 for t in row if t.tab_id >= 0) for row in rows]
 
-    def test_ten_tabs_per_row(self) -> None:
-        self.ae(MAX_TABS_PER_ROW, 10)
-        for count, expected in ((1, [1]), (10, [10]), (11, [10, 1]), (20, [10, 10]),
-                                (21, [10, 10, 1]), (35, [10, 10, 10, 5])):
+    def test_eight_tabs_per_row(self) -> None:
+        self.ae(MAX_TABS_PER_ROW, 8)
+        for count, expected in ((1, [1]), (8, [8]), (9, [8, 1]), (16, [8, 8]),
+                                (17, [8, 8, 1]), (35, [8, 8, 8, 8, 3])):
             for button in (True, False):
                 with self.subTest(count=count, button=button):
                     rows = split_tab_bar_rows(self.tabs(count, button))
                     self.ae(self.shape(rows), expected)
 
     def test_new_tab_button_ends_the_last_row_without_starting_one(self) -> None:
-        for count in (9, 10, 20):
+        for count, expected in ((7, 1), (8, 1), (9, 2), (16, 2)):
             rows = split_tab_bar_rows(self.tabs(count))
             self.ae(rows[-1][-1].title, '+')
-            self.ae(len(rows), (count + 9) // 10)
+            self.ae(len(rows), expected)
         self.ae(split_tab_bar_rows((TabBarData(title='+'),)), ((TabBarData(title='+'),),))
         self.ae(split_tab_bar_rows(()), ((),))
 
@@ -281,10 +281,10 @@ class TestTabRows(BaseTest):
             resize=MagicMock())
 
     def test_bar_height_follows_the_rows_actually_drawn(self) -> None:
-        # state.c sizes the bar from this report, so a tab dragged out of an
-        # eleven-tab window (ten drawn) or a drop placeholder in a ten-tab
-        # window (eleven drawn) gets the height of the rows on screen.
-        for count, rows in ((10, 1), (11, 2), (20, 2), (21, 3)):
+        # state.c sizes the bar from this report, so a tab dragged out of a
+        # nine-tab window (eight drawn) or a drop placeholder in an eight-tab
+        # window (nine drawn) gets the height of the rows on screen.
+        for count, rows in ((8, 1), (9, 2), (16, 2), (17, 3)):
             with self.subTest(count=count), patch('kitty.tabs.set_tab_bar_rows', return_value=True) as report:
                 tm = self.manager(self.tabs(count))
                 TabManager.update_tab_bar_data(tm)
