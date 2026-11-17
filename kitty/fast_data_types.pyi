@@ -949,6 +949,10 @@ def cell_size_for_window(os_window_id: int) -> Tuple[int, int]:
 def wakeup_main_loop() -> None:
     pass
 
+
+def kilix_software_rendering(renderer: str | None = ...) -> bool:
+    pass
+
 class Region:
     left: int
     top: int

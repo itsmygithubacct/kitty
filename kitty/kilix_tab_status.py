@@ -45,6 +45,7 @@ HIGH_KEY = 'KILIX_TAB_STATUS_HIGH_CORES'
 ACTIVE_KEY = 'KILIX_TAB_STATUS_ACTIVE_CORES'
 IDLE_AFTER_KEY = 'KILIX_TAB_STATUS_IDLE_AFTER_SECONDS'
 STEP_KEY = 'KILIX_TAB_STATUS_STEP_SECONDS'
+SOFTWARE_STEP_KEY = 'KILIX_TAB_STATUS_SOFTWARE_STEP_SECONDS'
 LOW_COLOR_KEY = 'KILIX_TAB_STATUS_LOW_COLOR'
 MODERATE_COLOR_KEY = 'KILIX_TAB_STATUS_MODERATE_COLOR'
 HIGH_COLOR_KEY = 'KILIX_TAB_STATUS_HIGH_COLOR'
@@ -56,6 +57,10 @@ ACTIVE_DEFAULT = '0.10'       # cores
 IDLE_AFTER_DEFAULT = '5'      # seconds
 STEP_DEFAULT = '1'            # seconds between moon phases
 STEP_MINIMUM = 0.25
+# Each step draws one frame. With no graphics card (most virtual machines) a
+# frame is CPU time, about a quarter of a second of it for a full-screen
+# window, so there the moon steps no faster than this.
+SOFTWARE_STEP_DEFAULT = '4'
 LOAD_SAMPLE_GRACE = 6.0       # seconds: one and a half pane samples
 LOW_COLOR_DEFAULT = '#8ae234'       # Tango chameleon
 MODERATE_COLOR_DEFAULT = '#fce94f'  # Tango butter
@@ -77,6 +82,7 @@ class Settings(NamedTuple):
     active_cores: float
     idle_after: float
     step: float
+    software_step: float
     colors: tuple[str, str, str]  # low, moderate, high as #rrggbb
 
 
@@ -133,6 +139,7 @@ def parse_settings(get: Any = chrome_value, cpu_count: int | None = None) -> Set
         active_cores=_number(get(ACTIVE_KEY, ACTIVE_DEFAULT), ACTIVE_DEFAULT, 0.0),
         idle_after=_number(get(IDLE_AFTER_KEY, IDLE_AFTER_DEFAULT), IDLE_AFTER_DEFAULT, 1.0),
         step=_number(get(STEP_KEY, STEP_DEFAULT), STEP_DEFAULT, STEP_MINIMUM),
+        software_step=_number(get(SOFTWARE_STEP_KEY, SOFTWARE_STEP_DEFAULT), SOFTWARE_STEP_DEFAULT, STEP_MINIMUM),
         colors=(
             _color(get(LOW_COLOR_KEY, LOW_COLOR_DEFAULT), LOW_COLOR_DEFAULT),
             _color(get(MODERATE_COLOR_KEY, MODERATE_COLOR_DEFAULT), MODERATE_COLOR_DEFAULT),
@@ -162,6 +169,11 @@ def classify_load(cores: float, moderate_cores: float, high_cores: float) -> str
 
 def moon_phase(step: int) -> str:
     return MOON_PHASES[step % len(MOON_PHASES)]
+
+
+def step_interval(conf: Settings, software_rendering: bool) -> float:
+    """Seconds between moon phases: never faster than software_step when the CPU draws the screen."""
+    return max(conf.step, conf.software_step) if software_rendering else conf.step
 
 
 def format_duration(seconds: float) -> str:
@@ -338,13 +350,18 @@ def _stop_timer() -> None:
 
 def _ensure_timer(conf: Settings) -> None:
     global _timer_id, _timer_interval
-    if _timer_id is not None and _timer_interval == conf.step:
+    try:
+        from .fast_data_types import kilix_software_rendering
+        interval = step_interval(conf, kilix_software_rendering())
+    except Exception:
+        interval = conf.step
+    if _timer_id is not None and _timer_interval == interval:
         return
     _stop_timer()
     try:
         from .fast_data_types import add_timer
-        _timer_id = add_timer(_tick, conf.step, True)
-        _timer_interval = conf.step
+        _timer_id = add_timer(_tick, interval, True)
+        _timer_interval = interval
     except Exception as error:
         from .utils import log_error
         log_error(f'Failed to start the kilix tab status timer: {error}')

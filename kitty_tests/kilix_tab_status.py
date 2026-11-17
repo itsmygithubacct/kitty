@@ -51,6 +51,7 @@ class TestLoadClasses(BaseTest):
         self.ae(c.active_cores, 0.1)
         self.ae(c.idle_after, 5.0)
         self.ae(c.step, 1.0)
+        self.ae(c.software_step, 4.0)
         self.ae(c.colors, ('#8ae234', '#fce94f', '#ef2929'))
 
     def test_classification_boundaries(self) -> None:
@@ -83,6 +84,51 @@ class TestLoadClasses(BaseTest):
         self.ae((c.moderate_cores, c.idle_after, c.step, c.colors[0]), (1.0, 5.0, 1.0, '#8ae234'))
         for off in ('0', 'no', 'off', 'false'):
             self.assertFalse(conf(KILIX_TAB_STATUS=off).enabled)
+
+    def test_the_moon_steps_slowly_where_the_cpu_draws_the_screen(self) -> None:
+        from kitty.fast_data_types import kilix_software_rendering
+        from kitty.kilix_tab_status import step_interval
+        c = conf()
+        self.ae(step_interval(c, False), 1.0)
+        self.ae(step_interval(c, True), 4.0)
+        slow = conf(KILIX_TAB_STATUS_STEP_SECONDS='10')        # slower by choice: slower everywhere
+        self.ae((step_interval(slow, False), step_interval(slow, True)), (10.0, 10.0))
+        same = conf(KILIX_TAB_STATUS_SOFTWARE_STEP_SECONDS='0.5')  # asked not to slow down
+        self.ae((step_interval(same, False), step_interval(same, True)), (1.0, 1.0))
+        self.ae(conf(KILIX_TAB_STATUS_SOFTWARE_STEP_SECONDS='never').software_step, 4.0)
+        for renderer, software in (
+            ('llvmpipe (LLVM 19.1.7, 256 bits)', True), ('softpipe', True), ('Software Rasterizer', True),
+            ('SWRAST', True), (None, True),
+            ('Mesa Intel(R) UHD Graphics 630 (CFL GT2)', False), ('NVIDIA GeForce RTX 3070/PCIe/SSE2', False),
+            ('AMD Radeon Graphics (radeonsi, renoir)', False), ('virgl (Mesa Intel(R) UHD Graphics 630)', False),
+            ('', False),
+        ):
+            with self.subTest(renderer=renderer):
+                self.assertIs(kilix_software_rendering(renderer), software)
+        self.assertIsInstance(kilix_software_rendering(), bool)
+
+    def test_the_step_timer_runs_at_the_chosen_interval(self) -> None:
+        added: list[float] = []
+        removed: list[int] = []
+
+        def add_timer(callback: object, interval: float, repeats: bool) -> int:
+            added.append(interval)
+            return len(added)
+
+        software = [False]
+        c = conf()
+        with patch.object(status, '_timer_id', None), patch.object(status, '_timer_interval', 0.0), \
+                patch('kitty.fast_data_types.add_timer', add_timer), \
+                patch('kitty.fast_data_types.remove_timer', removed.append), \
+                patch('kitty.fast_data_types.kilix_software_rendering', lambda: software[0]):
+            status._ensure_timer(c)
+            status._ensure_timer(c)              # already running at that interval: left alone
+            self.ae((added, removed), ([1.0], []))
+            software[0] = True
+            status._ensure_timer(c)              # replaced by the slower one
+            self.ae((added, removed), ([1.0, 4.0], [1]))
+            status._stop_timer()
+            self.ae(removed, [1, 2])
 
 
 class TestIdleClock(BaseTest):
@@ -550,6 +596,26 @@ class TestOutputClock(BaseTest):
         parse_bytes(s, b'd')
         self.ae(len(calls), 3)
         self.assertGreater(s.kilix_last_output_at(), second + 1.0)
+
+    def test_a_redraw_after_a_resize_is_not_work(self) -> None:
+        # The pane's side of the hook: the program repainting because its
+        # window changed size has not started working, and says so (False),
+        # which makes the screen put the time back.
+        from kitty.fast_data_types import monotonic
+        from kitty.window import Window
+
+        class Pane:
+            last_resized_at = 0.0
+
+        pane = Pane()
+        seen: list[object] = []
+        with patch.object(status, 'note_output', seen.append):
+            pane.last_resized_at = monotonic()
+            self.assertIs(Window.on_output_after_quiet(pane), False)  # type: ignore[arg-type]
+            self.ae(seen, [])
+            pane.last_resized_at = monotonic() - 2.0
+            self.assertIs(Window.on_output_after_quiet(pane), True)  # type: ignore[arg-type]
+            self.ae(seen, [pane])
 
     def test_a_screen_without_the_hook_still_draws(self) -> None:
         s = self.create_screen()

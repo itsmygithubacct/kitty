@@ -32,6 +32,7 @@ typedef struct {
 typedef struct Viewport { unsigned left, top, width, height; } Viewport;
 
 void gl_init(void);
+bool gl_renderer_is_software(const char *renderer);
 const char* gl_version_string(void);
 void set_gpu_viewport(unsigned w, unsigned h);
 Viewport get_gpu_viewport(void);
