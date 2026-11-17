@@ -30,6 +30,7 @@ git -C "$HERE" archive HEAD -- . ':!debian' | tar -C "$tree" -xf -
     echo "$FONT_ARCHIVE_SHA256  $work/font.tar.xz" | sha256sum -c - >/dev/null
     mkdir -p fonts
     tar -xf "$work/font.tar.xz" -C fonts SymbolsNerdFontMono-Regular.ttf
+    tar -xOf "$work/font.tar.xz" LICENSE > fonts/LICENSE-NerdFonts
     echo "$FONT_SHA256  fonts/SymbolsNerdFontMono-Regular.ttf" | sha256sum -c - >/dev/null
 )
 tar -C "$work" --sort=name --mtime="@$epoch" --owner=0 --group=0 --numeric-owner \

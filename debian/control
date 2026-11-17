@@ -21,7 +21,7 @@ Vcs-Browser: https://github.com/itsmygithubacct/kitty
 
 Package: kilix-engine
 Architecture: amd64 arm64
-Depends: libegl1, ${shlibs:Depends}, ${misc:Depends}
+Depends: libegl1, python3.13, ${shlibs:Depends}, ${misc:Depends}
 Recommends: libcanberra0
 Description: terminal engine for Kilix
  The Kilix build of the kitty terminal emulator, which Kilix runs as its
