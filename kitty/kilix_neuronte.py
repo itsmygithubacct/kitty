@@ -22,6 +22,15 @@ geometry written for Kilix (a ring with the dark part filled; a dome, a rim
 and a clapper), not copies of any font's glyphs. ``source_of()`` says which
 of the three (a net, the stand-in, the fonts) draws a character.
 
+Most of the bar symbols are drawn two cells wide, as the symbol font draws
+them: across the symbol's cell and the blank cell Kilix prints after it. Which
+symbols is a setting (``KILIX_NEURONTE_TWO_CELL``). A weight file named in
+``KILIX_NEURONTE_TWO_CELL_WEIGHTS`` holds drawings made for that two-cell box;
+it is asked for twice the height and each pair of rows is averaged, because
+the library scales a drawing by the width of the box alone. A symbol with no
+such drawing is drawn two cells wide from its one-cell drawing made larger,
+and where no blank cell follows a symbol its one-cell drawing is used.
+
 The Neuronte handle is not thread-safe. Everything here runs on the engine's
 main thread, which is the only thread that renders cells.
 """
@@ -37,9 +46,16 @@ from .kilix_chrome.settings import chrome_value
 
 ENABLED_KEY = 'KILIX_NEURONTE'            # auto (default) or off
 WEIGHTS_KEY = 'KILIX_NEURONTE_WEIGHTS'    # weight file names, first match draws
-# The chrome's own bundle first, then the terminal bundles that hold the rest.
+# The chrome's own bundles first (two-cell drawings, then the one-cell ones
+# they fall back to), then the terminal bundles that hold the rest.
 WEIGHTS_DEFAULT = (
-    'neuronte-kilix-chrome-v1.nrt neuronte-term-rest-v1.nrt neuronte-term-dingbat-v1.nrt neuronte-split-v9.nrt')
+    'neuronte-kilix-chrome-v2.nrt neuronte-kilix-chrome-v1.nrt'
+    ' neuronte-term-rest-v1.nrt neuronte-term-dingbat-v1.nrt neuronte-split-v9.nrt')
+TWO_CELL_KEY = 'KILIX_NEURONTE_TWO_CELL'  # auto (default), off, or code points such as "U+F0219 U+F073"
+TWO_CELL_WEIGHTS_KEY = 'KILIX_NEURONTE_TWO_CELL_WEIGHTS'  # the files whose drawings are made for two cells
+TWO_CELL_WEIGHTS_DEFAULT = 'neuronte-kilix-chrome-v2.nrt'
+WEATHER_KEY = 'KILIX_NEURONTE_WEATHER'    # off (default): colour emoji; on: one colour, drawn by the nets
+_OFF = ('0', 'no', 'false', 'off', 'disabled', 'none')
 
 MOONS = tuple(range(0x1f311, 0x1f319))
 BELL = 0x1f56d
@@ -54,6 +70,23 @@ NERD_SYMBOLS = (
 # The weather widget's symbols, for when it prints them as text.
 WEATHER_SYMBOLS = (0x2600, 0x2601, 0x26c5, 0x26c8, 0x1f324, 0x1f326, 0x1f327, 0x1f328, 0x1f32b)
 CHROME_CODEPOINTS = tuple(sorted(set(STATUS_MARKS + NERD_SYMBOLS + WEATHER_SYMBOLS)))
+# The symbols drawn across two cells where a blank cell follows: every pane
+# button and bar widget symbol the nets were asked for, and the weather. Not
+# the moons, the dot or the bell, which sit in one cell of a tab title. A
+# two-cell weight file holds its drawings of these, and only these, for the
+# two-cell box.
+TWO_CELL_SYMBOLS = frozenset((
+    0xeab9, 0xf028, 0xf073, 0xf0e7, 0xf1eb, 0xf2c9,
+    *range(0xf0079, 0xf0084), 0xf0091, 0xf0156, 0xf0219, 0xf0293, 0xf030c, 0xf035b, 0xf036c, 0xf036d,
+    0xf05cb, 0xf072e, 0xf0731, 0xf0734, 0xf0737, 0xf08ae,
+    *WEATHER_SYMBOLS,
+))
+# Asked of a two-cell file: the box at twice its height, rows averaged in pairs.
+ROWS_PER_PIXEL = 2
+# The share of a two-cell box, each way, that a one-cell drawing made larger
+# may cover: what the symbol font's ink covers (15 of 18 pixels).
+ENLARGED_FILL = 5 / 6
+_INK = 48   # coverage, of 255, that counts as ink when a drawing is measured
 
 # A scalar no bundle is trained on. A weight file without a table of its
 # trained characters answers "trained" for everything, this one included; such
@@ -173,6 +206,64 @@ def has_stand_in(codepoint: int) -> bool:
 # }}}
 
 
+def two_cell_symbols(setting: str) -> frozenset[int]:
+    """The characters to draw two cells wide, from the setting's value."""
+    words = setting.replace(',', ' ').split()
+    if not words or words == ['auto']:
+        return TWO_CELL_SYMBOLS
+    ans = set()
+    for word in words:
+        if word.lower() in _OFF:
+            continue
+        digits = word[2:] if word[:2].lower() in ('u+', '0x') else word
+        try:
+            codepoint = int(digits, 16)
+        except ValueError:
+            continue
+        if codepoint in CHROME_CODEPOINTS:   # the engine asks about no other character
+            ans.add(codepoint)
+    return frozenset(ans)
+
+
+def pair_rows(mask: bytes, width: int, height: int, rows: int = ROWS_PER_PIXEL) -> bytes:
+    """``mask`` is ``width`` by ``height * rows``; average each ``rows`` rows into one."""
+    out = bytearray(width * height)
+    for y in range(height):
+        base = y * rows * width
+        for x in range(width):
+            total = 0
+            for r in range(rows):
+                total += mask[base + r * width + x]
+            out[y * width + x] = (total + rows // 2) // rows
+    return bytes(out)
+
+
+def ink_box(mask: bytes, width: int, height: int) -> tuple[int, int, int, int] | None:
+    """Left, top, right and bottom (exclusive) of the pixels that are ink."""
+    rows = [y for y in range(height) if max(mask[y * width:(y + 1) * width]) >= _INK]
+    if not rows:
+        return None
+    columns = [x for x in range(width) if max(mask[x::width]) >= _INK]
+    return columns[0], rows[0], columns[-1] + 1, rows[-1] + 1
+
+
+def centred(mask: bytes, width: int, box: tuple[int, int, int, int], out_width: int, out_height: int) -> bytes:
+    """The ``box`` of ``mask`` in the middle of an empty ``out_width`` by ``out_height`` mask."""
+    left, top, right, bottom = box
+    out = bytearray(out_width * out_height)
+    x0 = (out_width - (right - left)) // 2
+    y0 = (out_height - (bottom - top)) // 2
+    for y in range(top, bottom):
+        oy = y0 + y - top
+        if not 0 <= oy < out_height:
+            continue
+        for x in range(left, right):
+            ox = x0 + x - left
+            if 0 <= ox < out_width:
+                out[oy * out_width + ox] = mask[y * width + x]
+    return bytes(out)
+
+
 class Nets:
     """The opened weight files, asked in order."""
 
@@ -213,48 +304,121 @@ class Nets:
                 continue
             self.handles.append((os.path.basename(path), handle))
 
-    def net_for(self, codepoint: int) -> tuple[str, ctypes.c_void_p] | None:
+    def trained(self, codepoint: int) -> list[tuple[str, ctypes.c_void_p]]:
+        """The files trained on the character, in the order they are asked."""
         if self.lib is None:
+            return []
+        return [(name, handle) for name, handle in self.handles
+                if self.lib.neuronte_untrained(handle, codepoint) == 0]
+
+    def net_for(self, codepoint: int) -> tuple[str, ctypes.c_void_p] | None:
+        found = self.trained(codepoint)
+        return found[0] if found else None
+
+    def coverage_from(self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int) -> bytes | None:
+        if self.lib is None or not (MIN_CELL <= width <= MAX_CELL and MIN_CELL <= height <= MAX_CELL):
             return None
-        for name, handle in self.handles:
-            if self.lib.neuronte_untrained(handle, codepoint) == 0:
-                return name, handle
-        return None
+        buf = (ctypes.c_float * (width * height))()
+        if self.lib.neuronte_coverage(handle, codepoint, width, height, 0, buf) != 0:
+            return None
+        return bytes(min(255, max(0, int(value * 255.0 + 0.5))) for value in buf)
 
     def coverage(self, codepoint: int, width: int, height: int) -> bytes | None:
         found = self.net_for(codepoint)
-        if found is None or self.lib is None:
-            return None
-        buf = (ctypes.c_float * (width * height))()
-        if self.lib.neuronte_coverage(found[1], codepoint, width, height, 0, buf) != 0:
-            return None
-        return bytes(min(255, max(0, int(value * 255.0 + 0.5))) for value in buf)
+        return None if found is None else self.coverage_from(found[1], codepoint, width, height)
 
 
 class GlyphSource:
     """What the engine calls: can this character be drawn, and its mask."""
 
-    def __init__(self, nets: Nets | None, use_stand_ins: bool = True) -> None:
+    def __init__(
+        self, nets: Nets | None, use_stand_ins: bool = True,
+        two_cell: frozenset[int] = frozenset(), two_cell_files: frozenset[str] = frozenset(),
+    ) -> None:
         self.nets = nets
         self.use_stand_ins = use_stand_ins
+        self.two_cell = two_cell              # characters to draw two cells wide
+        self.two_cell_files = two_cell_files  # weight files whose drawings of TWO_CELL_SYMBOLS are two cells wide
+
+    def made_for_two_cells(self, name: str, codepoint: int) -> bool:
+        return name in self.two_cell_files and codepoint in TWO_CELL_SYMBOLS
+
+    def one_cell_net(self, codepoint: int) -> tuple[str, ctypes.c_void_p] | None:
+        """The first file whose drawing of the character is made for one cell."""
+        if self.nets is not None:
+            for name, handle in self.nets.trained(codepoint):
+                if not self.made_for_two_cells(name, codepoint):
+                    return name, handle
+        return None
+
+    def two_cell_net(self, codepoint: int) -> tuple[str, ctypes.c_void_p, bool] | None:
+        """The file that draws the character two cells wide, and whether its drawing is made for that."""
+        if self.nets is None or codepoint not in self.two_cell:
+            return None
+        for name, handle in self.nets.trained(codepoint):
+            made = self.made_for_two_cells(name, codepoint)
+            if made or self.use_stand_ins:
+                return name, handle, made
+        return None
 
     def source_of(self, codepoint: int) -> str:
-        """The weight file's name, 'stand-in', or 'font'."""
-        if self.nets is not None and (found := self.nets.net_for(codepoint)) is not None:
+        """Who draws the character in one cell: the weight file's name, 'stand-in', or 'font'."""
+        if (found := self.one_cell_net(codepoint)) is not None:
             return found[0]
         if self.use_stand_ins and has_stand_in(codepoint):
             return 'stand-in'
         return 'font'
 
-    def can_draw(self, codepoint: int) -> bool:
-        return self.source_of(codepoint) != 'font'
+    def two_cell_source_of(self, codepoint: int) -> str:
+        """Who draws it across two cells: a file's name, 'NAME, enlarged', or '' for nobody."""
+        found = self.two_cell_net(codepoint)
+        if found is None:
+            return ''
+        return found[0] if found[2] else f'{found[0]}, enlarged'
 
-    def draw(self, codepoint: int, width: int, height: int) -> bytes | None:
+    def can_draw(self, codepoint: int) -> int:
+        """Bit 0: drawn in one cell. Bit 1: drawn across two cells where a blank cell follows."""
+        return (self.source_of(codepoint) != 'font') | (2 if self.two_cell_net(codepoint) is not None else 0)
+
+    def draw(self, codepoint: int, width: int, height: int, cells: int = 1) -> bytes | None:
         if not (MIN_CELL <= width <= MAX_CELL and MIN_CELL <= height <= MAX_CELL):
             return None
-        if self.nets is not None and (mask := self.nets.coverage(codepoint, width, height)) is not None:
-            return mask
+        if cells == 2:
+            return self.draw_two_cells(codepoint, width, height)
+        if self.nets is not None and (found := self.one_cell_net(codepoint)) is not None:
+            if (mask := self.nets.coverage_from(found[1], codepoint, width, height)) is not None:
+                return mask
         return stand_in(codepoint, width, height) if self.use_stand_ins else None
+
+    def draw_two_cells(self, codepoint: int, width: int, height: int) -> bytes | None:
+        found = self.two_cell_net(codepoint)
+        if found is None or self.nets is None or height * ROWS_PER_PIXEL > MAX_CELL:
+            return None
+        _, handle, made = found
+        if made:
+            tall = self.nets.coverage_from(handle, codepoint, width, height * ROWS_PER_PIXEL)
+            return None if tall is None else pair_rows(tall, width, height)
+        return self.enlarged(handle, codepoint, width, height)
+
+    def enlarged(self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int) -> bytes | None:
+        """A one-cell drawing made larger and centred in a two-cell box.
+
+        This stands in for a drawing made for two cells. The net is asked for
+        a cell twice the size, the ink is measured, and the net is asked again
+        at the size where the ink covers ENLARGED_FILL of the box.
+        """
+        assert self.nets is not None
+        cell_w, cell_h = width, 2 * height    # the one-cell drawing at twice the cell
+        mask = self.nets.coverage_from(handle, codepoint, cell_w, cell_h)
+        if mask is None or (box := ink_box(mask, cell_w, cell_h)) is None:
+            return None
+        factor = min(ENLARGED_FILL * width / (box[2] - box[0]), ENLARGED_FILL * height / (box[3] - box[1]), 1.5)
+        fitted_w, fitted_h = max(MIN_CELL, round(cell_w * factor)), max(MIN_CELL, round(cell_h * factor))
+        if (fitted_w, fitted_h) != (cell_w, cell_h):
+            fitted = self.nets.coverage_from(handle, codepoint, fitted_w, fitted_h)
+            if fitted is not None and (fitted_box := ink_box(fitted, fitted_w, fitted_h)) is not None:
+                mask, box, cell_w = fitted, fitted_box, fitted_w
+        return centred(mask, cell_w, box, width, height)
 
 
 def weight_paths(root: str, names: str) -> list[str]:
@@ -270,12 +434,16 @@ _source: GlyphSource | None = None
 
 
 def build_source(environ: dict[str, str] | os._Environ[str] = os.environ) -> GlyphSource | None:
-    if chrome_value(ENABLED_KEY, 'auto').strip().lower() in ('0', 'no', 'false', 'off', 'disabled'):
+    if chrome_value(ENABLED_KEY, 'auto').strip().lower() in _OFF:
         return None
     root = neuronte_root(environ)
     library = environ.get('NEURONTE_LIB') or os.path.join(root, 'build', 'libneuronte.so')
     nets = Nets(library, weight_paths(root, chrome_value(WEIGHTS_KEY, WEIGHTS_DEFAULT) or WEIGHTS_DEFAULT))
-    return GlyphSource(nets if nets.handles else None)
+    two_cell_files = chrome_value(TWO_CELL_WEIGHTS_KEY, TWO_CELL_WEIGHTS_DEFAULT) or TWO_CELL_WEIGHTS_DEFAULT
+    return GlyphSource(
+        nets if nets.handles else None,
+        two_cell=two_cell_symbols(chrome_value(TWO_CELL_KEY, 'auto')),
+        two_cell_files=frozenset(os.path.basename(path) for path in weight_paths(root, two_cell_files)))
 
 
 def source() -> GlyphSource | None:
@@ -291,13 +459,22 @@ def text_form(symbol: str, group: Sequence[int]) -> str:
 
     A widget's symbols change together or not at all: a bar that mixed colour
     emoji with one-colour drawings would look broken. An emoji selector is
-    replaced by the text selector, which also makes the symbol one cell wide.
+    replaced by the text selector, which also makes the symbol one cell wide;
+    a symbol drawn two cells wide gets the blank cell it is drawn into, so
+    the text is as wide as it was with the emoji.
     """
     if _source is None or not symbol or ord(symbol[0]) not in group:
         return symbol
-    if any(_source.source_of(cp) in ('font', 'stand-in') for cp in group):
+    if any(_source.source_of(cp) in ('font', 'stand-in') and not _source.two_cell_source_of(cp) for cp in group):
         return symbol
-    return symbol[0] + '\ufe0e'
+    return symbol[0] + '\ufe0e' + (' ' if _source.two_cell_source_of(ord(symbol[0])) else '')
+
+
+def weather_symbol(symbol: str) -> str:
+    """The weather widget's symbol: colour emoji unless one colour is asked for."""
+    if chrome_value(WEATHER_KEY, 'off').strip().lower() not in ('1', 'yes', 'true', 'on'):
+        return symbol
+    return text_form(symbol, WEATHER_SYMBOLS)
 
 
 def install() -> None:

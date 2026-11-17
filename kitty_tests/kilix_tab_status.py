@@ -472,6 +472,129 @@ class TestStandIns(BaseTest):
             self.ae(neuronte.text_form('?', neuronte.WEATHER_SYMBOLS), '?')
             self.ae(neuronte.text_form('', neuronte.WEATHER_SYMBOLS), '')
 
+    def test_which_symbols_are_two_cells_wide(self) -> None:
+        wide = neuronte.TWO_CELL_SYMBOLS
+        self.assertTrue(wide <= set(neuronte.CHROME_CODEPOINTS))
+        # Everything on the bars but the marks that sit in one cell of a tab title.
+        self.assertFalse(wide & set(neuronte.STATUS_MARKS))
+        self.assertTrue(set(neuronte.WEATHER_SYMBOLS) <= wide)
+        self.ae(set(neuronte.NERD_SYMBOLS) - wide, {0xf2db, 0xf0fb2})    # the two no net was asked for
+        self.ae(neuronte.two_cell_symbols('auto'), wide)
+        self.ae(neuronte.two_cell_symbols(''), wide)
+        for off in ('off', 'none', '0', 'no'):
+            self.ae(neuronte.two_cell_symbols(off), frozenset())
+        self.ae(neuronte.two_cell_symbols('U+F0219, 0xf073 f0156 u+1f56d'), {0xf0219, 0xf073, 0xf0156, neuronte.BELL})
+        # Not a code point, and a character the engine never asks about.
+        self.ae(neuronte.two_cell_symbols('wide U+0041 U+F0219'), {0xf0219})
+        # The two-cell drawings are asked first, the one-cell ones they fall back to next.
+        names = neuronte.WEIGHTS_DEFAULT.split()
+        self.ae(names[:2], ['neuronte-kilix-chrome-v2.nrt', 'neuronte-kilix-chrome-v1.nrt'])
+        self.assertIn(neuronte.TWO_CELL_WEIGHTS_DEFAULT, names)
+
+    def test_mask_arithmetic(self) -> None:
+        # Two rows of four become one: each pixel the mean of the pair, rounded.
+        self.ae(neuronte.pair_rows(bytes((0, 255, 10, 3, 0, 255, 20, 4, 100, 0, 0, 0, 50, 0, 1, 0)), 4, 2),
+                bytes((0, 255, 15, 4, 75, 0, 1, 0)))
+        mask = bytearray(6 * 5)
+        for x, y, value in ((2, 1, 255), (4, 3, 200), (0, 0, neuronte._INK - 1)):
+            mask[y * 6 + x] = value
+        self.ae(neuronte.ink_box(bytes(mask), 6, 5), (2, 1, 5, 4))     # faint pixels are not ink
+        self.assertIsNone(neuronte.ink_box(bytes(30), 6, 5))
+        out = neuronte.centred(bytes(mask), 6, (2, 1, 5, 4), 9, 7)
+        self.ae(len(out), 9 * 7)
+        self.ae(neuronte.ink_box(out, 9, 7), (3, 2, 6, 5))             # the 3 by 3 box in the middle of 9 by 7
+        self.ae((out[2 * 9 + 3], out[4 * 9 + 5]), (255, 200))
+        # A box larger than the mask it goes into is cut, not wrapped.
+        self.ae(len(neuronte.centred(bytes([255]) * 30, 6, (0, 0, 6, 5), 4, 3)), 12)
+
+    def test_who_draws_one_cell_and_who_draws_two(self) -> None:
+        v2, v1, rest = 'chrome-v2.nrt', 'chrome-v1.nrt', 'rest.nrt'
+        log, cross, bell, key = 0xf0219, 0xf0156, neuronte.BELL, 0xf030c
+
+        class FakeNets:
+            # v2 holds two-cell drawings and the bell; v1 one-cell drawings.
+            files = {v2: {log, bell}, v1: {log, cross, bell}, rest: {0x2600}}
+
+            def __init__(self) -> None:
+                self.asked: list[tuple[str, int, int, int]] = []
+
+            def trained(self, cp: int) -> list[tuple[str, str]]:
+                return [(name, name) for name, cps in self.files.items() if cp in cps]
+
+            def coverage_from(self, handle: str, cp: int, width: int, height: int) -> bytes:
+                self.asked.append((handle, cp, width, height))
+                if handle == v2:
+                    # Rows alternate full and empty: averaged in pairs they are half.
+                    return bytes(255 if y % 2 == 0 else 0 for y in range(height) for _ in range(width))
+                # A block in the middle third of the cell, each way.
+                return bytes(255 if width // 3 <= x < 2 * width // 3 and height // 3 <= y < 2 * height // 3 else 0
+                             for y in range(height) for x in range(width))
+
+        nets = FakeNets()
+        source = neuronte.GlyphSource(nets, two_cell=neuronte.TWO_CELL_SYMBOLS, two_cell_files=frozenset({v2}))
+        # One cell: never the two-cell drawing. The bell is one cell in every file.
+        self.ae([source.source_of(cp) for cp in (log, cross, bell, key, 0x2600)], [v1, v1, v2, 'font', rest])
+        self.ae([source.two_cell_source_of(cp) for cp in (log, cross, bell, key, 0x2600)],
+                [v2, f'{v1}, enlarged', '', '', f'{rest}, enlarged'])
+        self.ae([source.can_draw(cp) for cp in (log, cross, bell, key, ord('a'))], [3, 3, 1, 0, 0])
+        # The two-cell file is asked for twice the height and the rows are averaged.
+        self.ae(source.draw(log, 18, 17, 2), bytes([128]) * (18 * 17))
+        self.ae(nets.asked, [(v2, log, 18, 34)])
+        del nets.asked[:]
+        self.ae(len(source.draw(log, 9, 17, 1)), 9 * 17)
+        self.ae(nets.asked, [(v1, log, 9, 17)])
+        # No two-cell drawing: the one-cell drawing, larger, centred, filling 5/6 of the box.
+        del nets.asked[:]
+        mask = source.draw(cross, 18, 18, 2)
+        self.ae(nets.asked[0], (v1, cross, 18, 36))
+        self.ae(len(nets.asked), 2)
+        left, top, right, bottom = neuronte.ink_box(mask, 18, 18)
+        self.assertLessEqual(abs(left + right - 18), 1)                 # centred, to the pixel
+        self.assertLessEqual(abs(top + bottom - 18), 1)
+        self.assertLessEqual(max(right - left, bottom - top), 15)       # 5/6 of 18
+        self.assertGreaterEqual(bottom - top, 13)                       # and not left small
+        self.assertIsNone(source.draw(bell, 18, 18, 2))                 # the bell is never two cells
+        self.assertIsNone(source.draw(log, 18, 300, 2))                 # twice the height is past the library's limit
+        # Switched off: nothing is two cells, and the two-cell file is still not asked for one cell.
+        narrow = neuronte.GlyphSource(nets, two_cell=frozenset(), two_cell_files=frozenset({v2}))
+        self.ae([narrow.can_draw(cp) for cp in (log, cross, bell)], [1, 1, 1])
+        self.ae(narrow.source_of(log), v1)
+        # Only the two-cell drawing exists: two cells where a blank follows, the fonts elsewhere.
+        FakeNets.files = {v2: {log}}
+        only = neuronte.GlyphSource(FakeNets(), two_cell=neuronte.TWO_CELL_SYMBOLS, two_cell_files=frozenset({v2}))
+        self.ae((only.source_of(log), only.two_cell_source_of(log), only.can_draw(log)), ('font', v2, 2))
+        self.assertIsNone(only.draw(log, 9, 18, 1))
+        # Without stand-ins a one-cell drawing is not made larger.
+        FakeNets.files = {v1: {cross}}
+        strict = neuronte.GlyphSource(FakeNets(), use_stand_ins=False, two_cell=neuronte.TWO_CELL_SYMBOLS)
+        self.ae((strict.can_draw(cross), strict.two_cell_source_of(cross)), (1, ''))
+
+    def test_weather_keeps_its_colour_unless_asked(self) -> None:
+        class Whole(neuronte.GlyphSource):
+            def source_of(self, codepoint: int) -> str:
+                return 'net.nrt'
+
+        class Wide(Whole):
+            def two_cell_source_of(self, codepoint: int) -> str:
+                return 'wide.nrt'
+
+        sun = '\u2600\ufe0f'
+        with tempfile.TemporaryDirectory() as root:
+            settings = os.path.join(root, 'settings.conf')
+            with patch.dict(os.environ, {'GPU_TERMINAL_SETTINGS_FILE': settings}):
+                for text, source, expected in (
+                    ('', Whole(None), sun),                                  # the default is the colour emoji
+                    ('KILIX_NEURONTE_WEATHER=off\n', Wide(None), sun),
+                    ('KILIX_NEURONTE_WEATHER=on\n', None, sun),              # no nets: nothing to switch to
+                    ('KILIX_NEURONTE_WEATHER=on\n', Whole(None), '\u2600\ufe0e'),
+                    ('KILIX_NEURONTE_WEATHER=on\n', Wide(None), '\u2600\ufe0e '),  # with the blank it is drawn into
+                ):
+                    with open(settings + '.new', 'w') as f:
+                        f.write(text)
+                    os.replace(settings + '.new', settings)
+                    with patch.object(neuronte, '_source', source):
+                        self.ae(neuronte.weather_symbol(sun), expected, (text, source))
+
     def test_where_neuronte_is_looked_for(self) -> None:
         self.ae(neuronte.neuronte_root({'NEURONTE_HOME': '/opt/nrt'}), '/opt/nrt')
         self.ae(neuronte.neuronte_root({'GPU_TERMINAL_SOURCE_HOME': '/srv/sources'}), '/srv/sources/neuronte')
@@ -513,7 +636,8 @@ class TestGlyphHook(FontBaseTest):
             asked.append(cp)
             return cp != 0x1f312
 
-        def draw(cp: int, width: int, height: int) -> bytes:
+        def draw(cp: int, width: int, height: int, cells: int) -> bytes:
+            self.ae(cells, 1)
             drawn.append((cp, width, height))
             if cp == 0x1f313:
                 return bytes(width * height)
@@ -551,14 +675,14 @@ class TestGlyphHook(FontBaseTest):
 
     def test_colour_emoji_keeps_its_font(self) -> None:
         drawn: list[int] = []
-        set_kilix_glyph_source((0x1f311,), lambda cp: True, lambda cp, w, h: drawn.append(cp) or bytes(w * h))
+        set_kilix_glyph_source((0x1f311,), lambda cp: True, lambda cp, w, h, cells: drawn.append(cp) or bytes(w * h))
         self.render('\U0001f311')          # emoji presentation: two cells, the emoji font
         self.ae(drawn, [])
         self.render('\U0001f311\ufe0e')    # text presentation: ours
         self.ae(drawn, [0x1f311])
 
     def test_bad_answers_fall_back_to_the_engine(self) -> None:
-        set_kilix_glyph_source((0x25cf,), lambda cp: True, lambda cp, w, h: b'short')
+        set_kilix_glyph_source((0x25cf,), lambda cp: True, lambda cp, w, h, cells: b'short')
         engine = self.render('\u25cf')
         set_kilix_glyph_source((), None, None)
         self.ae(self.render('\u25cf \u25cf')[:0], [])    # still renders with the source removed
@@ -569,6 +693,137 @@ class TestGlyphHook(FontBaseTest):
             set_kilix_glyph_source((9, 3), None, None)
         with self.assertRaises(ValueError):
             set_kilix_glyph_source((0x110000,), None, None)
+
+
+    def test_two_cell_character_takes_the_blank_after_it(self) -> None:
+        both, wide_only, narrow, nothing = 0xf0219, 0xf073, 0xf0156, 0xf0300
+        asked: list[int] = []
+        drawn: list[tuple[int, int, int, int]] = []
+        answers = {both: 3, wide_only: 2, narrow: 1, nothing: 1}
+        cw, ch = self.cell_width, self.cell_height
+
+        def can_draw(cp: int) -> int:
+            asked.append(cp)
+            return answers[cp]
+
+        def draw(cp: int, width: int, height: int, cells: int) -> bytes:
+            drawn.append((cp, width, height, cells))
+            if cells == 2:   # the first cell and two columns of the second
+                return bytes(255 if x < cw + 2 else 0 for _ in range(height) for x in range(width))
+            return bytes([0 if cp == nothing else 255]) * (width * height)
+
+        def render(text: str) -> tuple[list[bytes], list[int]]:
+            s = self.create_screen(cols=8, lines=1, scrollback=0)
+            before = set(self.sprites)
+            parse_bytes(s, ('\x1b[38;2;10;20;30m' + text[:1] + '\x1b[39m' + text[1:]).encode())
+            test_render_line(s.line(0))
+            line = s.line(0)
+            return ([self.sprites[k] for k in sorted(set(self.sprites) - before)],
+                    [line.cursor_from(x).fg for x in range(len(text))])
+
+        set_kilix_glyph_source(tuple(sorted(answers)), can_draw, draw)
+        full = render(chr(narrow))[0][0]
+        self.ae(drawn, [(narrow, cw, ch, 1)])
+        empty = render(chr(nothing))[0][0]
+        self.assertNotEqual(full, empty)
+        del drawn[:]
+        # A blank follows: one drawing, twice the cell wide, cut into two cells.
+        sprites, colours = render(chr(both) + ' x')
+        self.ae(drawn, [(both, 2 * cw, ch, 2)])
+        self.ae(len(sprites), 3)    # two halves and the x
+        self.ae(sprites[0], full)
+        pixel = len(full) // (cw * ch)
+        for y in range(ch):
+            row = sprites[1][y * cw * pixel:(y + 1) * cw * pixel]
+            self.ae(row[:2 * pixel], full[:2 * pixel])
+            self.ae(row[2 * pixel:], empty[2 * pixel:cw * pixel])
+        # The blank cell is painted in the symbol's colour, like the cell after a wide font glyph.
+        self.ae(colours[1], colours[0])
+        self.assertNotEqual(colours[2], colours[0])
+        # Drawn once, however often it is shown.
+        render(chr(both) + ' ' + chr(both) + ' ')
+        self.ae(len(drawn), 1)
+        # No blank after it: the one-cell drawing.
+        del drawn[:]
+        sprites, colours = render(chr(both) + 'x')
+        self.ae(drawn, [(both, cw, ch, 1)])       # a drawing of its own, not half of the wide one
+        self.ae(sprites[0], full)
+        self.assertNotEqual(colours[1], colours[0])
+        for text in (chr(both), 'aaaaaaa' + chr(both), chr(both) + chr(both), chr(both) + '\u2600 '):
+            self.ae(render(text)[0][:0], [])
+        self.ae(drawn, [(both, cw, ch, 1)])       # nothing new was asked for: no blank followed
+        self.ae(asked.count(both), 1)
+        # An en-space counts as a blank, as it does for a wide font glyph.
+        self.ae(len(render(chr(both) + '\u2002')[0]), 0)
+        # A character with only a two-cell drawing: drawn where a blank follows, left to the fonts elsewhere.
+        del drawn[:]
+        render(chr(wide_only) + ' ')
+        self.ae(drawn, [(wide_only, 2 * cw, ch, 2)])
+        render(chr(wide_only) + 'x')
+        self.ae(drawn, [(wide_only, 2 * cw, ch, 2)])
+        # A character with only a one-cell drawing stays in its cell before a blank.
+        del drawn[:]
+        self.ae(render(chr(narrow) + ' ')[1][1:], render('a ')[1][1:])
+        self.ae(drawn, [])
+        self.ae(asked.count(narrow), 1)
+
+    def test_a_refused_two_cell_drawing_falls_back_to_one_cell(self) -> None:
+        drawn: list[int] = []
+
+        def draw(cp: int, width: int, height: int, cells: int) -> bytes:
+            drawn.append(cells)
+            return b'short' if cells == 2 else bytes([255]) * (width * height)
+
+        set_kilix_glyph_source((0xf0219,), lambda cp: 3, draw)
+        s = self.create_screen(cols=8, lines=1, scrollback=0)
+        s.draw('\U000f0219 ')
+        test_render_line(s.line(0))
+        self.ae(drawn, [2, 1])
+        # Answers that are not the two bits mean "not drawn".
+        # A longer list each time, and its last character: a drawing is kept by
+        # its place in the list, and one already made is not asked for again.
+        for count, answer in enumerate((4, 5, 6, 7, -1, 2 ** 70, None, 0, 'yes', True), 2):
+            del drawn[:]
+            chars = tuple(range(0xf0300, 0xf0300 + count))
+            cp = chars[-1]
+            set_kilix_glyph_source(chars, lambda cp: answer, draw)
+            s = self.create_screen(cols=8, lines=1, scrollback=0)
+            s.draw(chr(cp) + ' ')
+            test_render_line(s.line(0))
+            self.ae(drawn, [1] if answer in ('yes', True) else [], repr(answer))
+
+    def test_colour_emoji_is_not_drawn_two_cells_wide(self) -> None:
+        drawn: list[int] = []
+        set_kilix_glyph_source((0x2600, 0x26c5), lambda cp: 3, lambda cp, w, h, cells: drawn.append(cells) or bytes(w * h))
+        s = self.create_screen(cols=8, lines=1, scrollback=0)
+        s.draw('\u2600\ufe0f ')     # emoji presentation: the emoji font, two cells of its own
+        test_render_line(s.line(0))
+        self.ae(drawn, [])
+        s = self.create_screen(cols=8, lines=1, scrollback=0)
+        s.draw('\u2600\ufe0e ')     # text presentation and a blank: ours, two cells
+        test_render_line(s.line(0))
+        self.ae(drawn, [2])
+        # An emoji that is wide by default and made narrow by the text selector: ours, two cells.
+        del drawn[:]
+        s = self.create_screen(cols=8, lines=1, scrollback=0)
+        s.draw('\u26c5 ')            # as it comes: the emoji font
+        test_render_line(s.line(0))
+        self.ae(drawn, [])
+        s = self.create_screen(cols=8, lines=1, scrollback=0)
+        s.draw('\u26c5\ufe0e x')
+        test_render_line(s.line(0))
+        self.ae(drawn, [2])
+        self.ae(str(s.line(0)), '\u26c5\ufe0e x')   # one cell, then the blank it is drawn into
+
+    def test_text_of_another_size_is_not_drawn_two_cells_wide(self) -> None:
+        drawn: list[tuple[int, int, int]] = []
+        set_kilix_glyph_source((0xf0219,), lambda cp: 3, lambda cp, w, h, cells: drawn.append((w, h, cells)) or bytes(w * h))
+        s = self.create_screen(cols=8, lines=2, scrollback=0)
+        # Half size in one cell, then a blank: the drawing for a two-cell box is not asked for.
+        parse_bytes(s, '\x1b]66;n=1:d=2;\U000f0219\x07 x'.encode())
+        test_render_line(s.line(0))
+        self.assertTrue(drawn)
+        self.ae({cells for _, _, cells in drawn}, {1})
 
 
 class TestOutputClock(BaseTest):

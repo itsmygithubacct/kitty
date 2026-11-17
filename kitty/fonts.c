@@ -762,8 +762,15 @@ static bool allow_use_of_box_fonts = true;
 // takes the box-drawing path below, where the source fills the cell's alpha
 // mask, or it is left to the fonts as if it had never been listed. Text that
 // uses none of these characters pays one range comparison per cell.
-typedef struct { char_type ch; uint8_t state; } KilixGlyph;
+//
+// The source answers with two bits. Bit 0: it draws the character in one cell.
+// Bit 1: it draws it across two cells, which render_line() uses only where the
+// cell after the character is blank, the way a wide symbol-font glyph spreads
+// into a following space. The two are independent: a character with only the
+// two-cell drawing goes to the fonts wherever no blank cell follows it.
+typedef struct { char_type ch; uint8_t state; uint8_t wide; } KilixGlyph;
 enum { KILIX_GLYPH_UNKNOWN = 0, KILIX_GLYPH_DRAWN = 1, KILIX_GLYPH_NOT_DRAWN = 2 };
+enum { KILIX_GLYPH_ONE_CELL = 1, KILIX_GLYPH_TWO_CELLS = 2 };
 #define KILIX_GLYPH_ID_BASE 0x3000u
 #define KILIX_GLYPH_MAX_COUNT 0x8000u
 static struct {
@@ -783,26 +790,48 @@ kilix_glyph_for(char_type ch) {
     return (lo < kilix_glyphs.count && kilix_glyphs.items[lo].ch == ch) ? kilix_glyphs.items + lo : NULL;
 }
 
-static bool
-kilix_glyph_is_drawn(char_type ch) {
+// Ask the source about a listed character, once.
+static KilixGlyph*
+kilix_glyph_asked(char_type ch) {
     KilixGlyph *g = kilix_glyph_for(ch);
-    if (!g) return false;
+    if (!g) return NULL;
     if (g->state == KILIX_GLYPH_UNKNOWN) {
         g->state = KILIX_GLYPH_NOT_DRAWN;
         if (kilix_glyphs.can_draw) {
             PyObject *ret = PyObject_CallFunction(kilix_glyphs.can_draw, "I", (unsigned int)ch);
             if (ret == NULL) PyErr_Print();
-            else { if (PyObject_IsTrue(ret) == 1) g->state = KILIX_GLYPH_DRAWN; Py_DECREF(ret); }
+            else {
+                // True is 1: a source that answers yes or no draws one cell.
+                long bits = PyLong_Check(ret) ? PyLong_AsLong(ret) : (PyObject_IsTrue(ret) == 1 ? KILIX_GLYPH_ONE_CELL : 0);
+                if (bits == -1 && PyErr_Occurred()) { PyErr_Clear(); bits = 0; }
+                if (bits < 0 || bits > (KILIX_GLYPH_ONE_CELL | KILIX_GLYPH_TWO_CELLS)) bits = 0;
+                if (bits & KILIX_GLYPH_ONE_CELL) g->state = KILIX_GLYPH_DRAWN;
+                g->wide = (bits & KILIX_GLYPH_TWO_CELLS) ? 1 : 0;
+                Py_DECREF(ret);
+            }
         }
     }
-    return g->state == KILIX_GLYPH_DRAWN;
+    return g;
 }
 
-// Fill width * height bytes of coverage for ch. False leaves buf untouched.
 static bool
-kilix_glyph_render(char_type ch, uint8_t *buf, unsigned width, unsigned height) {
-    if (!kilix_glyphs.draw || !kilix_glyph_is_drawn(ch)) return false;
-    PyObject *ret = PyObject_CallFunction(kilix_glyphs.draw, "III", (unsigned int)ch, width, height);
+kilix_glyph_is_drawn(char_type ch) {
+    const KilixGlyph *g = kilix_glyph_asked(ch);
+    return g && g->state == KILIX_GLYPH_DRAWN;
+}
+
+static bool
+kilix_glyph_is_wide(char_type ch) {
+    const KilixGlyph *g = kilix_glyph_asked(ch);
+    return g && g->wide;
+}
+
+// Fill width * height bytes of coverage for ch, drawn for a box that many
+// cells wide (1 or 2). False leaves buf untouched.
+static bool
+kilix_glyph_render(char_type ch, uint8_t *buf, unsigned width, unsigned height, unsigned cells) {
+    if (!kilix_glyphs.draw || !(cells == 2 ? kilix_glyph_is_wide(ch) : kilix_glyph_is_drawn(ch))) return false;
+    PyObject *ret = PyObject_CallFunction(kilix_glyphs.draw, "IIII", (unsigned int)ch, width, height, cells);
     if (ret == NULL) { PyErr_Print(); return false; }
     bool ok = PyBytes_Check(ret) && (size_t)PyBytes_GET_SIZE(ret) == (size_t)width * height;
     if (ok) memcpy(buf, PyBytes_AS_STRING(ret), (size_t)width * height);
@@ -1229,7 +1258,7 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     for (unsigned i = 0, cnum = 0; i < num_glyphs; i++) {
         unsigned int ch = global_glyph_render_scratch.lc->chars[cnum++];
         while (!ch) ch = global_glyph_render_scratch.lc->chars[cnum++];
-        if (!kilix_glyph_render(ch, fg->canvas.alpha_mask, src.right, src.bottom))
+        if (!kilix_glyph_render(ch, fg->canvas.alpha_mask, src.right, src.bottom, 1))
             render_box_char(ch, fg->canvas.alpha_mask, src.right, src.bottom, fg->logical_dpi_x, fg->logical_dpi_y, scale);
         dest.left = i * scaled_metrics.cell_width + right_shift; dest.right = dest.left + scaled_metrics.cell_width;
         render_alpha_mask(fg->canvas.alpha_mask, fg->canvas.buf, &src, &dest, src.right, mask_stride, 0xffffff);
@@ -1253,6 +1282,56 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     }
 #undef sp
 #undef failed
+}
+
+// kilix fork: is this text at the normal size? Text of another size is a
+// multicell, and the two-cell drawing is not made for it. A wide emoji that
+// the text selector made narrow stays a multicell, one cell wide, at the
+// normal size. (A colour emoji is a multicell two cells wide; the cell after
+// its first is its own second half, never a blank, so it keeps its font.)
+static inline bool
+kilix_cell_is_one_plain_cell(const CPUCell *c) {
+    return !c->is_multicell || (c->scale == 1 && !c->subscale_n && !c->subscale_d);
+}
+
+// kilix fork: draw ch, which the outside source draws two cells wide, across
+// gpu_cell[0] and gpu_cell[1]. The caller has checked that the second cell is
+// blank. Nothing is changed when this returns false; the caller then draws the
+// cell as if the character had no two-cell drawing.
+static bool
+render_kilix_wide_cell(FontGroup *fg, char_type ch, GPUCell *gpu_cell) {
+    const KilixGlyph *g = kilix_glyph_for(ch);
+    if (!g || !g->wide) return false;
+    RunFont rf = {.scale = 1, .font_idx = BOX_FONT};
+    // The same id as the one-cell drawing; the cell count of two keeps the
+    // two apart in the sprite cache.
+    glyph_index glyph = (glyph_index)(KILIX_GLYPH_ID_BASE + (g - kilix_glyphs.items));
+    SpritePosition *sp[2];
+    bool all_rendered = true;
+    for (unsigned k = 0; k < 2; k++) {
+        sp[k] = sprite_position_for(fg, rf, &glyph, 1, k, 2);
+        if (sp[k] == NULL) { PyErr_Clear(); return false; }
+        if (!sp[k]->rendered) all_rendered = false;
+    }
+    if (!all_rendered) {
+        const FontCellMetrics fcm = fg->fcm;
+        const unsigned width = 2 * fcm.cell_width;
+        ensure_canvas_can_fit(fg, 3, 1);
+        if (!kilix_glyph_render(ch, fg->canvas.alpha_mask, width, fcm.cell_height, 2)) return false;
+        Region src = {.right = width, .bottom = fcm.cell_height}, dest = src;
+        render_alpha_mask(fg->canvas.alpha_mask, fg->canvas.buf, &src, &dest, width, width, 0xffffff);
+        calculate_regions_for_line(rf, fcm.cell_height, &src, &dest);
+        DecorationMetadata dm = index_for_decorations(fg, rf, src, dest, fcm);
+        for (unsigned k = 0; k < 2; k++) {
+            if (sp[k]->rendered) continue;
+            pixel *b = extract_cell_region(&fg->canvas, k, &src, &dest, width, fcm);
+            sprite_index idx = current_send_sprite_to_gpu(fg, b, dm, fcm);
+            if (!idx) { if (PyErr_Occurred()) PyErr_Print(); return false; }
+            sp[k]->idx = idx; sp[k]->rendered = true; sp[k]->colored = false;
+        }
+    }
+    for (unsigned k = 0; k < 2; k++) set_cell_sprite(gpu_cell + k, sp[k]);
+    return true;
 }
 
 static void
@@ -2067,6 +2146,23 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, 
         bool is_main_font, is_emoji_presentation;
         GPUCell *gpu_cell = line->gpu_cells + i;
         const char_type first_ch = lc->chars[0];
+        // kilix fork: a character the outside source draws two cells wide,
+        // with a blank cell after it to draw into. Like a wide symbol-font
+        // glyph before a space, it takes that cell, which takes its colour.
+        // Anywhere else the character is drawn in its own cell as before.
+        if (
+                allow_use_of_box_fonts && kilix_cell_is_one_plain_cell(cpu_cell) && i + 1 < line->xnum
+                && (cell_is_char(cpu_cell + 1, ' ') || cell_is_char(cpu_cell + 1, 0x2002))
+                && kilix_glyph_is_wide(first_ch)
+                && render_kilix_wide_cell(fg, first_ch, gpu_cell)
+        ) {
+            gpu_cell[1].fg = gpu_cell->fg; gpu_cell[1].decoration_fg = gpu_cell->decoration_fg;
+            RENDER
+            run_font = basic_font;
+            first_cell_in_run = i + 2;
+            i++;
+            continue;
+        }
         cell_font.font_idx = font_for_cell(fg, cpu_cell, gpu_cell, &is_main_font, &is_emoji_presentation, line->text_cache, lc);
         CharProps cp = char_props_for(first_ch);
         if (
