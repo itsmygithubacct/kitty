@@ -200,6 +200,12 @@ def set_font_family(opts: Options | None = None, override_font_size: float | Non
     global current_faces, builtin_nerd_font_descriptor
     opts = opts or defaults
     sz = override_font_size or opts.font_size
+    if os.environ.get('KILIX_NEURONTE_ONLY') == '1':
+        # Neuronte is the only glyph source (neuronte_source.c): no font is
+        # looked up, no font file is opened, and there are no symbol maps.
+        current_faces = []
+        set_font_data(descriptor_for_idx, 0, 0, 0, 0, (), sz, ())
+        return
     font_map = get_font_files(opts)
     current_faces = [(font_map['medium'], False, False)]
     ftypes: list[Literal['bold', 'italic', 'bi']] = ['bold', 'italic', 'bi']

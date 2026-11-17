@@ -7,6 +7,7 @@
  */
 
 #include "fonts.h"
+#include "neuronte_source.h"
 #include "pyport.h"
 #include "charsets.h"
 #include "state.h"
@@ -525,7 +526,7 @@ adjust_ypos(unsigned int pos, unsigned int cell_height, int adjustment) {
 
 static void
 calc_cell_metrics(FontGroup *fg, PyObject *face) {
-    fg->fcm = cell_metrics(face);
+    fg->fcm = neuronte_only() ? neuronte_cell_metrics(fg->font_sz_in_pts, fg->logical_dpi_x, fg->logical_dpi_y) : cell_metrics(face);
     if (!fg->fcm.cell_width) fatal("Failed to calculate cell width for the specified font");
     unsigned int before_cell_height = fg->fcm.cell_height;
     unsigned int cw = fg->fcm.cell_width, ch = fg->fcm.cell_height;
@@ -774,6 +775,15 @@ START_ALLOW_CASE_RANGE
         case '\t':
         case IMAGE_PLACEHOLDER_CHAR:
             return BLANK_FONT;
+        default:
+            break;
+    }
+    if (neuronte_only()) {
+        // No font: a blank for a space, else the cell is Neuronte's.
+        if (lc->count == 1 && (lc->chars[0] == ' ' || lc->chars[0] == 0x2002 /* en-space */) && (!cpu_cell->is_multicell || cpu_cell->scale == 1)) return BLANK_FONT;
+        return BOX_FONT;
+    }
+    switch(lc->chars[0]) {
         case 0x2500 ... 0x2573:
         case 0x2574 ... 0x259f:
         case 0x25d6 ... 0x25d7:
@@ -913,7 +923,7 @@ apply_scale_to_font_group(FontGroup *fg, RunFont *rf) {
     float scale = rf ? scaled_cell_dimensions(*rf, &scaled_cell_width, &scaled_cell_height) : 1.f;
     scaled_font_map_t_itr i = vt_get(&fg->scaled_font_map, scale);
     ScaledFontData sfd;
-#define apply_scaling(which_fg) if (!face_apply_scaling(medium_font->face, (FONTS_DATA_HANDLE)(which_fg))) { \
+#define apply_scaling(which_fg) if (!neuronte_only() && !face_apply_scaling(medium_font->face, (FONTS_DATA_HANDLE)(which_fg))) { \
             if (PyErr_Occurred()) PyErr_Print(); \
             fatal("Could not apply scale of %f to font group at size: %f", scale, (which_fg)->font_sz_in_pts); \
         }
@@ -1092,8 +1102,15 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     text_in_cell(cpu_cell, tc, global_glyph_render_scratch.lc);
     ensure_glyph_render_scratch_space(rf.scale * global_glyph_render_scratch.lc->count);
     unsigned num_glyphs = 0, num_cells = rf.scale;
+    const bool neuronte = neuronte_only(), bold = gpu_cell->attrs.bold, italic = gpu_cell->attrs.italic;
+    if (neuronte) {
+        // One cell, one character: the first of the cell. Marks that follow
+        // it and variation selectors are not drawn.
+        for (unsigned i = 1; i < global_glyph_render_scratch.lc->count; i++) global_glyph_render_scratch.lc->chars[i] = 0;
+        global_glyph_render_scratch.lc->count = MIN(1u, global_glyph_render_scratch.lc->count);
+    }
     for (unsigned i = 0; i < global_glyph_render_scratch.lc->count; i++) {
-        glyph_index glyph = box_glyph_id(global_glyph_render_scratch.lc->chars[i]);
+        glyph_index glyph = neuronte ? neuronte_glyph_id(global_glyph_render_scratch.lc->chars[i], bold, italic) : box_glyph_id(global_glyph_render_scratch.lc->chars[i]);
         if (glyph != 0xffff) global_glyph_render_scratch.glyphs[num_glyphs++] = glyph;
         else global_glyph_render_scratch.lc->chars[i] = 0;
     }
@@ -1134,7 +1151,8 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     for (unsigned i = 0, cnum = 0; i < num_glyphs; i++) {
         unsigned int ch = global_glyph_render_scratch.lc->chars[cnum++];
         while (!ch) ch = global_glyph_render_scratch.lc->chars[cnum++];
-        render_box_char(ch, fg->canvas.alpha_mask, src.right, src.bottom, fg->logical_dpi_x, fg->logical_dpi_y, scale);
+        if (neuronte) neuronte_render_cell(ch, bold, italic, fg->canvas.alpha_mask, src.right, src.bottom);
+        else render_box_char(ch, fg->canvas.alpha_mask, src.right, src.bottom, fg->logical_dpi_x, fg->logical_dpi_y, scale);
         dest.left = i * scaled_metrics.cell_width + right_shift; dest.right = dest.left + scaled_metrics.cell_width;
         render_alpha_mask(fg->canvas.alpha_mask, fg->canvas.buf, &src, &dest, src.right, mask_stride, 0xffffff);
     }
@@ -2028,6 +2046,11 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, 
 StringCanvas
 render_simple_text(FONTS_DATA_HANDLE fg_, const char *text) {
     FontGroup *fg = (FontGroup*)fg_;
+    if (neuronte_only()) {
+        StringCanvas drawn = {0};
+        drawn.canvas = neuronte_render_line(text, fg->fcm.cell_width, fg->fcm.cell_height, &drawn.width, &drawn.height);
+        return drawn;
+    }
     if (fg->fonts_count && fg->medium_font_idx) return render_simple_text_impl(fg->fonts[fg->medium_font_idx].face, text, fg->fcm.baseline);
     StringCanvas ans = {0};
     return ans;
@@ -2137,13 +2160,17 @@ initialize_font_group(FontGroup *fg) {
     vt_init(&fg->fallback_font_map);
     vt_init(&fg->scaled_font_map);
     vt_init(&fg->decorations_index_map);
-#define I(attr)  if (descriptor_indices.attr) fg->attr##_font_idx = initialize_font(fg, descriptor_indices.attr, #attr); else fg->attr##_font_idx = -1;
-    fg->medium_font_idx = initialize_font(fg, 0, "medium");
+    const bool neuronte = neuronte_only();
+#define I(attr)  if (descriptor_indices.attr && !neuronte) fg->attr##_font_idx = initialize_font(fg, descriptor_indices.attr, #attr); else fg->attr##_font_idx = -1;
+    // With Neuronte as the only source no face is opened: the medium font
+    // is the box font's slot, which has no face, and every cell is drawn
+    // the way a box cell is.
+    fg->medium_font_idx = neuronte ? 0 : initialize_font(fg, 0, "medium");
     I(bold); I(italic); I(bi);
 #undef I
     fg->first_symbol_font_idx = fg->fonts_count; fg->first_fallback_font_idx = fg->fonts_count;
     fg->fallback_fonts_count = 0;
-    for (size_t i = 0; i < descriptor_indices.num_symbol_fonts; i++) {
+    for (size_t i = 0; i < descriptor_indices.num_symbol_fonts && !neuronte; i++) {
         initialize_font(fg, descriptor_indices.bi + 1 + i, "symbol_map");
         fg->first_fallback_font_idx++;
     }
@@ -2152,7 +2179,7 @@ initialize_font_group(FontGroup *fg) {
     ensure_canvas_can_fit(fg, 8, 1);
     sprite_tracker_set_layout(&fg->sprite_tracker, fg->fcm.cell_width, fg->fcm.cell_height);
     // rescale the symbol_map faces for the desired cell height, this is how fallback fonts are sized as well
-    for (size_t i = 0; i < descriptor_indices.num_symbol_fonts; i++) {
+    for (size_t i = 0; i < descriptor_indices.num_symbol_fonts && !neuronte; i++) {
         Font *font = fg->fonts + i + fg->first_symbol_font_idx;
         set_size_for_face(font->face, fg->fcm.cell_height, true, (FONTS_DATA_HANDLE)fg);
     }
@@ -2310,7 +2337,8 @@ current_fonts(PyObject *self UNUSED, PyObject *args) {
     RAII_PyObject(ans, PyDict_New());
     if (!ans) return NULL;
 #define SET(key, val) {if (PyDict_SetItemString(ans, #key, fg->fonts[val].face) != 0) { return NULL; }}
-    SET(medium, fg->medium_font_idx);
+    if (fg->fonts[fg->medium_font_idx].face) SET(medium, fg->medium_font_idx)
+    else if (PyDict_SetItemString(ans, "medium", Py_None) != 0) return NULL;  // Neuronte is the only source: no face
     if (fg->bold_font_idx > 0) SET(bold, fg->bold_font_idx);
     if (fg->italic_font_idx > 0) SET(italic, fg->italic_font_idx);
     if (fg->bi_font_idx > 0) SET(bi, fg->bi_font_idx);

@@ -1066,6 +1066,9 @@ def parallel_run(items: List[Command]) -> None:
 
 
 def add_builtin_fonts(args: Options) -> None:
+    if os.environ.get('KILIX_NEURONTE_ONLY') == '1':
+        # A build for Neuronte as the only glyph source bundles no font file.
+        return
     fonts_dir = os.path.join(src_base, 'fonts')
     os.makedirs(fonts_dir, exist_ok=True)
 
