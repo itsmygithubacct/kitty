@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+# Remove the byte-code the postinst wrote, so no unowned file outlives the
+# package or a module that an upgrade drops.
+if [ -d /usr/lib/kilix/engine ]; then
+    find /usr/lib/kilix/engine -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+fi
+#DEBHELPER#

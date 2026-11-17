@@ -17,9 +17,15 @@ override_dh_auto_configure override_dh_auto_build override_dh_auto_test:
 
 override_dh_auto_install:
 	test -d vendor || { echo "vendor/ is missing: build from the tarball debian/make-orig.sh writes" >&2; exit 1; }
-	test -f fonts/SymbolsNerdFontMono-Regular.ttf || { echo "the symbols font is missing from fonts/" >&2; exit 1; }
+	test -f fonts/SymbolsNerdFontMono-Regular.ttf && test -f fonts/LICENSE-NerdFonts || { echo "the symbols font is missing from fonts/" >&2; exit 1; }
 	mkdir -p $(HOME)
 	python3 setup.py linux-package --prefix $(CURDIR)/debian/kilix-engine/$(PREFIX) --update-check-interval=0
+	# The HTML manual is on the project's website; the manual pages stay.
+	rm -rf debian/kilix-engine/$(PREFIX)/share/doc/kitty/html
+	# Byte-code is compiled on the target by the postinst, as Debian's own
+	# Python packages do, instead of being shipped.
+	find debian/kilix-engine/$(PREFIX) -type d -name __pycache__ -prune -exec rm -rf {} +
+	install -D -m 0644 fonts/LICENSE-NerdFonts debian/kilix-engine/usr/share/doc/kilix-engine/LICENSE-NerdFonts
 
 override_dh_auto_clean:
 	rm -rf debian/build-home build linux-package

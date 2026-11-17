@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+# Compile the engine's Python modules for the three optimisation levels the
+# engine may run at. A failure here costs start-up time, not correctness.
+if [ "$1" = configure ]; then
+    python3.13 -m compileall -q -o 0 -o 1 -o 2 /usr/lib/kilix/engine/lib/kitty >/dev/null 2>&1 || true
+fi
+#DEBHELPER#
