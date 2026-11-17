@@ -594,7 +594,6 @@ class TestStandIns(BaseTest):
                     ('', Whole(None), sun),                                  # the default is the colour emoji
                     ('KILIX_NEURONTE_WEATHER=off\n', Wide(None), sun),
                     ('KILIX_NEURONTE_WEATHER=colour\n', Wide(None), sun),    # in colour the text does not change
-                    ('KILIX_NEURONTE_WEATHER=stand-in\n', Wide(None), sun),
                     ('KILIX_NEURONTE_WEATHER=nonsense\n', Wide(None), sun),
                     ('KILIX_NEURONTE_WEATHER=one-colour\n', Wide(None), '\u2600\ufe0e '),
                     ('KILIX_NEURONTE_WEATHER=on\n', None, sun),              # no nets: nothing to switch to
@@ -632,9 +631,8 @@ class TestStandIns(BaseTest):
                 bytes((255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 255, 255)))
         # Two halves, two pixels wide and two high, row by row.
         self.ae(neuronte.side_by_side(b'aAbBcCdD', b'eEfFgGhH', 2, 2, unit=2), b'aAbBeEfFcCdDgGhH')
-        self.ae(neuronte.tinted(bytes((0, 255, 7)), (1, 2, 3)), bytes((0, 0, 0, 0, 1, 2, 3, 255, 1, 2, 3, 7)))
         self.ae([neuronte.weather_mode(word) for word in ('', 'colour', 'Color', 'x', ' ON ', 'one-colour', 'off', 'emoji', 'stand-in')],
-                ['colour', 'colour', 'colour', 'colour', 'one-colour', 'one-colour', 'font', 'font', 'stand-in'])
+                ['colour', 'colour', 'colour', 'colour', 'one-colour', 'one-colour', 'font', 'font', 'colour'])
         self.ae([neuronte.is_private_use(cp) for cp in (0xdfff, 0xe000, 0xf8ff, 0xf900, 0xf0219, 0x10fffd, 0x2600, 0x1f327)],
                 [False, True, True, False, True, True, False, False])
 
@@ -688,13 +686,12 @@ class TestStandIns(BaseTest):
         self.ae([s.colour_source_of(cp) for cp in nine], [''] * 9)
         self.ae([s.can_draw(cp) for cp in (sun, cloud)], [7, 7])
         self.assertIsNone(s.draw_colour(cloud, 18, 17))
-        # The stand-in: what no colour file has is the one-colour drawing in one flat colour.
-        s = source('stand-in', emoji={cloud})
-        self.ae([s.colour_source_of(cp) for cp in (sun, cloud)], [f'{mono}, tinted', emoji])
-        self.ae(s.can_draw(sun), 15)
-        picture = s.draw_colour(sun, 18, 18)
-        self.ae(len(picture), 18 * 18 * 4)
-        self.ae({picture[i:i + 4] for i in range(0, len(picture), 4)}, {bytes(4), bytes(neuronte.STAND_IN_TINTS[sun]) + b'\xff'})
+        # No other word brings a one-colour drawing in as a colour one: the removed
+        # look-ahead value is the default now, and the default is all nine or none.
+        s = source(neuronte.weather_mode('stand-in'), emoji={cloud})
+        self.ae([s.colour_source_of(cp) for cp in (sun, cloud)], ['', ''])
+        self.ae(s.can_draw(sun), 7)
+        self.assertIsNone(s.draw_colour(sun, 18, 18))
         self.ae(s.nets.asked, [])
         # Asked for one colour, or for the emoji font: the colour files draw nothing.
         for mode in ('one-colour', 'font'):

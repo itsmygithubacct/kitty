@@ -67,12 +67,11 @@ COLOUR_WEIGHTS_KEY = 'KILIX_NEURONTE_COLOUR_WEIGHTS'   # colour weight files, fi
 COLOUR_WEIGHTS_DEFAULT = 'neuronte-weather-colour-v1.nrt neuronte-emoji-v1.nrt'
 # Who draws the weather widget's symbol. colour (default): the colour nets,
 # when they have all nine, else the emoji font. on: one colour, by the nets.
-# off: the emoji font. stand-in: for trying the colour path before the colour
-# file exists, see GlyphSource.weather_sources().
+# off: the emoji font.
 WEATHER_KEY = 'KILIX_NEURONTE_WEATHER'
 _OFF = ('0', 'no', 'false', 'off', 'disabled', 'none')
 _ON = ('1', 'yes', 'true', 'on')
-WEATHER_COLOUR, WEATHER_ONE_COLOUR, WEATHER_FONT, WEATHER_STAND_IN = 'colour', 'one-colour', 'font', 'stand-in'
+WEATHER_COLOUR, WEATHER_ONE_COLOUR, WEATHER_FONT = 'colour', 'one-colour', 'font'
 
 MOONS = tuple(range(0x1f311, 0x1f319))
 BELL = 0x1f56d
@@ -108,13 +107,6 @@ _INK = 48   # coverage, of 255, that counts as ink when a drawing is measured
 # and entry 1 clears what is under it.
 PALETTE_THEME, PALETTE_ENTRIES, ENTRY_OWN, ENTRY_CLEAR = 0, 32, 0, 1
 OWN_COLOUR = (0xe6, 0xe6, 0xe6)   # what entry 0 is painted with when the text colour is not known
-# The one flat colour each weather symbol's one-colour drawing is given by the
-# stand-in for a colour drawing.
-STAND_IN_TINTS = {
-    0x2600: (0xf2, 0xc7, 0x44), 0x1f324: (0xf2, 0xc7, 0x44), 0x26c5: (0xe8, 0xd0, 0x8a),
-    0x2601: (0xc9, 0xd1, 0xd9), 0x1f32b: (0x9a, 0xa5, 0xb1), 0x1f326: (0x8f, 0xc1, 0xf0),
-    0x1f327: (0x6c, 0xb6, 0xff), 0x1f328: (0xdc, 0xeb, 0xfa), 0x26c8: (0xb3, 0x92, 0xf0),
-}
 
 # A scalar no bundle is trained on. A weight file without a table of its
 # trained characters answers "trained" for everything, this one included; such
@@ -302,7 +294,7 @@ def weather_mode(setting: str) -> str:
         return WEATHER_ONE_COLOUR
     if word in _OFF or word in ('emoji', 'font'):
         return WEATHER_FONT
-    return WEATHER_STAND_IN if word == 'stand-in' else WEATHER_COLOUR
+    return WEATHER_COLOUR
 
 
 def composite(
@@ -341,12 +333,6 @@ def side_by_side(left: bytes, right: bytes, half_width: int, height: int, unit: 
     """Two halves of ``half_width`` by ``height`` pixels, ``unit`` bytes each, as one picture."""
     row = half_width * unit
     return b''.join(left[y * row:(y + 1) * row] + right[y * row:(y + 1) * row] for y in range(height))
-
-
-def tinted(mask: bytes, colour: tuple[int, int, int]) -> bytes:
-    """A one-colour drawing in one flat colour, four bytes a pixel."""
-    r, g, b = colour
-    return b''.join(bytes((r, g, b, a)) if a else b'\0\0\0\0' for a in mask)
 
 
 class Nets:
@@ -527,25 +513,21 @@ class GlyphSource:
     def weather_sources(self) -> dict[int, str]:
         """Who draws each weather symbol in colour; empty unless all nine are drawn.
 
-        A colour file's name: the first colour file trained on the symbol. With
-        the setting ``stand-in`` a symbol no colour file has is given its
-        one-colour two-cell drawing in one flat colour ('NAME, tinted'), which
-        shows the path before the colour file exists. The nine change together
-        or not at all, as the widget's one-colour symbols do.
+        A colour file's name: the first colour file trained on the symbol. The
+        nine change together or not at all, as the widget's one-colour symbols
+        do.
         """
         if self._weather_sources is None:
             found: dict[int, str] = {}
-            if self.nets is not None and self.weather in (WEATHER_COLOUR, WEATHER_STAND_IN):
+            if self.nets is not None and self.weather == WEATHER_COLOUR:
                 for codepoint in WEATHER_SYMBOLS:
                     if (names := self.nets.colour_trained(codepoint)):
                         found[codepoint] = names[0]
-                    elif self.weather == WEATHER_STAND_IN and (name := self.two_cell_source_of(codepoint)):
-                        found[codepoint] = f'{name.partition(",")[0]}, tinted'
             self._weather_sources = found if len(found) == len(WEATHER_SYMBOLS) else {}
         return self._weather_sources
 
     def colour_source_of(self, codepoint: int) -> str:
-        """Who draws the character in colour on a bar: a file's name, 'NAME, tinted', or '' for the emoji font."""
+        """Who draws the character in colour on a bar: a colour file's name, or '' for the emoji font."""
         return self.weather_sources().get(codepoint, '')
 
     def can_draw(self, codepoint: int) -> int:
@@ -569,9 +551,6 @@ class GlyphSource:
         half = width // 2
         if not name or self.nets is None or width != 2 * half or not (MIN_CELL <= half and MIN_CELL <= height <= MAX_CELL):
             return None
-        if name.endswith(', tinted'):
-            mask = self.draw_two_cells(codepoint, width, height)
-            return None if mask is None else tinted(mask, STAND_IN_TINTS.get(codepoint, OWN_COLOUR))
         left = self.nets.colour_half(name, codepoint, 0, half, height)
         right = self.nets.colour_half(name, codepoint, 1, half, height)
         return None if left is None or right is None else side_by_side(left, right, half, height)
@@ -638,7 +617,7 @@ def build_source(environ: dict[str, str] | os._Environ[str] = os.environ) -> Gly
     colour_files = chrome_value(COLOUR_WEIGHTS_KEY, COLOUR_WEIGHTS_DEFAULT) or COLOUR_WEIGHTS_DEFAULT
     nets = Nets(
         library, weight_paths(root, chrome_value(WEIGHTS_KEY, WEIGHTS_DEFAULT) or WEIGHTS_DEFAULT),
-        weight_paths(root, colour_files) if weather in (WEATHER_COLOUR, WEATHER_STAND_IN) else ())
+        weight_paths(root, colour_files) if weather == WEATHER_COLOUR else ())
     two_cell_files = chrome_value(TWO_CELL_WEIGHTS_KEY, TWO_CELL_WEIGHTS_DEFAULT) or TWO_CELL_WEIGHTS_DEFAULT
     return GlyphSource(
         nets if nets.handles or nets.colour_handles else None,
