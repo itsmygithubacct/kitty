@@ -40,6 +40,16 @@ a widget whose look changed with the weather would look broken. A colour net
 draws a symbol as two halves, one cell each, of up to six layers; the layers
 are put together here with the file's dark palette.
 
+A weight file may have a cells file: the masks Neuronte's setup drew ahead
+for the characters and sizes it expects to be asked for, kept in one file
+that every process maps read-only (``neuronte_cells.h``). Its floats are the
+ones the net would compute, so a mask is taken from there when the file holds
+it and from the net when it does not, when there is no file, or when the
+library is one without the cells calls. The files are looked for in
+``/var/lib/neuronte/cells`` (``NEURONTE_CELLS_DIR`` overrides it) under the
+weight file's name with ``.cells`` for ``.nrt``; ``KILIX_NEURONTE_CELLS=off``
+leaves them alone. Colour nets have no cells files.
+
 The Neuronte handle is not thread-safe. Everything here runs on the engine's
 main thread, which is the only thread that renders cells.
 """
@@ -65,6 +75,13 @@ TWO_CELL_WEIGHTS_KEY = 'KILIX_NEURONTE_TWO_CELL_WEIGHTS'  # the files whose draw
 TWO_CELL_WEIGHTS_DEFAULT = 'neuronte-kilix-chrome-v2.nrt'
 COLOUR_WEIGHTS_KEY = 'KILIX_NEURONTE_COLOUR_WEIGHTS'   # colour weight files, first one trained on a symbol draws it
 COLOUR_WEIGHTS_DEFAULT = 'neuronte-weather-colour-v1.nrt neuronte-emoji-v1.nrt'
+CELLS_KEY = 'KILIX_NEURONTE_CELLS'      # auto (default): masks from a weight file's cells file when it has one; off
+CELLS_DIR_ENV = 'NEURONTE_CELLS_DIR'    # where the cells files are, when not in CELLS_DIR_DEFAULT
+CELLS_DIR_DEFAULT = '/var/lib/neuronte/cells'
+# What the cells calls are told of how this module asks a net: the library's
+# own choice of samples, the regular style, the weight file's own snap
+# threshold (neuronte_set_snap() is never called here).
+CELLS_SAMPLES, CELLS_STYLE, CELLS_SNAP_FILE = 0, 0, -1
 # Who draws the weather widget's symbol. colour (default): the colour nets,
 # when they have all nine, else the emoji font. on: one colour, by the nets.
 # off: the emoji font.
@@ -335,12 +352,30 @@ def side_by_side(left: bytes, right: bytes, half_width: int, height: int, unit: 
     return b''.join(left[y * row:(y + 1) * row] + right[y * row:(y + 1) * row] for y in range(height))
 
 
+def cells_directory(environ: dict[str, str] | os._Environ[str], setting: str = 'auto') -> str:
+    """Where the cells files are looked for; '' when the setting says to leave them alone."""
+    if setting.strip().lower() in _OFF:
+        return ''
+    return environ.get(CELLS_DIR_ENV) or CELLS_DIR_DEFAULT
+
+
+def cells_path(directory: str, weights_path: str) -> str:
+    """The cells file of a weight file: its name with .cells for .nrt, in the cells directory."""
+    name = os.path.basename(weights_path)
+    return os.path.join(directory, (name[:-4] if name.endswith('.nrt') else name) + '.cells')
+
+
 class Nets:
     """The opened weight files, asked in order."""
 
-    def __init__(self, library_path: str, weight_paths: Sequence[str], colour_paths: Sequence[str] = ()) -> None:
+    def __init__(
+        self, library_path: str, weight_paths: Sequence[str], colour_paths: Sequence[str] = (), cells_dir: str = '',
+    ) -> None:
         self.lib: ctypes.CDLL | None = None
         self.handles: list[tuple[str, ctypes.c_void_p]] = []
+        # Cells files: a weight file's handle -> its opened cells file; and how often one answered.
+        self.cells: dict[int, ctypes.c_void_p] = {}
+        self.cells_found = self.cells_asked = 0
         # Colour files: name, handle, the most layers a glyph has, the palette.
         self.colour_handles: list[tuple[str, ctypes.c_void_p, int, list[tuple[int, int, int]]]] = []
         self.problems: list[str] = []
@@ -378,6 +413,47 @@ class Nets:
             self.handles.append((os.path.basename(path), handle))
         if colour_paths:
             self.open_colour_files(colour_paths)
+        if cells_dir:
+            self.open_cells_files(weight_paths, cells_dir)
+
+    def open_cells_files(self, weight_paths: Sequence[str], directory: str) -> None:
+        """Open the cells file of every opened weight file that has one."""
+        lib = self.lib
+        assert lib is not None
+        try:   # an older library has no cells calls: then every mask comes from a net
+            lib.neuronte_cells_open.argtypes = [
+                ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)]
+            lib.neuronte_cells_open.restype = ctypes.c_int
+            lib.neuronte_cells_find.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_int]
+            lib.neuronte_cells_find.restype = ctypes.POINTER(ctypes.c_float)
+        except AttributeError:
+            return
+        opened = dict(self.handles)
+        for path in weight_paths:
+            handle = opened.get(os.path.basename(path))
+            kept = cells_path(directory, path)
+            if handle is None or not os.path.isfile(kept):
+                continue
+            cells = ctypes.c_void_p()
+            # The library refuses a cells file made from other weights, and a damaged one.
+            code = lib.neuronte_cells_open(os.fsencode(kept), os.fsencode(path), 0, ctypes.byref(cells))
+            if code != 0 or not cells:
+                self.problems.append(f'cells file {kept} is not used: error {code}')
+                continue
+            self.cells[handle.value or 0] = cells
+
+    def from_cells(self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int) -> bytes | None:
+        """The mask as the weight file's cells file holds it; None when it does not, and the net draws it."""
+        cells = self.cells.get(handle.value or 0)
+        if cells is None or self.lib is None:
+            return None
+        self.cells_asked += 1
+        kept = self.lib.neuronte_cells_find(cells, codepoint, width, height, CELLS_SAMPLES, CELLS_STYLE, CELLS_SNAP_FILE)
+        if not kept:
+            return None
+        self.cells_found += 1
+        return bytes(min(255, max(0, int(value * 255.0 + 0.5))) for value in kept[:width * height])
 
     def open_colour_files(self, paths: Sequence[str]) -> None:
         lib = self.lib
@@ -449,6 +525,8 @@ class Nets:
     def coverage_from(self, handle: ctypes.c_void_p, codepoint: int, width: int, height: int) -> bytes | None:
         if self.lib is None or not (MIN_CELL <= width <= MAX_CELL and MIN_CELL <= height <= MAX_CELL):
             return None
+        if (kept := self.from_cells(handle, codepoint, width, height)) is not None:
+            return kept
         buf = (ctypes.c_float * (width * height))()
         if self.lib.neuronte_coverage(handle, codepoint, width, height, 0, buf) != 0:
             return None
@@ -617,7 +695,8 @@ def build_source(environ: dict[str, str] | os._Environ[str] = os.environ) -> Gly
     colour_files = chrome_value(COLOUR_WEIGHTS_KEY, COLOUR_WEIGHTS_DEFAULT) or COLOUR_WEIGHTS_DEFAULT
     nets = Nets(
         library, weight_paths(root, chrome_value(WEIGHTS_KEY, WEIGHTS_DEFAULT) or WEIGHTS_DEFAULT),
-        weight_paths(root, colour_files) if weather == WEATHER_COLOUR else ())
+        weight_paths(root, colour_files) if weather == WEATHER_COLOUR else (),
+        cells_directory(environ, chrome_value(CELLS_KEY, 'auto')))
     two_cell_files = chrome_value(TWO_CELL_WEIGHTS_KEY, TWO_CELL_WEIGHTS_DEFAULT) or TWO_CELL_WEIGHTS_DEFAULT
     return GlyphSource(
         nets if nets.handles or nets.colour_handles else None,

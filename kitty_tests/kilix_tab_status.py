@@ -739,6 +739,147 @@ class TestStandIns(BaseTest):
             self.ae(source.source_of(0x25cf), 'font')
             self.ae(source.source_of(0x1f313), 'stand-in')
 
+    def test_a_mask_comes_from_the_cells_file_when_it_holds_it(self) -> None:
+        import ctypes
+
+        dot, moon = 0x25cf, 0x1f313
+
+        class Library:
+            """What this module uses of libneuronte, with or without the cells calls."""
+
+            def __init__(self, with_cells: bool = True, refuse: tuple[str, ...] = ()) -> None:
+                self.log: list[tuple[object, ...]] = []
+                self.opened: dict[int, str] = {}
+                self.kept: dict[int, str] = {}
+                self.refuse = refuse
+                # ctypes functions take attributes (argtypes, restype); bound methods do not.
+                calls = {'neuronte_open_file': self.open_file, 'neuronte_untrained': self.untrained,
+                         'neuronte_coverage': self.coverage, 'neuronte_close': self.close}
+                if with_cells:
+                    calls.update(neuronte_cells_open=self.cells_open, neuronte_cells_find=self.cells_find)
+                for name, method in calls.items():
+                    setattr(self, name, (lambda method: lambda *args: method(*args))(method))
+
+            def open_file(self, path: bytes, out: object) -> int:
+                number = 100 + len(self.opened)
+                self.opened[number] = os.fsdecode(path)
+                out._obj.value = number  # type: ignore[attr-defined]
+                return 0
+
+            def untrained(self, handle: ctypes.c_void_p, cp: int) -> int:
+                return 0 if cp in (dot, moon) else 1
+
+            def coverage(self, handle: ctypes.c_void_p, cp: int, width: int, height: int, samples: int, buf: object) -> int:
+                self.log.append(('net', os.path.basename(self.opened[handle.value or 0]), cp, width, height, samples))
+                buf[0] = 1.0  # type: ignore[index]
+                return 0
+
+            def close(self, handle: ctypes.c_void_p) -> None:
+                pass
+
+            def cells_open(self, cells: bytes, weights: bytes, flags: int, out: object) -> int:
+                name = os.path.basename(os.fsdecode(cells))
+                self.log.append(('open', os.fsdecode(cells), os.fsdecode(weights), flags))
+                if name in self.refuse:
+                    return -4
+                number = 500 + len(self.kept)
+                self.kept[number] = name
+                out._obj.value = number  # type: ignore[attr-defined]
+                return 0
+
+            def cells_find(self, cells: ctypes.c_void_p, cp: int, width: int, height: int, samples: int, style: int, snap: int) -> object:
+                self.log.append(('find', self.kept[cells.value or 0], cp, width, height, samples, style, snap))
+                # The file holds the dot at 9x18 and nothing else: 0.5 in the last pixel.
+                if (cp, width, height) != (dot, 9, 18):
+                    return None
+                kept = (ctypes.c_float * (width * height + 3))()   # the file goes on after the entry
+                kept[width * height - 1] = 0.5
+                kept[width * height] = 1.0
+                return kept
+
+        def nets(library: Library, cells: str, *names: str) -> neuronte.Nets:
+            with patch.object(neuronte.ctypes, 'CDLL', lambda path: library):
+                return neuronte.Nets(lib_path, [os.path.join(root, 'weights', name) for name in names], cells_dir=cells)
+
+        with tempfile.TemporaryDirectory() as root:
+            lib_path = os.path.join(root, 'libneuronte.so')
+            kept_dir = os.path.join(root, 'cells')
+            os.makedirs(os.path.join(root, 'weights'))
+            os.makedirs(kept_dir)
+            for path in (lib_path, os.path.join(root, 'weights', 'a.nrt'), os.path.join(root, 'weights', 'b.nrt'),
+                         os.path.join(kept_dir, 'a.cells')):
+                open(path, 'wb').close()
+            from_net = bytes((255,)) + bytes(9 * 18 - 1)
+            from_file = bytes(9 * 18 - 1) + bytes((128,))
+
+            # The file is looked for under the weight file's name, and opened against that weight file.
+            self.ae(neuronte.cells_path('/c', '/w/neuronte-split-v9.nrt'), '/c/neuronte-split-v9.cells')
+            library = Library()
+            n = nets(library, kept_dir, 'a.nrt', 'b.nrt')
+            self.ae(library.log, [('open', os.path.join(kept_dir, 'a.cells'), os.path.join(root, 'weights', 'a.nrt'), 0)])
+            self.ae(n.problems, [])
+            a, b = (handle for _, handle in n.handles)
+            del library.log[:]
+            # Held by the file: the file's floats, as bytes, and the net is not asked.
+            self.ae(n.coverage_from(a, dot, 9, 18), from_file)
+            self.ae(library.log, [('find', 'a.cells', dot, 9, 18, 0, 0, -1)])
+            del library.log[:]
+            # Not held (another size, another character): the file is asked first, then the net.
+            self.ae(n.coverage_from(a, dot, 10, 20), bytes((255,)) + bytes(10 * 20 - 1))
+            self.ae(n.coverage_from(a, moon, 9, 18), from_net)
+            self.ae(library.log, [
+                ('find', 'a.cells', dot, 10, 20, 0, 0, -1), ('net', 'a.nrt', dot, 10, 20, 0),
+                ('find', 'a.cells', moon, 9, 18, 0, 0, -1), ('net', 'a.nrt', moon, 9, 18, 0)])
+            self.ae((n.cells_asked, n.cells_found), (3, 1))
+            del library.log[:]
+            # A weight file with no cells file: its net, and no other file's cells.
+            self.ae(n.coverage_from(b, dot, 9, 18), from_net)
+            self.ae(library.log, [('net', 'b.nrt', dot, 9, 18, 0)])
+            # A size the library would refuse is refused before either is asked.
+            del library.log[:]
+            self.assertIsNone(n.coverage_from(a, dot, 3, 18))
+            self.ae(library.log, [])
+
+            # No directory given (the setting is off): no file is opened and the net draws.
+            library = Library()
+            n = nets(library, '', 'a.nrt')
+            self.ae(n.coverage_from(n.handles[0][1], dot, 9, 18), from_net)
+            self.ae(library.log, [('net', 'a.nrt', dot, 9, 18, 0)])
+            # A library without the cells calls: the same.
+            library = Library(with_cells=False)
+            n = nets(library, kept_dir, 'a.nrt')
+            self.ae((n.problems, n.cells), ([], {}))
+            self.ae(n.coverage_from(n.handles[0][1], dot, 9, 18), from_net)
+            self.ae(library.log, [('net', 'a.nrt', dot, 9, 18, 0)])
+            # A cells file the library refuses (made from other weights, or damaged): said, and the net draws.
+            library = Library(refuse=('a.cells',))
+            n = nets(library, kept_dir, 'a.nrt')
+            self.ae(n.problems, [f'cells file {os.path.join(kept_dir, "a.cells")} is not used: error -4'])
+            self.ae(n.coverage_from(n.handles[0][1], dot, 9, 18), from_net)
+
+            # Where the files are looked for, and the switch.
+            self.ae(neuronte.cells_directory({}), '/var/lib/neuronte/cells')
+            self.ae(neuronte.cells_directory({'NEURONTE_CELLS_DIR': '/x'}, 'auto'), '/x')
+            self.ae([neuronte.cells_directory({'NEURONTE_CELLS_DIR': '/x'}, word) for word in ('off', ' OFF ', '0', 'no')], [''] * 4)
+            # build_source() hands the directory on.
+            seen: list[tuple[object, ...]] = []
+
+            class Seen:
+                handles: list[object] = []
+                colour_handles: list[object] = []
+
+                def __init__(self, *args: object) -> None:
+                    seen.append(args)
+
+            for text, expected in (('', kept_dir), ('KILIX_NEURONTE_CELLS=off\n', '')):
+                settings = os.path.join(root, 'settings.conf')
+                with open(settings, 'w') as f:
+                    f.write(text)
+                with patch.dict(os.environ, {'NEURONTE_HOME': root, 'NEURONTE_CELLS_DIR': kept_dir, 'GPU_TERMINAL_SETTINGS_FILE': settings}), \
+                        patch.object(neuronte, 'Nets', Seen):
+                    neuronte.build_source()
+                self.ae(seen.pop()[3], expected)
+
 
 class TestGlyphHook(FontBaseTest):
 
