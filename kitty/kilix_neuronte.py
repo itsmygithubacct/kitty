@@ -29,7 +29,16 @@ symbols is a setting (``KILIX_NEURONTE_TWO_CELL``). A weight file named in
 it is asked for twice the height and each pair of rows is averaged, because
 the library scales a drawing by the width of the box alone. A symbol with no
 such drawing is drawn two cells wide from its one-cell drawing made larger,
-and where no blank cell follows a symbol its one-cell drawing is used.
+and where no blank cell follows a symbol its one-cell drawing is used. A
+symbol outside the private-use areas (the weather symbols) is drawn two cells
+wide on Kilix's own bars only: in a window's text it stays in its cell.
+
+The weather widget's colour symbols are drawn by Neuronte's colour nets in
+place of the emoji font, on the bars only and only when the colour weight
+files (``KILIX_NEURONTE_COLOUR_WEIGHTS``) were trained on all nine of them:
+a widget whose look changed with the weather would look broken. A colour net
+draws a symbol as two halves, one cell each, of up to six layers; the layers
+are put together here with the file's dark palette.
 
 The Neuronte handle is not thread-safe. Everything here runs on the engine's
 main thread, which is the only thread that renders cells.
@@ -54,8 +63,16 @@ WEIGHTS_DEFAULT = (
 TWO_CELL_KEY = 'KILIX_NEURONTE_TWO_CELL'  # auto (default), off, or code points such as "U+F0219 U+F073"
 TWO_CELL_WEIGHTS_KEY = 'KILIX_NEURONTE_TWO_CELL_WEIGHTS'  # the files whose drawings are made for two cells
 TWO_CELL_WEIGHTS_DEFAULT = 'neuronte-kilix-chrome-v2.nrt'
-WEATHER_KEY = 'KILIX_NEURONTE_WEATHER'    # off (default): colour emoji; on: one colour, drawn by the nets
+COLOUR_WEIGHTS_KEY = 'KILIX_NEURONTE_COLOUR_WEIGHTS'   # colour weight files, first one trained on a symbol draws it
+COLOUR_WEIGHTS_DEFAULT = 'neuronte-weather-colour-v1.nrt neuronte-emoji-v1.nrt'
+# Who draws the weather widget's symbol. colour (default): the colour nets,
+# when they have all nine, else the emoji font. on: one colour, by the nets.
+# off: the emoji font. stand-in: for trying the colour path before the colour
+# file exists, see GlyphSource.weather_sources().
+WEATHER_KEY = 'KILIX_NEURONTE_WEATHER'
 _OFF = ('0', 'no', 'false', 'off', 'disabled', 'none')
+_ON = ('1', 'yes', 'true', 'on')
+WEATHER_COLOUR, WEATHER_ONE_COLOUR, WEATHER_FONT, WEATHER_STAND_IN = 'colour', 'one-colour', 'font', 'stand-in'
 
 MOONS = tuple(range(0x1f311, 0x1f319))
 BELL = 0x1f56d
@@ -87,6 +104,17 @@ ROWS_PER_PIXEL = 2
 # may cover: what the symbol font's ink covers (15 of 18 pixels).
 ENLARGED_FILL = 5 / 6
 _INK = 48   # coverage, of 255, that counts as ink when a drawing is measured
+# Colour nets: the dark palette; entry 0 of a palette is the caller's colour
+# and entry 1 clears what is under it.
+PALETTE_THEME, PALETTE_ENTRIES, ENTRY_OWN, ENTRY_CLEAR = 0, 32, 0, 1
+OWN_COLOUR = (0xe6, 0xe6, 0xe6)   # what entry 0 is painted with when the text colour is not known
+# The one flat colour each weather symbol's one-colour drawing is given by the
+# stand-in for a colour drawing.
+STAND_IN_TINTS = {
+    0x2600: (0xf2, 0xc7, 0x44), 0x1f324: (0xf2, 0xc7, 0x44), 0x26c5: (0xe8, 0xd0, 0x8a),
+    0x2601: (0xc9, 0xd1, 0xd9), 0x1f32b: (0x9a, 0xa5, 0xb1), 0x1f326: (0x8f, 0xc1, 0xf0),
+    0x1f327: (0x6c, 0xb6, 0xff), 0x1f328: (0xdc, 0xeb, 0xfa), 0x26c8: (0xb3, 0x92, 0xf0),
+}
 
 # A scalar no bundle is trained on. A weight file without a table of its
 # trained characters answers "trained" for everything, this one included; such
@@ -264,12 +292,71 @@ def centred(mask: bytes, width: int, box: tuple[int, int, int, int], out_width: 
     return bytes(out)
 
 
+def is_private_use(codepoint: int) -> bool:
+    return 0xe000 <= codepoint <= 0xf8ff or 0xf0000 <= codepoint <= 0xffffd or 0x100000 <= codepoint <= 0x10fffd
+
+
+def weather_mode(setting: str) -> str:
+    word = setting.strip().lower()
+    if word in _ON or word in ('one-colour', 'one-color'):
+        return WEATHER_ONE_COLOUR
+    if word in _OFF or word in ('emoji', 'font'):
+        return WEATHER_FONT
+    return WEATHER_STAND_IN if word == 'stand-in' else WEATHER_COLOUR
+
+
+def composite(
+    layers: Sequence[tuple[Sequence[float], int]], palette: Sequence[tuple[int, int, int]],
+    count: int, own: tuple[int, int, int] = OWN_COLOUR,
+) -> bytes:
+    """Put a colour glyph's layers together, back to front.
+
+    Each layer is a coverage mask of ``count`` pixels and a palette entry.
+    Entry 1 clears what is under it, entry 0 (and any entry that is not a
+    colour) paints in ``own``, any other paints in the palette's colour. The
+    answer is four bytes a pixel: red, green, blue, and an alpha the colour is
+    not multiplied by.
+    """
+    out = bytearray(4 * count)
+    for i in range(count):
+        red = green = blue = alpha = 0.0
+        for mask, entry in layers:
+            cover = min(1.0, max(0.0, mask[i]))
+            if cover <= 0.0:
+                continue
+            keep = 1.0 - cover
+            red, green, blue, alpha = red * keep, green * keep, blue * keep, alpha * keep
+            if entry == ENTRY_CLEAR:
+                continue
+            r, g, b = own if entry == ENTRY_OWN or not 0 <= entry < len(palette) else palette[entry]
+            red, green, blue, alpha = red + r * cover, green + g * cover, blue + b * cover, alpha + cover
+        if alpha > 0.0:
+            out[4 * i:4 * i + 4] = (
+                min(255, int(red / alpha + 0.5)), min(255, int(green / alpha + 0.5)),
+                min(255, int(blue / alpha + 0.5)), min(255, int(alpha * 255.0 + 0.5)))
+    return bytes(out)
+
+
+def side_by_side(left: bytes, right: bytes, half_width: int, height: int, unit: int = 4) -> bytes:
+    """Two halves of ``half_width`` by ``height`` pixels, ``unit`` bytes each, as one picture."""
+    row = half_width * unit
+    return b''.join(left[y * row:(y + 1) * row] + right[y * row:(y + 1) * row] for y in range(height))
+
+
+def tinted(mask: bytes, colour: tuple[int, int, int]) -> bytes:
+    """A one-colour drawing in one flat colour, four bytes a pixel."""
+    r, g, b = colour
+    return b''.join(bytes((r, g, b, a)) if a else b'\0\0\0\0' for a in mask)
+
+
 class Nets:
     """The opened weight files, asked in order."""
 
-    def __init__(self, library_path: str, weight_paths: Sequence[str]) -> None:
+    def __init__(self, library_path: str, weight_paths: Sequence[str], colour_paths: Sequence[str] = ()) -> None:
         self.lib: ctypes.CDLL | None = None
         self.handles: list[tuple[str, ctypes.c_void_p]] = []
+        # Colour files: name, handle, the most layers a glyph has, the palette.
+        self.colour_handles: list[tuple[str, ctypes.c_void_p, int, list[tuple[int, int, int]]]] = []
         self.problems: list[str] = []
         if not library_path or not os.path.isfile(library_path):
             self.problems.append(f'no Neuronte library at {library_path or "(unset)"}')
@@ -303,6 +390,64 @@ class Nets:
                 lib.neuronte_close(handle)
                 continue
             self.handles.append((os.path.basename(path), handle))
+        if colour_paths:
+            self.open_colour_files(colour_paths)
+
+    def open_colour_files(self, paths: Sequence[str]) -> None:
+        lib = self.lib
+        assert lib is not None
+        try:   # an older library has no colour calls: then there are no colour files
+            lib.neuronte_layers.argtypes = [ctypes.c_void_p]
+            lib.neuronte_layers.restype = ctypes.c_int
+            lib.neuronte_palette.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_uint8)]
+            lib.neuronte_palette.restype = ctypes.c_int
+            lib.neuronte_coverage_layers_half.argtypes = [
+                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_uint8)]
+            lib.neuronte_coverage_layers_half.restype = ctypes.c_int
+        except AttributeError as error:
+            self.problems.append(f'the Neuronte library has no colour calls: {error}')
+            return
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            handle = ctypes.c_void_p()
+            code = lib.neuronte_open_file(os.fsencode(path), ctypes.byref(handle))
+            if code != 0 or not handle:
+                self.problems.append(f'cannot open {path}: error {code}')
+                continue
+            layers = lib.neuronte_layers(handle)
+            rgb = (ctypes.c_uint8 * (3 * PALETTE_ENTRIES))()
+            has_table = lib.neuronte_untrained(handle, _NEVER_TRAINED) == 1
+            has_palette = lib.neuronte_palette(handle, PALETTE_THEME, rgb) == 0 and any(rgb)
+            if not (has_table and has_palette and 1 <= layers <= 64):
+                self.problems.append(f'{path} is not a colour file with a table of its trained characters; not used')
+                lib.neuronte_close(handle)
+                continue
+            palette = [(rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]) for i in range(PALETTE_ENTRIES)]
+            self.colour_handles.append((os.path.basename(path), handle, layers, palette))
+
+    def colour_trained(self, codepoint: int) -> list[str]:
+        """The colour files trained on the character, in the order they are asked."""
+        if self.lib is None:
+            return []
+        return [name for name, handle, _, _ in self.colour_handles if self.lib.neuronte_untrained(handle, codepoint) == 0]
+
+    def colour_half(self, name: str, codepoint: int, half: int, width: int, height: int) -> bytes | None:
+        """One half (0 left, 1 right) of a colour glyph, ``width`` by ``height``, four bytes a pixel."""
+        if self.lib is None or not (MIN_CELL <= width <= MAX_CELL and MIN_CELL <= height <= MAX_CELL):
+            return None
+        for file_name, handle, layers, palette in self.colour_handles:
+            if file_name == name:
+                break
+        else:
+            return None
+        count = width * height
+        masks = (ctypes.c_float * (layers * count))()
+        entries = (ctypes.c_uint8 * layers)()
+        if self.lib.neuronte_coverage_layers_half(handle, codepoint, half, width, height, 0, masks, entries) != 0:
+            return None
+        return composite([(masks[k * count:(k + 1) * count], entries[k]) for k in range(layers)], palette, count)
 
     def trained(self, codepoint: int) -> list[tuple[str, ctypes.c_void_p]]:
         """The files trained on the character, in the order they are asked."""
@@ -334,11 +479,14 @@ class GlyphSource:
     def __init__(
         self, nets: Nets | None, use_stand_ins: bool = True,
         two_cell: frozenset[int] = frozenset(), two_cell_files: frozenset[str] = frozenset(),
+        weather: str = WEATHER_FONT,
     ) -> None:
         self.nets = nets
         self.use_stand_ins = use_stand_ins
         self.two_cell = two_cell              # characters to draw two cells wide
         self.two_cell_files = two_cell_files  # weight files whose drawings of TWO_CELL_SYMBOLS are two cells wide
+        self.weather = weather                # who draws the weather widget's colour symbols
+        self._weather_sources: dict[int, str] | None = None
 
     def made_for_two_cells(self, name: str, codepoint: int) -> bool:
         return name in self.two_cell_files and codepoint in TWO_CELL_SYMBOLS
@@ -376,9 +524,57 @@ class GlyphSource:
             return ''
         return found[0] if found[2] else f'{found[0]}, enlarged'
 
+    def weather_sources(self) -> dict[int, str]:
+        """Who draws each weather symbol in colour; empty unless all nine are drawn.
+
+        A colour file's name: the first colour file trained on the symbol. With
+        the setting ``stand-in`` a symbol no colour file has is given its
+        one-colour two-cell drawing in one flat colour ('NAME, tinted'), which
+        shows the path before the colour file exists. The nine change together
+        or not at all, as the widget's one-colour symbols do.
+        """
+        if self._weather_sources is None:
+            found: dict[int, str] = {}
+            if self.nets is not None and self.weather in (WEATHER_COLOUR, WEATHER_STAND_IN):
+                for codepoint in WEATHER_SYMBOLS:
+                    if (names := self.nets.colour_trained(codepoint)):
+                        found[codepoint] = names[0]
+                    elif self.weather == WEATHER_STAND_IN and (name := self.two_cell_source_of(codepoint)):
+                        found[codepoint] = f'{name.partition(",")[0]}, tinted'
+            self._weather_sources = found if len(found) == len(WEATHER_SYMBOLS) else {}
+        return self._weather_sources
+
+    def colour_source_of(self, codepoint: int) -> str:
+        """Who draws the character in colour on a bar: a file's name, 'NAME, tinted', or '' for the emoji font."""
+        return self.weather_sources().get(codepoint, '')
+
     def can_draw(self, codepoint: int) -> int:
-        """Bit 0: drawn in one cell. Bit 1: drawn across two cells where a blank cell follows."""
-        return (self.source_of(codepoint) != 'font') | (2 if self.two_cell_net(codepoint) is not None else 0)
+        """What the engine is told about a character, as bits.
+
+        1: drawn in one cell. 2: drawn across two cells where a blank cell
+        follows. 4: that two-cell drawing is for Kilix's own bars only (every
+        character outside the private-use areas). 8: drawn in colour in place
+        of a wide colour emoji, on the bars.
+        """
+        bits = 1 if self.source_of(codepoint) != 'font' else 0
+        if self.two_cell_net(codepoint) is not None:
+            bits |= 2 if is_private_use(codepoint) else 2 | 4
+        if self.colour_source_of(codepoint):
+            bits |= 8
+        return bits
+
+    def draw_colour(self, codepoint: int, width: int, height: int) -> bytes | None:
+        """The colour drawing for a box ``width`` (two cells) by ``height``: four bytes a pixel, or None."""
+        name = self.colour_source_of(codepoint)
+        half = width // 2
+        if not name or self.nets is None or width != 2 * half or not (MIN_CELL <= half and MIN_CELL <= height <= MAX_CELL):
+            return None
+        if name.endswith(', tinted'):
+            mask = self.draw_two_cells(codepoint, width, height)
+            return None if mask is None else tinted(mask, STAND_IN_TINTS.get(codepoint, OWN_COLOUR))
+        left = self.nets.colour_half(name, codepoint, 0, half, height)
+        right = self.nets.colour_half(name, codepoint, 1, half, height)
+        return None if left is None or right is None else side_by_side(left, right, half, height)
 
     def draw(self, codepoint: int, width: int, height: int, cells: int = 1) -> bytes | None:
         if not (MIN_CELL <= width <= MAX_CELL and MIN_CELL <= height <= MAX_CELL):
@@ -438,12 +634,17 @@ def build_source(environ: dict[str, str] | os._Environ[str] = os.environ) -> Gly
         return None
     root = neuronte_root(environ)
     library = environ.get('NEURONTE_LIB') or os.path.join(root, 'build', 'libneuronte.so')
-    nets = Nets(library, weight_paths(root, chrome_value(WEIGHTS_KEY, WEIGHTS_DEFAULT) or WEIGHTS_DEFAULT))
+    weather = weather_mode(chrome_value(WEATHER_KEY, WEATHER_COLOUR))
+    colour_files = chrome_value(COLOUR_WEIGHTS_KEY, COLOUR_WEIGHTS_DEFAULT) or COLOUR_WEIGHTS_DEFAULT
+    nets = Nets(
+        library, weight_paths(root, chrome_value(WEIGHTS_KEY, WEIGHTS_DEFAULT) or WEIGHTS_DEFAULT),
+        weight_paths(root, colour_files) if weather in (WEATHER_COLOUR, WEATHER_STAND_IN) else ())
     two_cell_files = chrome_value(TWO_CELL_WEIGHTS_KEY, TWO_CELL_WEIGHTS_DEFAULT) or TWO_CELL_WEIGHTS_DEFAULT
     return GlyphSource(
-        nets if nets.handles else None,
+        nets if nets.handles or nets.colour_handles else None,
         two_cell=two_cell_symbols(chrome_value(TWO_CELL_KEY, 'auto')),
-        two_cell_files=frozenset(os.path.basename(path) for path in weight_paths(root, two_cell_files)))
+        two_cell_files=frozenset(os.path.basename(path) for path in weight_paths(root, two_cell_files)),
+        weather=weather)
 
 
 def source() -> GlyphSource | None:
@@ -471,8 +672,12 @@ def text_form(symbol: str, group: Sequence[int]) -> str:
 
 
 def weather_symbol(symbol: str) -> str:
-    """The weather widget's symbol: colour emoji unless one colour is asked for."""
-    if chrome_value(WEATHER_KEY, 'off').strip().lower() not in ('1', 'yes', 'true', 'on'):
+    """The weather widget's symbol: the colour emoji unless one colour is asked for.
+
+    The colour emoji is drawn by the colour nets where they have all nine
+    symbols and by the emoji font otherwise; the text is the same either way.
+    """
+    if weather_mode(chrome_value(WEATHER_KEY, WEATHER_COLOUR)) != WEATHER_ONE_COLOUR:
         return symbol
     return text_form(symbol, WEATHER_SYMBOLS)
 
@@ -490,4 +695,4 @@ def install() -> None:
     if _source is None:
         set_kilix_glyph_source((), None, None)
     else:
-        set_kilix_glyph_source(CHROME_CODEPOINTS, _source.can_draw, _source.draw)
+        set_kilix_glyph_source(CHROME_CODEPOINTS, _source.can_draw, _source.draw, _source.draw_colour)

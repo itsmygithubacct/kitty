@@ -3,6 +3,7 @@
 
 import json
 import os
+import struct
 import tempfile
 import time
 from unittest.mock import patch
@@ -357,6 +358,13 @@ class TestBarLayout(BaseTest):
                        + (TabBarData(title='+'),))
         return bar
 
+    def test_the_bars_say_that_they_are_bars(self) -> None:
+        # What the engine draws on Kilix's own bars only depends on this mark.
+        from kitty.window_title_bar import WindowTitleBarScreen
+        self.assertTrue(self.bar(('xterm',), 3).screen.kilix_bar)
+        self.assertTrue(WindowTitleBarScreen(1, 10, 20).screen.kilix_bar)
+        self.assertFalse(self.create_screen().kilix_bar)     # a window's text
+
     def test_no_blank_run_between_taskbar_and_widgets(self) -> None:
         for titles in (('QEMU (plebian-019) - noVNC',), ('xterm',), ('alpha window', 'beta', 'gamma window title')):
             for tabs in (1, 3, 7, 8, 9, 16):
@@ -585,6 +593,10 @@ class TestStandIns(BaseTest):
                 for text, source, expected in (
                     ('', Whole(None), sun),                                  # the default is the colour emoji
                     ('KILIX_NEURONTE_WEATHER=off\n', Wide(None), sun),
+                    ('KILIX_NEURONTE_WEATHER=colour\n', Wide(None), sun),    # in colour the text does not change
+                    ('KILIX_NEURONTE_WEATHER=stand-in\n', Wide(None), sun),
+                    ('KILIX_NEURONTE_WEATHER=nonsense\n', Wide(None), sun),
+                    ('KILIX_NEURONTE_WEATHER=one-colour\n', Wide(None), '\u2600\ufe0e '),
                     ('KILIX_NEURONTE_WEATHER=on\n', None, sun),              # no nets: nothing to switch to
                     ('KILIX_NEURONTE_WEATHER=on\n', Whole(None), '\u2600\ufe0e'),
                     ('KILIX_NEURONTE_WEATHER=on\n', Wide(None), '\u2600\ufe0e '),  # with the blank it is drawn into
@@ -594,6 +606,122 @@ class TestStandIns(BaseTest):
                     os.replace(settings + '.new', settings)
                     with patch.object(neuronte, '_source', source):
                         self.ae(neuronte.weather_symbol(sun), expected, (text, source))
+
+    def test_colour_layers_are_put_together(self) -> None:
+        palette = [(0, 0, 0), (0, 0, 0), (255, 0, 0), (0, 0, 255)] + [(9, 9, 9)] * 28
+        own = (10, 20, 30)
+
+        def one(*layers: tuple[float, int]) -> tuple[int, ...]:
+            return tuple(neuronte.composite([([cover], entry) for cover, entry in layers], palette, 1, own))
+
+        self.ae(one(), (0, 0, 0, 0))
+        self.ae(one((1.0, 2)), (255, 0, 0, 255))
+        self.ae(one((0.5, 2)), (255, 0, 0, 128))               # the colour is not multiplied by the alpha
+        self.ae(one((1.0, 2), (0.5, 3)), (128, 0, 128, 255))   # the later layer is in front
+        self.ae(one((1.0, 3), (1.0, 2)), (255, 0, 0, 255))
+        self.ae(one((1.0, 2), (0.0, 3)), (255, 0, 0, 255))     # an empty layer changes nothing
+        self.ae(one((1.0, 2), (1.0, 1)), (0, 0, 0, 0))         # entry 1 clears
+        self.ae(one((1.0, 2), (0.5, 1)), (255, 0, 0, 128))
+        self.ae(one((1.0, 1), (1.0, 2)), (255, 0, 0, 255))     # and only what is under it
+        self.ae(one((1.0, 0)), own + (255,))                   # entry 0 is the caller's colour
+        self.ae(one((1.0, 32)), own + (255,))                  # as is an entry that is not a colour
+        self.ae(one((7.0, 2)), (255, 0, 0, 255))               # coverage is cut to 0..1
+        self.ae(one((-1.0, 2)), (0, 0, 0, 0))
+        # Every pixel by itself, in order.
+        self.ae(neuronte.composite([([1.0, 0.0, 1.0], 2), ([0.0, 0.0, 1.0], 3)], palette, 3),
+                bytes((255, 0, 0, 255, 0, 0, 0, 0, 0, 0, 255, 255)))
+        # Two halves, two pixels wide and two high, row by row.
+        self.ae(neuronte.side_by_side(b'aAbBcCdD', b'eEfFgGhH', 2, 2, unit=2), b'aAbBeEfFcCdDgGhH')
+        self.ae(neuronte.tinted(bytes((0, 255, 7)), (1, 2, 3)), bytes((0, 0, 0, 0, 1, 2, 3, 255, 1, 2, 3, 7)))
+        self.ae([neuronte.weather_mode(word) for word in ('', 'colour', 'Color', 'x', ' ON ', 'one-colour', 'off', 'emoji', 'stand-in')],
+                ['colour', 'colour', 'colour', 'colour', 'one-colour', 'one-colour', 'font', 'font', 'stand-in'])
+        self.ae([neuronte.is_private_use(cp) for cp in (0xdfff, 0xe000, 0xf8ff, 0xf900, 0xf0219, 0x10fffd, 0x2600, 0x1f327)],
+                [False, True, True, False, True, True, False, False])
+
+    def test_who_draws_the_weather_in_colour(self) -> None:
+        weather, emoji, mono = 'weather-colour.nrt', 'emoji.nrt', 'chrome-v1.nrt'
+        nine = neuronte.WEATHER_SYMBOLS
+        sun, cloud, log = 0x2600, 0x2601, 0xf0219
+
+        class FakeNets:
+            colour_files: dict[str, set[int]] = {}
+            files: dict[str, set[int]] = {mono: set(nine) | {log}}
+
+            def __init__(self) -> None:
+                self.asked: list[tuple] = []
+
+            def colour_trained(self, cp: int) -> list[str]:
+                return [name for name, cps in self.colour_files.items() if cp in cps]
+
+            def colour_half(self, name: str, cp: int, half: int, width: int, height: int) -> bytes:
+                self.asked.append((name, cp, half, width, height))
+                return bytes((half + 1, 0, 0, 255)) * (width * height)
+
+            def trained(self, cp: int) -> list[tuple[str, str]]:
+                return [(name, name) for name, cps in self.files.items() if cp in cps]
+
+            def coverage_from(self, handle: str, cp: int, width: int, height: int) -> bytes:
+                return bytes(255 if width // 3 <= x < 2 * width // 3 and height // 3 <= y < 2 * height // 3 else 0
+                             for y in range(height) for x in range(width))
+
+        def source(mode: str, **colour_files: set[int]) -> neuronte.GlyphSource:
+            FakeNets.colour_files = {name.replace('_', '-') + '.nrt': cps for name, cps in colour_files.items()}
+            return neuronte.GlyphSource(FakeNets(), two_cell=neuronte.TWO_CELL_SYMBOLS, weather=mode)
+
+        # All nine in the colour files: each by the first file trained on it.
+        s = source('colour', weather_colour=set(nine), emoji={cloud})
+        self.ae({s.colour_source_of(cp) for cp in nine}, {weather})
+        self.ae(s.colour_source_of(log), '')
+        s = source('colour', emoji={cloud}, weather_colour=set(nine) - {cloud})
+        self.ae([s.colour_source_of(cp) for cp in (sun, cloud)], [weather, emoji])
+        # Two cells on the bars only, and colour, for a weather symbol; a private-use symbol two cells anywhere.
+        self.ae([s.can_draw(cp) for cp in (sun, cloud, log, ord('a'))], [15, 15, 3, 0])
+        # The two halves, each one cell, side by side.
+        picture = s.draw_colour(cloud, 18, 17)
+        self.ae(s.nets.asked, [(emoji, cloud, 0, 9, 17), (emoji, cloud, 1, 9, 17)])
+        self.ae(picture, (bytes((1, 0, 0, 255)) * 9 + bytes((2, 0, 0, 255)) * 9) * 17)
+        self.assertIsNone(s.draw_colour(cloud, 19, 17))      # not two whole cells
+        self.assertIsNone(s.draw_colour(cloud, 6, 17))       # cells too small for the library
+        self.assertIsNone(s.draw_colour(log, 18, 17))        # not a weather symbol
+        # One short of nine: none is drawn in colour, the emoji font keeps them all.
+        s = source('colour', weather_colour=set(nine) - {0x26c8}, emoji={cloud})
+        self.ae([s.colour_source_of(cp) for cp in nine], [''] * 9)
+        self.ae([s.can_draw(cp) for cp in (sun, cloud)], [7, 7])
+        self.assertIsNone(s.draw_colour(cloud, 18, 17))
+        # The stand-in: what no colour file has is the one-colour drawing in one flat colour.
+        s = source('stand-in', emoji={cloud})
+        self.ae([s.colour_source_of(cp) for cp in (sun, cloud)], [f'{mono}, tinted', emoji])
+        self.ae(s.can_draw(sun), 15)
+        picture = s.draw_colour(sun, 18, 18)
+        self.ae(len(picture), 18 * 18 * 4)
+        self.ae({picture[i:i + 4] for i in range(0, len(picture), 4)}, {bytes(4), bytes(neuronte.STAND_IN_TINTS[sun]) + b'\xff'})
+        self.ae(s.nets.asked, [])
+        # Asked for one colour, or for the emoji font: the colour files draw nothing.
+        for mode in ('one-colour', 'font'):
+            s = source(mode, weather_colour=set(nine))
+            self.ae(([s.colour_source_of(cp) for cp in nine], s.can_draw(sun)), ([''] * 9, 7), mode)
+        # No nets at all.
+        none = neuronte.GlyphSource(None, weather='colour')
+        self.ae((none.colour_source_of(sun), none.can_draw(sun), none.draw_colour(sun, 18, 18)), ('', 0, None))
+
+    def test_the_engine_is_handed_all_three_callables(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            settings = os.path.join(root, 'settings.conf')
+            with (
+                patch.dict(os.environ, {'NEURONTE_HOME': root, 'GPU_TERMINAL_SETTINGS_FILE': settings}),
+                patch('kitty.fast_data_types.set_kilix_glyph_source') as hand_over,
+                patch.object(neuronte, '_source', None),
+            ):
+                neuronte.install()
+                source = neuronte.source()
+                hand_over.assert_called_once_with(neuronte.CHROME_CODEPOINTS, source.can_draw, source.draw, source.draw_colour)
+                self.ae(source.weather, 'colour')            # the default
+                with open(settings, 'w') as f:
+                    f.write('KILIX_NEURONTE=off\n')
+                hand_over.reset_mock()
+                neuronte.install()
+                hand_over.assert_called_once_with((), None, None)
+                self.assertIsNone(neuronte.source())
 
     def test_where_neuronte_is_looked_for(self) -> None:
         self.ae(neuronte.neuronte_root({'NEURONTE_HOME': '/opt/nrt'}), '/opt/nrt')
@@ -779,10 +907,10 @@ class TestGlyphHook(FontBaseTest):
         s.draw('\U000f0219 ')
         test_render_line(s.line(0))
         self.ae(drawn, [2, 1])
-        # Answers that are not the two bits mean "not drawn".
+        # Answers that are not the four bits mean "not drawn".
         # A longer list each time, and its last character: a drawing is kept by
         # its place in the list, and one already made is not asked for again.
-        for count, answer in enumerate((4, 5, 6, 7, -1, 2 ** 70, None, 0, 'yes', True), 2):
+        for count, answer in enumerate((16, 17, 19, 31, 255, -1, 2 ** 70, None, 0, 'yes', True), 2):
             del drawn[:]
             chars = tuple(range(0xf0300, 0xf0300 + count))
             cp = chars[-1]
@@ -814,6 +942,122 @@ class TestGlyphHook(FontBaseTest):
         test_render_line(s.line(0))
         self.ae(drawn, [2])
         self.ae(str(s.line(0)), '\u26c5\ufe0e x')   # one cell, then the blank it is drawn into
+
+    def test_some_two_cell_drawings_are_for_the_bars_only(self) -> None:
+        drawn: list[tuple[int, int]] = []
+        # One cell and two; the same, two cells on the bars only; only the bars' two cells; the bit by itself.
+        anywhere, bars, bars_wide_only, nothing, narrow = 0xf0219, 0x2600, 0x2601, 0x26c8, 0x26c5
+        answers = {anywhere: 3, bars: 7, bars_wide_only: 6, nothing: 4, narrow: 5}
+        set_kilix_glyph_source(tuple(sorted(answers)), lambda cp: answers[cp],
+                               lambda cp, w, h, cells: drawn.append((cp, cells)) or bytes([255]) * (w * h))
+
+        def render(cp: int, on_a_bar: bool) -> tuple[list[tuple[int, int]], bool]:
+            del drawn[:]
+            s = self.create_screen(cols=8, lines=1, scrollback=0)
+            parse_bytes(s, ('\x1b[38;2;10;20;30m' + chr(cp) + '\ufe0e\x1b[39m x').encode())
+            test_render_line(s.line(0), on_a_bar)
+            line = s.line(0)
+            return list(drawn), line.cursor_from(1).fg == line.cursor_from(0).fg
+
+        # In a window's text the character stays in its cell, and the blank after it is left alone.
+        self.ae(render(bars, False), ([(bars, 1)], False))
+        # On a bar it takes the blank.
+        self.ae(render(bars, True), ([(bars, 2)], True))
+        self.ae(render(bars, False), ([], False))            # both drawings are kept, each for its place
+        self.ae(render(bars, True), ([], True))
+        # Only a two-cell drawing: the fonts in a window, the drawing on a bar.
+        # (What the fonts then do with the blank is theirs to decide: a wide font glyph may take it.)
+        self.ae(render(bars_wide_only, False)[0], [])
+        self.ae(render(bars_wide_only, True), ([(bars_wide_only, 2)], True))
+        # The bars-only bit without a two-cell drawing means nothing.
+        self.ae(render(nothing, True)[0], [])
+        self.ae(render(narrow, True), ([(narrow, 1)], False))
+        # A character that is two cells anywhere is two cells in both.
+        self.ae(render(anywhere, False), ([(anywhere, 2)], True))
+        self.ae(render(anywhere, True), ([], True))
+
+    def test_colour_emoji_on_a_bar_is_drawn_in_colour_by_the_source(self) -> None:
+        cloud, sun, rain, snow = 0x2601, 0x2600, 0x1f327, 0x1f328
+        asked: list[tuple[int, int, int]] = []
+        one_colour: list[int] = []
+        cw, ch = self.cell_width, self.cell_height
+        left, right = (200, 100, 50, 255), (10, 20, 30, 128)
+
+        def draw_colour(cp: int, width: int, height: int) -> bytes:
+            asked.append((cp, width, height))
+            if cp == rain:
+                return bytes(4 * width * height - 1)     # the wrong size
+            if cp == snow:
+                return None
+            # Its first cell and two columns of the second in one colour, the rest in another.
+            return b''.join(bytes(left if x < cw + 2 else right) for _ in range(height) for x in range(width))
+
+        def render(text: str, on_a_bar: bool = True) -> tuple[list[bytes], list[int]]:
+            s = self.create_screen(cols=8, lines=2, scrollback=0)
+            before = set(self.sprites)
+            parse_bytes(s, text.encode())
+            test_render_line(s.line(0), on_a_bar)
+            line = s.line(0)
+            return [self.sprites[k] for k in sorted(set(self.sprites) - before)], [line.sprite_at(x) for x in range(3)]
+
+        both = 0x26c5       # every form: one cell, two cells on the bars, and colour
+        large = 0x26c8      # shown only at twice the size
+        answers = {cloud: 8, sun: 7, rain: 8, snow: 8, both: 15, large: 8}
+        set_kilix_glyph_source(tuple(sorted(answers)), lambda cp: answers[cp],
+                               lambda cp, w, h, cells: one_colour.append(cp) or bytes(w * h), draw_colour)
+        # In a window's text the emoji font draws it.
+        font_sprites, font_cells = render('\u2601\ufe0fx', on_a_bar=False)
+        self.ae(asked, [])
+        self.ae(len(font_sprites), 3)
+        # On a bar: one colour drawing, two cells wide, cut into the emoji's two cells.
+        sprites, cells = render('\u2601\ufe0fx')
+        self.ae(asked, [(cloud, 2 * cw, ch)])
+        self.ae(len(sprites), 2)                                    # the x is already drawn
+        self.assertNotIn(sprites[0], font_sprites)
+        # A sprite pixel is red, green, blue, alpha from its high byte down, exactly as handed over.
+        first, second = (struct.pack('=I', (r << 24) | (g << 16) | (b << 8) | a) for r, g, b, a in (left, right))
+        self.ae(sprites[0][:4 * cw * ch], first * (cw * ch))
+        self.ae(sprites[1][:4 * cw * ch], (first * 2 + second * (cw - 2)) * ch)
+        # Both cells are marked as colour, so the text colour does not paint them; the x is not.
+        self.ae([bool(c & 0x80000000) for c in cells], [True, True, False])
+        self.assertNotEqual(cells[0], cells[1])
+        self.ae(cells[2], font_cells[2])
+        # Drawn once, however often it is shown; a window still gets the font's.
+        self.ae(render('\u2601\ufe0f\u2601\ufe0f')[1][:2], cells[:2])
+        self.ae(render('\u2601\ufe0fx', on_a_bar=False)[1], font_cells)
+        self.ae(len(asked), 1)
+        # The text form of the same character is not a colour emoji: the fonts' business.
+        render('\u2601\ufe0e x')
+        self.ae((len(asked), one_colour), (1, []))
+        # A character with no colour drawing keeps the emoji font on a bar too.
+        render('\u2600\ufe0fx')
+        self.ae(len(asked), 1)
+        # A drawing of the wrong size, or none: the emoji font, as in a window.
+        for cp in (rain, snow):
+            del asked[:]
+            refused = render(chr(cp) + '\ufe0fx')
+            self.ae(asked, [(cp, 2 * cw, ch)])
+            self.ae(refused[1], render(chr(cp) + '\ufe0fx', on_a_bar=False)[1])
+            self.assertTrue(refused[1][0] and refused[1][1])
+        # A character with a one-colour two-cell drawing as well: each is asked for and kept apart.
+        del asked[:]
+        mono = render('\u26c5\ufe0e x')
+        self.ae((asked, one_colour), ([], [both]))
+        coloured = render('\u26c5\ufe0fx')
+        self.ae((asked, one_colour), ([(both, 2 * cw, ch)], [both]))
+        self.ae([bool(c & 0x80000000) for c in mono[1][:2] + coloured[1][:2]], [False, False, True, True])
+        self.ae(render('\u26c5\ufe0e x')[1], mono[1])
+        # An emoji of another size keeps its font. (One not drawn before: a drawing made is kept.)
+        del asked[:]
+        render('\x1b]66;s=2;\u26c8\ufe0f\x07')
+        self.ae(asked, [])
+        render('\u26c8\ufe0fx')
+        self.ae(asked, [(large, 2 * cw, ch)])
+        del asked[:]
+        # Without the third callable nothing is drawn in colour.
+        set_kilix_glyph_source(tuple(range(0x2601, 0x2609)), lambda cp: 8, lambda cp, w, h, cells: bytes(w * h))
+        self.ae(render('\u2608\ufe0fx')[1][:0], [])
+        self.ae(asked, [])
 
     def test_text_of_another_size_is_not_drawn_two_cells_wide(self) -> None:
         drawn: list[tuple[int, int, int]] = []

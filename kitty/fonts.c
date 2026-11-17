@@ -763,20 +763,29 @@ static bool allow_use_of_box_fonts = true;
 // mask, or it is left to the fonts as if it had never been listed. Text that
 // uses none of these characters pays one range comparison per cell.
 //
-// The source answers with two bits. Bit 0: it draws the character in one cell.
+// The source answers with four bits. Bit 0: it draws the character in one cell.
 // Bit 1: it draws it across two cells, which render_line() uses only where the
 // cell after the character is blank, the way a wide symbol-font glyph spreads
 // into a following space. The two are independent: a character with only the
 // two-cell drawing goes to the fonts wherever no blank cell follows it.
-typedef struct { char_type ch; uint8_t state; uint8_t wide; } KilixGlyph;
+// Bit 2 narrows bit 1: the two-cell drawing is used on Kilix's own bars only,
+// and in a window's text the character stays in its cell.
+// Bit 3: it draws the character in colour, in place of the emoji font, where
+// the character is a colour emoji two cells wide on one of Kilix's own bars.
+// A third callable gives those pixels.
+typedef struct { char_type ch; uint8_t state; uint8_t forms; } KilixGlyph;
 enum { KILIX_GLYPH_UNKNOWN = 0, KILIX_GLYPH_DRAWN = 1, KILIX_GLYPH_NOT_DRAWN = 2 };
-enum { KILIX_GLYPH_ONE_CELL = 1, KILIX_GLYPH_TWO_CELLS = 2 };
+enum { KILIX_GLYPH_ONE_CELL = 1, KILIX_GLYPH_TWO_CELLS = 2, KILIX_GLYPH_TWO_CELLS_ON_BARS_ONLY = 4, KILIX_GLYPH_COLOUR = 8 };
+#define KILIX_GLYPH_ALL_FORMS (KILIX_GLYPH_ONE_CELL | KILIX_GLYPH_TWO_CELLS | KILIX_GLYPH_TWO_CELLS_ON_BARS_ONLY | KILIX_GLYPH_COLOUR)
+// Ids above every box character: one for a character's one-colour drawings
+// (one cell and two cells differ by cell count in the sprite cache) and one,
+// COUNT higher, for its colour drawing.
 #define KILIX_GLYPH_ID_BASE 0x3000u
-#define KILIX_GLYPH_MAX_COUNT 0x8000u
+#define KILIX_GLYPH_MAX_COUNT 0x4000u
 static struct {
     KilixGlyph *items; size_t count;
     char_type lo, hi;
-    PyObject *can_draw, *draw;
+    PyObject *can_draw, *draw, *draw_colour;
 } kilix_glyphs = {.lo = 1, .hi = 0};
 
 static KilixGlyph*
@@ -804,9 +813,9 @@ kilix_glyph_asked(char_type ch) {
                 // True is 1: a source that answers yes or no draws one cell.
                 long bits = PyLong_Check(ret) ? PyLong_AsLong(ret) : (PyObject_IsTrue(ret) == 1 ? KILIX_GLYPH_ONE_CELL : 0);
                 if (bits == -1 && PyErr_Occurred()) { PyErr_Clear(); bits = 0; }
-                if (bits < 0 || bits > (KILIX_GLYPH_ONE_CELL | KILIX_GLYPH_TWO_CELLS)) bits = 0;
+                if (bits < 0 || bits > KILIX_GLYPH_ALL_FORMS) bits = 0;
                 if (bits & KILIX_GLYPH_ONE_CELL) g->state = KILIX_GLYPH_DRAWN;
-                g->wide = (bits & KILIX_GLYPH_TWO_CELLS) ? 1 : 0;
+                g->forms = (uint8_t)bits;
                 Py_DECREF(ret);
             }
         }
@@ -820,17 +829,24 @@ kilix_glyph_is_drawn(char_type ch) {
     return g && g->state == KILIX_GLYPH_DRAWN;
 }
 
+// on_a_bar: the line is one of Kilix's own bars, not a window's text.
 static bool
-kilix_glyph_is_wide(char_type ch) {
+kilix_glyph_is_wide(char_type ch, bool on_a_bar) {
     const KilixGlyph *g = kilix_glyph_asked(ch);
-    return g && g->wide;
+    return g && (g->forms & KILIX_GLYPH_TWO_CELLS) && (on_a_bar || !(g->forms & KILIX_GLYPH_TWO_CELLS_ON_BARS_ONLY));
+}
+
+static bool
+kilix_glyph_is_coloured(char_type ch) {
+    const KilixGlyph *g = kilix_glyph_asked(ch);
+    return g && (g->forms & KILIX_GLYPH_COLOUR);
 }
 
 // Fill width * height bytes of coverage for ch, drawn for a box that many
 // cells wide (1 or 2). False leaves buf untouched.
 static bool
 kilix_glyph_render(char_type ch, uint8_t *buf, unsigned width, unsigned height, unsigned cells) {
-    if (!kilix_glyphs.draw || !(cells == 2 ? kilix_glyph_is_wide(ch) : kilix_glyph_is_drawn(ch))) return false;
+    if (!kilix_glyphs.draw || !(cells == 2 || kilix_glyph_is_drawn(ch))) return false;
     PyObject *ret = PyObject_CallFunction(kilix_glyphs.draw, "IIII", (unsigned int)ch, width, height, cells);
     if (ret == NULL) { PyErr_Print(); return false; }
     bool ok = PyBytes_Check(ret) && (size_t)PyBytes_GET_SIZE(ret) == (size_t)width * height;
@@ -839,10 +855,29 @@ kilix_glyph_render(char_type ch, uint8_t *buf, unsigned width, unsigned height, 
     return ok;
 }
 
+// Fill width * height pixels with the colour drawing of ch for a box two
+// cells wide. The source gives four bytes a pixel: red, green, blue and an
+// alpha the colour is not multiplied by, which is how a sprite holds a colour
+// glyph. False leaves buf untouched.
+static bool
+kilix_glyph_render_colour(char_type ch, pixel *buf, unsigned width, unsigned height) {
+    if (!kilix_glyphs.draw_colour) return false;
+    PyObject *ret = PyObject_CallFunction(kilix_glyphs.draw_colour, "III", (unsigned int)ch, width, height);
+    if (ret == NULL) { PyErr_Print(); return false; }
+    const size_t count = (size_t)width * height;
+    bool ok = PyBytes_Check(ret) && (size_t)PyBytes_GET_SIZE(ret) == 4 * count;
+    if (ok) {
+        const uint8_t *p = (const uint8_t*)PyBytes_AS_STRING(ret);
+        for (size_t i = 0; i < count; i++, p += 4) buf[i] = ((pixel)p[0] << 24) | ((pixel)p[1] << 16) | ((pixel)p[2] << 8) | p[3];
+    }
+    Py_DECREF(ret);
+    return ok;
+}
+
 static PyObject*
 set_kilix_glyph_source(PyObject *self UNUSED, PyObject *args) {
-    PyObject *chars, *can_draw, *draw;
-    if (!PyArg_ParseTuple(args, "O!OO", &PyTuple_Type, &chars, &can_draw, &draw)) return NULL;
+    PyObject *chars, *can_draw, *draw, *draw_colour = Py_None;
+    if (!PyArg_ParseTuple(args, "O!OO|O", &PyTuple_Type, &chars, &can_draw, &draw, &draw_colour)) return NULL;
     const size_t count = (size_t)PyTuple_GET_SIZE(chars);
     if (count > KILIX_GLYPH_MAX_COUNT) { PyErr_SetString(PyExc_ValueError, "too many characters"); return NULL; }
     KilixGlyph *items = NULL;
@@ -863,9 +898,10 @@ set_kilix_glyph_source(PyObject *self UNUSED, PyObject *args) {
     free(kilix_glyphs.items);
     kilix_glyphs.items = items; kilix_glyphs.count = count;
     kilix_glyphs.lo = count ? items[0].ch : 1; kilix_glyphs.hi = count ? items[count - 1].ch : 0;
-    Py_CLEAR(kilix_glyphs.can_draw); Py_CLEAR(kilix_glyphs.draw);
+    Py_CLEAR(kilix_glyphs.can_draw); Py_CLEAR(kilix_glyphs.draw); Py_CLEAR(kilix_glyphs.draw_colour);
     if (count && can_draw != Py_None && draw != Py_None) {
         kilix_glyphs.can_draw = Py_NewRef(can_draw); kilix_glyphs.draw = Py_NewRef(draw);
+        if (draw_colour != Py_None) kilix_glyphs.draw_colour = Py_NewRef(draw_colour);
     }
     Py_RETURN_NONE;
 }
@@ -1296,12 +1332,13 @@ kilix_cell_is_one_plain_cell(const CPUCell *c) {
 
 // kilix fork: draw ch, which the outside source draws two cells wide, across
 // gpu_cell[0] and gpu_cell[1]. The caller has checked that the second cell is
-// blank. Nothing is changed when this returns false; the caller then draws the
-// cell as if the character had no two-cell drawing.
+// blank and has asked kilix_glyph_is_wide(). Nothing is changed when this
+// returns false; the caller then draws the cell as if the character had no
+// two-cell drawing.
 static bool
 render_kilix_wide_cell(FontGroup *fg, char_type ch, GPUCell *gpu_cell) {
     const KilixGlyph *g = kilix_glyph_for(ch);
-    if (!g || !g->wide) return false;
+    if (!g) return false;
     RunFont rf = {.scale = 1, .font_idx = BOX_FONT};
     // The same id as the one-cell drawing; the cell count of two keeps the
     // two apart in the sprite cache.
@@ -1328,6 +1365,43 @@ render_kilix_wide_cell(FontGroup *fg, char_type ch, GPUCell *gpu_cell) {
             sprite_index idx = current_send_sprite_to_gpu(fg, b, dm, fcm);
             if (!idx) { if (PyErr_Occurred()) PyErr_Print(); return false; }
             sp[k]->idx = idx; sp[k]->rendered = true; sp[k]->colored = false;
+        }
+    }
+    for (unsigned k = 0; k < 2; k++) set_cell_sprite(gpu_cell + k, sp[k]);
+    return true;
+}
+
+// kilix fork: draw ch, which the outside source draws in colour, across
+// gpu_cell[0] and gpu_cell[1], the two cells of a wide emoji. The caller has
+// asked kilix_glyph_is_coloured(). Nothing is changed when this returns false;
+// the caller then leaves the cells to the emoji font.
+static bool
+render_kilix_colour_cell(FontGroup *fg, char_type ch, GPUCell *gpu_cell) {
+    const KilixGlyph *g = kilix_glyph_for(ch);
+    if (!g) return false;
+    RunFont rf = {.scale = 1, .font_idx = BOX_FONT};
+    glyph_index glyph = (glyph_index)(KILIX_GLYPH_ID_BASE + KILIX_GLYPH_MAX_COUNT + (g - kilix_glyphs.items));
+    SpritePosition *sp[2];
+    bool all_rendered = true;
+    for (unsigned k = 0; k < 2; k++) {
+        sp[k] = sprite_position_for(fg, rf, &glyph, 1, k, 2);
+        if (sp[k] == NULL) { PyErr_Clear(); return false; }
+        if (!sp[k]->rendered) all_rendered = false;
+    }
+    if (!all_rendered) {
+        const FontCellMetrics fcm = fg->fcm;
+        const unsigned width = 2 * fcm.cell_width;
+        ensure_canvas_can_fit(fg, 3, 1);
+        if (!kilix_glyph_render_colour(ch, fg->canvas.buf, width, fcm.cell_height)) return false;
+        Region src = {.right = width, .bottom = fcm.cell_height}, dest = src;
+        calculate_regions_for_line(rf, fcm.cell_height, &src, &dest);
+        DecorationMetadata dm = index_for_decorations(fg, rf, src, dest, fcm);
+        for (unsigned k = 0; k < 2; k++) {
+            if (sp[k]->rendered) continue;
+            pixel *b = extract_cell_region(&fg->canvas, k, &src, &dest, width, fcm);
+            sprite_index idx = current_send_sprite_to_gpu(fg, b, dm, fcm);
+            if (!idx) { if (PyErr_Occurred()) PyErr_Print(); return false; }
+            sp[k]->idx = idx; sp[k]->rendered = true; sp[k]->colored = true;
         }
     }
     for (unsigned k = 0; k < 2; k++) set_cell_sprite(gpu_cell + k, sp[k]);
@@ -2118,7 +2192,7 @@ multicell_intersects_cursor(const Line *line, index_type lnum, const Cursor *cur
 }
 
 void
-render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, DisableLigature disable_ligature_strategy, ListOfChars *lc) {
+render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, DisableLigature disable_ligature_strategy, ListOfChars *lc, bool kilix_bar) {
 #define RENDER if (run_font.font_idx != NO_FONT && i > first_cell_in_run) { \
     int cursor_offset = -1; \
     if (disable_ligature_at_cursor && first_cell_in_run <= cursor->x && cursor->x <= i && cursor->x < line->xnum && \
@@ -2153,10 +2227,25 @@ render_line(FONTS_DATA_HANDLE fg_, Line *line, index_type lnum, Cursor *cursor, 
         if (
                 allow_use_of_box_fonts && kilix_cell_is_one_plain_cell(cpu_cell) && i + 1 < line->xnum
                 && (cell_is_char(cpu_cell + 1, ' ') || cell_is_char(cpu_cell + 1, 0x2002))
-                && kilix_glyph_is_wide(first_ch)
+                && kilix_glyph_is_wide(first_ch, kilix_bar)
                 && render_kilix_wide_cell(fg, first_ch, gpu_cell)
         ) {
             gpu_cell[1].fg = gpu_cell->fg; gpu_cell[1].decoration_fg = gpu_cell->decoration_fg;
+            RENDER
+            run_font = basic_font;
+            first_cell_in_run = i + 2;
+            i++;
+            continue;
+        }
+        // kilix fork: a colour emoji on one of Kilix's own bars that the
+        // outside source draws in colour. It takes the emoji's two cells in
+        // place of the emoji font. Text of another size keeps its font.
+        if (
+                kilix_bar && allow_use_of_box_fonts && cpu_cell->is_multicell && cpu_cell->width == 2
+                && cpu_cell->scale == 1 && !cpu_cell->subscale_n && !cpu_cell->subscale_d && i + 1 < line->xnum
+                && kilix_glyph_is_coloured(first_ch)
+                && render_kilix_colour_cell(fg, first_ch, gpu_cell)
+        ) {
             RENDER
             run_font = basic_font;
             first_cell_in_run = i + 2;
@@ -2415,11 +2504,11 @@ set_send_sprite_to_gpu(PyObject UNUSED *self, PyObject *func) {
 
 static PyObject*
 test_render_line(PyObject UNUSED *self, PyObject *args) {
-    PyObject *line;
-    if (!PyArg_ParseTuple(args, "O!", &Line_Type, &line)) return NULL;
+    PyObject *line; int kilix_bar = 0;  // kilix fork: the second argument says the line is on one of Kilix's bars
+    if (!PyArg_ParseTuple(args, "O!|p", &Line_Type, &line, &kilix_bar)) return NULL;
     if (!num_font_groups) { PyErr_SetString(PyExc_RuntimeError, "must create font group first"); return NULL; }
     RAII_ListOfChars(lc);
-    render_line((FONTS_DATA_HANDLE)font_groups, (Line*)line, 0, NULL, DISABLE_LIGATURES_NEVER, &lc);
+    render_line((FONTS_DATA_HANDLE)font_groups, (Line*)line, 0, NULL, DISABLE_LIGATURES_NEVER, &lc, kilix_bar);
     Py_RETURN_NONE;
 }
 

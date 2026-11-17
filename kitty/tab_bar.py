@@ -771,6 +771,7 @@ class TabBar:
         self.cell_width, self.cell_height = cell_size_for_window(self.os_window_id)
         if not hasattr(self, 'screen'):
             self.screen = s = Screen(None, 1, 10, 0, self.cell_width, self.cell_height)
+            s.kilix_bar = True  # kilix fork: lets the bar's own symbols be drawn as they are nowhere else
         else:
             s = self.screen
         s.color_profile.default_fg = opts.inactive_tab_foreground

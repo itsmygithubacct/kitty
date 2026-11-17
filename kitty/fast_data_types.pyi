@@ -1001,7 +1001,7 @@ class Line:
 def test_shape(line: Line, path: Optional[str] = None, index: int = 0) -> List[Tuple[int, int, int, Tuple[int, ...]]]:
     pass
 
-def test_render_line(line: Line) -> None:
+def test_render_line(line: Line, kilix_bar: bool = False) -> None:
     pass
 
 def sprite_map_set_limits(w: int, h: int) -> None:
@@ -1024,8 +1024,9 @@ def set_font_data(
 
 def set_kilix_glyph_source(
     chars: Tuple[int, ...],
-    can_draw: Optional[Callable[[int], bool]],
-    draw: Optional[Callable[[int, int, int], Optional[bytes]]],
+    can_draw: Optional[Callable[[int], int]],
+    draw: Optional[Callable[[int, int, int, int], Optional[bytes]]],
+    draw_colour: Optional[Callable[[int, int, int], Optional[bytes]]] = None,
 ) -> None:
     pass
 
@@ -1063,6 +1064,7 @@ class Cursor:
     shape: int
 
 class Screen:
+    kilix_bar: bool
     color_profile: ColorProfile
     columns: int
     lines: int
