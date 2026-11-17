@@ -16,7 +16,7 @@ CHILD = r'''
 import json
 from kitty.fonts.render import render_string
 ans = {}
-for name, text in (('letters', 'AB'), ('untrained', '\U000F0000\U000F0001'), ('wide', '中日')):
+for name, text in (('letters', 'AB'), ('untrained', '\U000F0000\U000F0001'), ('wide', '中日'), ('emoji', '\U0001F600')):
     w, h, cells = render_string(text, size=11.0)
     ans[name] = {'w': w, 'h': h, 'cells': [c.hex() for c in cells]}
 print('RESULT' + json.dumps(ans))
@@ -66,9 +66,25 @@ class TestNeuronteOnly(BaseTest):
         self.ae(m1, m2)
         self.assertNotIn(m1, (a, b))
 
-        # A character two cells wide is drawn once, in its first cell.
+        # A character two cells wide with no drawing: one mark across both
+        # cells, the same two halves for every such character.
         cells = r['wide']['cells']
-        self.ae(len(cells), 3, 'the trailing blank cell of the last character is trimmed')
-        self.ae(cells[0], m1)
-        self.assertTrue(blank(cells[1]))
-        self.ae(cells[2], m1)
+        self.ae(len(cells), 4)
+        left, right = cells[:2]
+        self.assertFalse(blank(left))
+        self.assertFalse(blank(right))
+        self.assertNotEqual(left, right)
+        self.assertNotIn(m1, (left, right))
+        self.ae(cells[2:], [left, right])
+
+        # An emoji the colour file was trained on: two halves, in colour
+        # (a cell of plain coverage holds white pixels only).
+        if not any(x.startswith('neuronte-emoji-v') for x in os.listdir(os.path.join(neuronte_home(), 'weights'))):
+            return
+        halves = r['emoji']['cells']
+        self.ae(len(halves), 2)
+        for half in halves:
+            px = {half[i:i + 8] for i in range(0, len(half), 8)}
+            self.assertTrue(any(p[2:] != 'ffffff' and p != '00000000' for p in px), 'an emoji half has its own colours')
+        self.assertNotEqual(halves[0], halves[1])
+        self.assertNotIn(left, halves)

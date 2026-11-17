@@ -27,6 +27,21 @@ glyph_index neuronte_glyph_id(char_type ch, bool bold, bool italic);
 // Coverage of one cell as width * height bytes, 0..255, row-major.
 void neuronte_render_cell(char_type ch, bool bold, bool italic, uint8_t *buf, unsigned width, unsigned height);
 
+// A character that takes two cells (an emoji, an ideograph).
+typedef enum {
+    NEURONTE_WIDE_FIRST_CELL,  // a one-cell drawing exists: the ordinary path draws it in the first cell
+    NEURONTE_WIDE_EMOJI,       // the colour emoji file was trained on it: two halves in its own colours
+    NEURONTE_WIDE_MARK         // nothing was trained on it: the untrained mark, two cells wide
+} NeuronteWide;
+NeuronteWide neuronte_wide_kind(char_type ch);
+
+// A sprite-cache id for one half (0 left, 1 right) of such a character.
+glyph_index neuronte_wide_glyph_id(char_type ch, NeuronteWide kind, unsigned half);
+
+// One half as width * height sprite pixels. An emoji is a colour sprite;
+// the mark is white coverage, to be coloured as text is.
+void neuronte_render_wide_half(char_type ch, NeuronteWide kind, unsigned half, pixel *buf, unsigned width, unsigned height);
+
 // One line of text, a cell per character: width * height bytes that the
 // caller frees, or NULL.
 uint8_t* neuronte_render_line(const char *text, unsigned cell_width, unsigned cell_height, size_t *width, size_t *height);

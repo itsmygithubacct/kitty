@@ -1103,8 +1103,34 @@ render_box_cell(FontGroup *fg, RunFont rf, CPUCell *cpu_cell, GPUCell *gpu_cell,
     ensure_glyph_render_scratch_space(rf.scale * global_glyph_render_scratch.lc->count);
     unsigned num_glyphs = 0, num_cells = rf.scale;
     const bool neuronte = neuronte_only(), bold = gpu_cell->attrs.bold, italic = gpu_cell->attrs.italic;
+    if (neuronte && cpu_cell->is_multicell && cpu_cell->width == 2 && rf.scale == 1 && !rf.subscale_n && global_glyph_render_scratch.lc->count) {
+        // A character two cells wide at the ordinary size: an emoji in its
+        // own colours, or the mark when it has no drawing, across both cells.
+        const char_type ch = global_glyph_render_scratch.lc->chars[0];
+        const NeuronteWide kind = neuronte_wide_kind(ch);
+        if (kind != NEURONTE_WIDE_FIRST_CELL) {
+            const unsigned half = cpu_cell->x ? 1 : 0;
+            global_glyph_render_scratch.glyphs[0] = neuronte_wide_glyph_id(ch, kind, half);
+            SpritePosition *wide = sprite_position_for(fg, rf, global_glyph_render_scratch.glyphs, 1, 0, 1);
+            if (!wide) { if (PyErr_Occurred()) PyErr_Print(); gpu_cell->sprite_idx = 0; return; }
+            if (!wide->rendered) {
+                ensure_canvas_can_fit(fg, 2, 1);
+                unsigned sz;
+                pixel *b = pointer_to_space_for_last_sprite(&fg->canvas, fg->fcm, &sz);
+                memset(b, 0, sz * sizeof(b[0]));
+                neuronte_render_wide_half(ch, kind, half, b, fg->fcm.cell_width, fg->fcm.cell_height);
+                Region src = {.right = fg->fcm.cell_width, .bottom = fg->fcm.cell_height}, dest = src;
+                calculate_regions_for_line(rf, fg->fcm.cell_height, &src, &dest);
+                wide->idx = current_send_sprite_to_gpu(fg, b, index_for_decorations(fg, rf, src, dest, fg->fcm), fg->fcm);
+                if (!wide->idx) { if (PyErr_Occurred()) PyErr_Print(); gpu_cell->sprite_idx = 0; return; }
+                wide->rendered = true; wide->colored = kind == NEURONTE_WIDE_EMOJI;
+            }
+            set_cell_sprite(gpu_cell, wide);
+            return;
+        }
+    }
     if (neuronte && cpu_cell->is_multicell && cpu_cell->x >= cell_scale(cpu_cell)) {
-        // A character two cells wide is drawn in its first cell only.
+        // Any other character two cells wide is drawn in its first cell only.
         for (unsigned i = 0; i < rf.scale; i++) gpu_cell[i].sprite_idx = 0;
         return;
     }
