@@ -1,0 +1,28 @@
+#!/usr/bin/make -f
+# The build uses Debian's Go and the Go modules vendored in the source
+# tarball; it must not reach the network.
+export GOTOOLCHAIN = local
+export GOFLAGS = -mod=vendor
+export PATH := /usr/lib/go-1.27/bin:$(PATH)
+export HOME = $(CURDIR)/debian/build-home
+export GOCACHE = $(CURDIR)/debian/build-home/gocache
+export LC_ALL = C.UTF-8
+PREFIX = usr/lib/kilix/engine
+
+%:
+	dh $@
+
+# setup.py does configure, build and install in one step.
+override_dh_auto_configure override_dh_auto_build override_dh_auto_test:
+
+override_dh_auto_install:
+	test -d vendor || { echo "vendor/ is missing: build from the tarball debian/make-orig.sh writes" >&2; exit 1; }
+	test -f fonts/SymbolsNerdFontMono-Regular.ttf || { echo "the symbols font is missing from fonts/" >&2; exit 1; }
+	mkdir -p $(HOME)
+	python3 setup.py linux-package --prefix $(CURDIR)/debian/kilix-engine/$(PREFIX) --update-check-interval=0
+
+override_dh_auto_clean:
+	rm -rf debian/build-home build linux-package
+
+# The Go binaries carry compressed DWARF that dwz cannot rewrite.
+override_dh_dwz:
