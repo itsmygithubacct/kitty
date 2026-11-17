@@ -17,7 +17,7 @@ FONT_URL=https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/NerdFo
 FONT_ARCHIVE_SHA256=7f8c090da3b0eaa7108646bf34cbbb6ed13d5358a72460522108b06c7ecd716a
 FONT_SHA256=f0f624d9b474bea1662cf7e862d44aebe1ae1f6c7f9cb7a0ca5d0e5ac9561c60
 
-work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+work="$(mktemp -d)"; trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 tree="$work/kilix-engine-$upstream"
 mkdir "$tree"
 git -C "$HERE" archive HEAD -- . ':!debian' | tar -C "$tree" -xf -
