@@ -81,11 +81,10 @@ POWERLINE_BUTTON_EXTRA = 3  # a pad, a space and the separator after a button's 
 
 
 class NativeWindowLayout(NamedTuple):
-    title_width: int  # longest title asked of window_entries()
-    slot: int         # cells each entry is padded to
-    shown: int
+    title_width: int          # longest title asked of window_entries()
+    widths: tuple[int, ...]   # cells of each entry that is shown
     hidden: int
-    used: int         # cells drawn, the " +N" note included
+    used: int                 # cells drawn, separators and the " +N" note included
 
 
 def native_window_layout(
@@ -97,28 +96,30 @@ def native_window_layout(
     The same answer sizes the reservation and draws the entries, so the cells
     held back from the tabs are exactly the cells the taskbar fills. Labels
     stay readable: rather than shrinking every one to a stub, as many as fit
-    are shown and the rest are counted.
+    are shown and the rest are counted. Each entry is as wide as its own
+    label: padding a short title to the width of a long one leaves a blank
+    run before the status widgets, taken from the tab names.
     """
-    best = NativeWindowLayout(0, 0, 0, 0, 0)
+    best = NativeWindowLayout(0, (), 0, 0)
     for title_width in range(max(6, configured_title_width), 5, -2):
         entries = entries_for(title_width)
         if not entries:
             return best
-        # No wider than the longest label: a short title is not padded out.
-        slot = max(max(0, wcswidth(text)) for text, _ in entries)
-        shown = used = 0
-        while shown < len(entries):
-            need = slot if shown == 0 else slot + separator_width
+        widths: list[int] = []
+        used = 0
+        for text, _ in entries:
+            width = max(0, wcswidth(text))
+            need = width + separator_width if widths else width
             if used + need > available:
                 break
             used += need
-            shown += 1
-        hidden = len(entries) - shown
-        if shown and hidden:
+            widths.append(width)
+        hidden = len(entries) - len(widths)
+        if widths and hidden:
             note = len(f' +{hidden}')
             if used + note <= available:
                 used += note
-        best = NativeWindowLayout(title_width, slot, shown, hidden, used)
+        best = NativeWindowLayout(title_width, tuple(widths), hidden, used)
         if not hidden:
             break
     return best
@@ -1295,8 +1296,8 @@ class TabBar:
         opts = get_options()
         default_bg = as_rgb(color_as_int(self.draw_data.default_bg))
         # Same palette family as an inactive page so the strip reads as one
-        # thing, but each window gets its own padded slot with a soft separator
-        # between slots -- close enough to a page to be obviously the same kind
+        # thing, but each window gets its own label with a soft separator
+        # between labels -- close enough to a page to be obviously the same kind
         # of control, different enough not to be mistaken for one.
         item_bg = as_rgb(color_as_int(opts.inactive_tab_background))
         live_fg = as_rgb(color_as_int(opts.foreground))
@@ -1305,9 +1306,9 @@ class TabBar:
         # The layout that sized the reservation in update(), asked again for
         # the cells actually left, so the two cannot disagree.
         layout = self.native_window_layout(available)
-        if not layout.shown:
+        if not layout.widths:
             return
-        slot, shown, hidden = layout.slot, layout.shown, layout.hidden
+        shown, hidden = len(layout.widths), layout.hidden
         entries = window_entries(layout.title_width)
         extents: list[ActionExtent] = []
         s.cursor.y = line
@@ -1321,8 +1322,8 @@ class TabBar:
             before = s.cursor.x
             s.cursor.bg = item_bg
             s.cursor.fg = dim_fg if text.lstrip().startswith(MINIMISED_GLYPH) else live_fg
-            # pad to a uniform slot so the windows line up like the pages do
-            draw_attributed_string(text.ljust(slot)[:slot], s)
+            # Its own width, as the layout counted it: no padding to a slot.
+            draw_attributed_string(text, s)
             extents.append(
                 ActionExtent(action, CellRange(before, s.cursor.x), CellRange(line, line)))
         if hidden > 0 and s.cursor.x + len(f' +{hidden}') <= limit - 1:

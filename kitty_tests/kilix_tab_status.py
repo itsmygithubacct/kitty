@@ -320,19 +320,21 @@ class TestBarLayout(BaseTest):
 
     def test_taskbar_reserves_what_it_draws(self) -> None:
         one = self.entries(('QEMU (plebian-019) - noVNC',))
-        self.ae(native_window_layout(one, 14, 3, 60), NativeWindowLayout(14, 16, 1, 0, 16))
-        # A short title is not padded out to the configured width.
-        self.ae(native_window_layout(self.entries(('xterm',)), 14, 3, 60), NativeWindowLayout(14, 7, 1, 0, 7))
+        self.ae(native_window_layout(one, 14, 3, 60), NativeWindowLayout(14, (16,), 0, 16))
+        # A short title is not padded out to the configured width...
+        self.ae(native_window_layout(self.entries(('xterm',)), 14, 3, 60), NativeWindowLayout(14, (7,), 0, 7))
+        # ...nor to the width of a longer title beside it.
         three = self.entries(('alpha window', 'beta', 'gamma window title'))
-        self.ae(native_window_layout(three, 14, 3, 60), NativeWindowLayout(14, 16, 3, 0, 54))
+        self.ae(native_window_layout(three, 14, 3, 60), NativeWindowLayout(14, (14, 6, 16), 0, 42))
+        self.ae(native_window_layout(three, 14, 3, 42), NativeWindowLayout(14, (14, 6, 16), 0, 42))
         # Too narrow for all three at 14: the labels shorten two cells at a time.
-        self.ae(native_window_layout(three, 14, 3, 50), NativeWindowLayout(12, 14, 3, 0, 48))
+        self.ae(native_window_layout(three, 14, 3, 41), NativeWindowLayout(12, (14, 6, 14), 0, 40))
         # Too narrow even at six: show what fits and count the rest.
-        self.ae(native_window_layout(three, 14, 3, 20), NativeWindowLayout(6, 8, 2, 1, 19))
-        self.ae(native_window_layout(three, 14, 3, 22), NativeWindowLayout(6, 8, 2, 1, 22))
-        self.ae(native_window_layout(three, 14, 3, 12), NativeWindowLayout(6, 8, 1, 2, 11))
-        self.ae(native_window_layout(three, 14, 3, 5), NativeWindowLayout(6, 8, 0, 3, 0))
-        self.ae(native_window_layout(lambda width=18: (), 14, 3, 60), NativeWindowLayout(0, 0, 0, 0, 0))
+        self.ae(native_window_layout(three, 14, 3, 20), NativeWindowLayout(6, (8, 6), 1, 20))
+        self.ae(native_window_layout(three, 14, 3, 19), NativeWindowLayout(6, (8, 6), 1, 17))
+        self.ae(native_window_layout(three, 14, 3, 12), NativeWindowLayout(6, (8,), 2, 11))
+        self.ae(native_window_layout(three, 14, 3, 5), NativeWindowLayout(6, (), 3, 0))
+        self.ae(native_window_layout(lambda width=18: (), 14, 3, 60), NativeWindowLayout(0, (), 0, 0))
 
     def bar(self, titles: tuple[str, ...], tabs: int, columns: int = 190) -> TabBar:
         self.set_options({'tab_bar_style': 'powerline', 'tab_powerline_style': 'slanted',
@@ -370,6 +372,13 @@ class TestBarLayout(BaseTest):
                     self.ae(bar.window_extents[0].x.start, page_end)
                     # The cells held back from the pages are the cells the taskbar drew.
                     self.ae(bar.window_reserve, bar.window_extents[-1].x.end - bar.window_extents[0].x.start)
+                    # Every entry is its own label and nothing more: the last cell of
+                    # each is the label's closing space, with a letter just before it.
+                    for extent in bar.window_extents:
+                        drawn = row[extent.x.start:extent.x.end]
+                        self.ae(drawn, ' ' + drawn.strip() + ' ')
+        bar = self.bar(('alpha window', 'beta', 'gamma window title'), 3)
+        self.ae([e.x.end - e.x.start for e in bar.window_extents], [14, 6, 16])
 
     def test_first_row_holds_eight_tabs_and_the_button_stays_small(self) -> None:
         bar = self.bar((), 9)
