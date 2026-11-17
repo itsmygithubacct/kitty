@@ -12,7 +12,7 @@
  *                              ~/.local/gpu_terminal/sources/neuronte by default
  *
  * Bundles: the newest weights/neuronte-split-vN.nrt first, then every
- * weights/neuronte-term-*.nrt in name order. A character goes to the first
+ * weights/neuronte-term-*.nrt and weights/neuronte-kilix-*.nrt in name order. A character goes to the first
  * of them whose neuronte_untrained() is 0; when none was trained on it the
  * first bundle draws its untrained mark.
  *
@@ -101,7 +101,7 @@ load(void) {
             if (strncmp(e->d_name, "neuronte-split-v", 16) == 0) {
                 char *end; long v = strtol(e->d_name + 16, &end, 10);
                 if (end != e->d_name + 16 && strcmp(end, ".nrt") == 0 && v > best) { best = v; memcpy(split, e->d_name, len + 1); }
-            } else if (strncmp(e->d_name, "neuronte-term-", 14) == 0 && num_terms < MAX_BUNDLES - 1) memcpy(terms[num_terms++], e->d_name, len + 1);
+            } else if ((strncmp(e->d_name, "neuronte-term-", 14) == 0 || strncmp(e->d_name, "neuronte-kilix-", 15) == 0) && num_terms < MAX_BUNDLES - 1) memcpy(terms[num_terms++], e->d_name, len + 1);
         }
         closedir(d);
     }
