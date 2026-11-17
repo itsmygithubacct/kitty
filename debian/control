@@ -1,0 +1,30 @@
+Source: kilix-engine
+Section: x11
+Priority: optional
+Maintainer: itsmygithubacct <itsmygithubacct@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13),
+ golang-1.27-go,
+ pkg-config,
+ python3, python3-dev,
+ python3-sphinx, furo, python3-sphinx-copybutton, python3-sphinx-inline-tabs,
+ python3-sphinxext-opengraph,
+ libx11-dev, libxrandr-dev, libxinerama-dev, libxcursor-dev, libxi-dev,
+ libxres-dev, libxkbcommon-dev, libxkbcommon-x11-dev, libx11-xcb-dev,
+ libdbus-1-dev, libgl1-mesa-dev, libegl-dev, libdrm-dev, libfontconfig-dev,
+ libpng-dev, liblcms2-dev, libcairo2-dev, libharfbuzz-dev, libssl-dev,
+ libxxhash-dev, libsimde-dev, libwayland-dev, wayland-protocols, zlib1g-dev
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/itsmygithubacct/kitty
+Vcs-Git: https://github.com/itsmygithubacct/kitty.git
+Vcs-Browser: https://github.com/itsmygithubacct/kitty
+
+Package: kilix-engine
+Architecture: amd64 arm64
+Depends: libegl1, ${shlibs:Depends}, ${misc:Depends}
+Recommends: libcanberra0
+Description: terminal engine for Kilix
+ The Kilix build of the kitty terminal emulator, which Kilix runs as its
+ rendering and terminal engine. Everything is installed under
+ /usr/lib/kilix/engine: nothing is placed on PATH, and the package can be
+ installed beside Debian's kitty.

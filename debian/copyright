@@ -1,0 +1,23 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: kitty
+Source: https://github.com/itsmygithubacct/kitty
+Comment:
+ The upstream tarball written by debian/make-orig.sh also holds vendored Go
+ modules (vendor/) and the Symbols Nerd Font (fonts/). Their licences are
+ not yet inventoried here; this file is incomplete until they are.
+
+Files: *
+Copyright: 2016-2026 Kovid Goyal
+ Kilix contributors
+License: GPL-3
+
+Files: debian/*
+Copyright: 2026 itsmygithubacct
+License: GPL-3
+
+License: GPL-3
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License version 3 as published
+ by the Free Software Foundation.
+ .
+ On Debian systems the full text is in /usr/share/common-licenses/GPL-3.
