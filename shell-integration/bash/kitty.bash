@@ -280,6 +280,25 @@ _ksi_main() {
             builtin printf '\eP@kitty-input|result;token=%s;status=%s%s\e\\' "$1" "$2" "${3:+;reason=$3}" > /dev/tty
         }
 
+        _ksi_input_unread() {
+            # 0 when nothing is waiting unread on the terminal, 1 when input is,
+            # 2 when it cannot tell. In canonical mode the terminal hides a
+            # partial line from read -t 0: a draft or a key such as Ctrl-S or
+            # Ctrl-Q typed while a command ran. Readline would read it before
+            # the engine's key, so look with canonical processing briefly off.
+            builtin read -t 0 && builtin return 1
+            builtin local state lflag r=0 f="${_ksi_prompt[input_dir]}/tty-$$"
+            builtin command -p stty -g >| "$f" 2> /dev/null || builtin return 2
+            IFS= builtin read -r state < "$f" || builtin return 2
+            lflag="${state#*:*:*:}"; lflag="${lflag%%:*}"
+            [[ "$lflag" =~ ^[0-9a-fA-F]{1,8}$ ]] || builtin return 2
+            (( 16#$lflag & 2 )) || builtin return 0  # already non-canonical: read -t 0 saw everything
+            builtin command -p stty -icanon 2> /dev/null || builtin return 2
+            builtin read -t 0 && r=1
+            builtin command -p stty "$state" 2> /dev/null || r=2
+            builtin return $r
+        }
+
         _ksi_input_ready() {
             builtin local tok pending=0
             _ksi_input_cont=0
@@ -298,7 +317,7 @@ _ksi_main() {
                 builtin printf -v tok '%04x%04x%04x%04x%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM"
             fi
             # Unread type-ahead would reach readline before the engine's key.
-            builtin read -t 0 && pending=1
+            _ksi_input_unread; case $? in 0) ;; 1) pending=1 ;; *) builtin return 0 ;; esac
             _ksi_prompt[input_token]="$tok"
             builtin printf '\eP@kitty-input|ready;v=1;pid=%s;token=%s;pending=%s\e\\' "$$" "$tok" "$pending" > /dev/tty
         }

@@ -18,9 +18,10 @@ class FakeScreen:
         self.count = 0
         self.at = 0
         self.alternate = False
+        self.unwritten = 0
 
     def input_queue_state(self):
-        return self.count, self.at
+        return self.count, self.at, self.unwritten
 
     def is_using_alternate_linebuf(self):
         return self.alternate
@@ -154,6 +155,11 @@ class ShellInputEngine(BaseTest):
         self.assertTrue(d['verifiable'])
         self.ready(w, pending='1')
         self.refused(w, 'input')
+        # Input the engine has not yet written may arrive after the shell looked.
+        w.screen.unwritten = 3
+        self.ready(w)
+        self.refused(w, 'input')
+        w.screen.unwritten = 0
         self.ready(w)
         w.screen.alternate = True
         self.refused(w, 'busy')

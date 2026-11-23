@@ -6220,8 +6220,9 @@ input_queue_state(Screen *self, PyObject *args UNUSED) {
     pthread_mutex_lock(&self->write_buf_lock);
     unsigned long long count = self->input_bytes_queued;
     monotonic_t at = self->last_input_queued_at;
+    size_t unwritten = self->write_buf_used;
     pthread_mutex_unlock(&self->write_buf_lock);
-    return Py_BuildValue("KL", count, (long long)at);
+    return Py_BuildValue("KLn", count, (long long)at, (Py_ssize_t)unwritten);
 }
 
 static PyObject*

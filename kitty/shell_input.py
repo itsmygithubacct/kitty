@@ -164,9 +164,11 @@ def state_of(window: Window) -> ShellInputState:
     return ans
 
 
-def _queue_state(window: Window) -> tuple[int, float]:
-    count, at = window.screen.input_queue_state()
-    return count, at / 1e9
+def _queue_state(window: Window) -> tuple[int, float, int]:
+    """Bytes ever queued to the child, when the last was queued, and how many
+    of them the engine has not yet written to the pane."""
+    count, at, unwritten = window.screen.input_queue_state()
+    return count, at / 1e9, unwritten
 
 
 def invalidate(window: Window, why: str) -> None:
@@ -203,13 +205,17 @@ def _on_ready(window: Window, st: ShellInputState, fields: dict[str, str]) -> No
     token = fields.get('token', '')
     if version != PROTOCOL_VERSION or pid <= 0 or not _TOKEN.fullmatch(token):
         return
-    count, last_at = _queue_state(window)
+    count, last_at, unwritten = _queue_state(window)
     st.supported = True
     # Engine-chosen and never reused, so a plan cannot match a later prompt,
     # another pane or another engine instance by accident.
     st.prompt = Prompt(
         pid=pid, token=token, prompt_id=secrets.token_hex(12), baseline=count,
-        quiet=count in (0, st.engine_mark, st.command_mark) or monotonic() - last_at >= QUIET_BEFORE_READY,
+        # Input the engine still holds, or queued so recently that it may still
+        # be on its way, could reach the line editor after the shell looked
+        # for unread input; the shell would then never see it.
+        quiet=not unwritten and (count in (0, st.engine_mark, st.command_mark)
+                                 or monotonic() - last_at >= QUIET_BEFORE_READY),
         pending=fields.get('pending') != '0')
     st.last_change = 'prompt reported'
 
@@ -350,7 +356,7 @@ def _check(window: Window, st: ShellInputState, *, fresh: bool, expect_prompt: s
         raise ShellInputRefused('busy', f'the shell is not at a fresh prompt ({st.last_change})')
     if expect_prompt and expect_prompt != p.prompt_id:
         raise ShellInputRefused('stale', 'the prompt changed after the request was planned')
-    count, _ = _queue_state(window)
+    count, _, _ = _queue_state(window)
     if count != p.baseline:
         raise ShellInputRefused('input', 'input reached the pane after its prompt appeared')
     if p.pending or not p.quiet:
