@@ -157,6 +157,7 @@ class Callbacks:
         self.last_cmd_at = 0
         self.num_of_resize_events = 0
         self.da1 = []
+        self.shell_input = []
 
     def on_bell(self) -> None:
         self.bell_count += 1
@@ -196,6 +197,10 @@ class Callbacks:
 
     def handle_remote_cmd(self, msg):
         pass
+
+    def handle_shell_input(self, msg):
+        from kitty.shell_input import parse_message
+        self.shell_input.append(parse_message(msg))
 
     def handle_remote_clone(self, msg):
         msg = str(msg, 'utf-8')

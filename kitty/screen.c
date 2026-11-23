@@ -6216,6 +6216,15 @@ dump_lines_with_attrs(Screen *self, PyObject *args) {
 }
 
 static PyObject*
+input_queue_state(Screen *self, PyObject *args UNUSED) {
+    pthread_mutex_lock(&self->write_buf_lock);
+    unsigned long long count = self->input_bytes_queued;
+    monotonic_t at = self->last_input_queued_at;
+    pthread_mutex_unlock(&self->write_buf_lock);
+    return Py_BuildValue("KL", count, (long long)at);
+}
+
+static PyObject*
 cursor_at_prompt(Screen *self, PyObject *args UNUSED) {
     int y = screen_cursor_at_a_shell_prompt(self);
     if (y > -1) { Py_RETURN_TRUE; }
@@ -6369,6 +6378,7 @@ static PyMethodDef methods[] = {
     MND(dump_lines_with_attrs, METH_VARARGS)
     MND(cpu_cells, METH_VARARGS)
     MND(cursor_at_prompt, METH_NOARGS)
+    MND(input_queue_state, METH_NOARGS)
     {"visual_line", (PyCFunction)pyvisual_line, METH_VARARGS, ""},
     MND(current_url_text, METH_NOARGS)
     MND(draw, METH_O)

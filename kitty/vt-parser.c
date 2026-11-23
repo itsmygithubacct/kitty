@@ -666,6 +666,7 @@ parse_kitty_dcs(PS *self, uint8_t *buf, size_t bufsz) {
     dispatch("ssh|", handle_remote_ssh, 0)
     dispatch("ask|", handle_remote_askpass, 0)
     dispatch("clone|", handle_remote_clone, 0)
+    dispatch("input|", handle_shell_input, 0)
     dispatch("edit|", handle_remote_edit, 0)
     dispatch("restore-cursor-appearance|", handle_restore_cursor_appearance, 0)
 

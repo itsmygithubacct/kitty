@@ -294,6 +294,7 @@ class WindowDict(TypedDict):
     columns: int
     user_vars: dict[str, str]
     at_prompt: bool
+    shell_input: dict[str, Any]
     created_at: int
     in_alternate_screen: bool
     neighbors: NeighborsMap
@@ -1895,6 +1896,10 @@ class Window:
 
             remote_edit(cdata, self)
 
+    def handle_shell_input(self, msg: memoryview) -> None:
+        from .shell_input import handle_message
+        handle_message(self, msg)
+
     def handle_remote_clone(self, msg: memoryview) -> None:
         cdata = self.append_remote_data(msg)
         if cdata:
@@ -2045,6 +2050,8 @@ class Window:
 
     def cmd_output_marking(self, is_start: bool | None, cmdline: str = '') -> None:
         if is_start:
+            from .shell_input import command_started
+            command_started(self)
             start_time = monotonic()
             self.last_cmd_output_start_time = start_time
             cmdline = decode_cmdline(cmdline) if cmdline else ''
@@ -2169,9 +2176,19 @@ class Window:
 
                 traceback.print_exc()
 
+    @property
+    def shell_input_description(self) -> dict[str, Any]:
+        from .shell_input import describe
+        try:
+            return describe(self)
+        except Exception as e:
+            return {'verifiable': False, 'code': 'unavailable', 'reason': f'shell input state could not be read: {e}'}
+
     def destroy(self) -> None:
         self.call_watchers(self.watchers.on_close, {})
         self.destroyed = True
+        from .shell_input import abandon
+        abandon(self)
         self.clipboard_request_manager.close()
         del self.kitten_result_processors
         if hasattr(self, 'screen'):
@@ -2421,6 +2438,7 @@ class Window:
             'foreground_processes': self.child.foreground_processes,
             'is_self': is_self,
             'at_prompt': self.at_prompt,
+            'shell_input': self.shell_input_description,
             'lines': self.screen.lines,
             'columns': self.screen.columns,
             'user_vars': self.user_vars,

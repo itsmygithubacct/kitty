@@ -489,6 +489,10 @@ class Child:
         elif opts.terminfo_type == 'direct':
             env['TERMINFO'] = base64_terminfo_data()
         env['KITTY_INSTALLATION_DIR'] = kitty_base_dir
+        # Where the shell integration's guarded handler finds a verified
+        # submission (kitty/shell_input.py). The directory is private.
+        from .shell_input import export_directory
+        export_directory(env)
         self.unmodified_argv = list(self.argv)
         if not self.should_run_via_run_shell_kitten and 'disabled' not in opts.shell_integration:
             from .shell_integration import modify_shell_environ

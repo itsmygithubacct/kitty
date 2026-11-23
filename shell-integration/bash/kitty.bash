@@ -207,6 +207,7 @@ _ksi_main() {
                 builtin printf "\e]7;kitty-shell-cwd://%s%s\a" "$HOSTNAME" "$PWD"
             fi
         fi
+        if [[ -n "${_ksi_prompt[input_dir]}" ]]; then _ksi_input_ready; fi
     }
 
     if [[ "${_ksi_prompt[cursor]}" == "y" ]]; then
@@ -258,6 +259,93 @@ _ksi_main() {
         _ksi_prompt[ps1]+="\[\e]133;D;\$?\a\e]133;A\a\]"
         _ksi_prompt[ps2]+="\[\e]133;A;k=s\a\]"
     fi
+
+    # Verified command submission (kitty/shell_input.py). Before each primary
+    # prompt the shell reports a fresh random token. The engine may then queue
+    # one key sequence that only these bindings know; its handler runs inside
+    # readline and accepts the engine's command only while the buffer is
+    # empty, the line is a primary one and the token is still current. It
+    # reports whether it accepted, never what the buffer held.
+    if [[ "${_ksi_prompt[mark]}" == "y" && -n "$KITTY_SHELL_INPUT_DIR" ]] \
+        && (( BASH_VERSINFO[0] > 4 || ( BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4 ) )); then
+        _ksi_prompt[input_dir]="$KITTY_SHELL_INPUT_DIR"
+        _ksi_prompt[input_token]=''
+        _ksi_prompt[input_armed]=''
+        # Expanding PS2 sets this flag, with no visible output; every primary
+        # prompt clears it. It is how the handler tells a continuation line.
+        _ksi_input_cont=0
+        _ksi_prompt[ps2]+='${_ksi_input_cont:0:$((_ksi_input_cont=1,0))}'
+
+        _ksi_input_reply() {
+            builtin printf '\eP@kitty-input|result;token=%s;status=%s%s\e\\' "$1" "$2" "${3:+;reason=$3}" > /dev/tty
+        }
+
+        _ksi_input_ready() {
+            builtin local tok pending=0
+            _ksi_input_cont=0
+            _ksi_prompt[input_token]=''
+            if [[ -n "${_ksi_prompt[input_armed]}" ]]; then
+                _ksi_prompt[input_armed]=''
+                builtin bind -m emacs '"\e[63173u": redraw-current-line'
+                builtin bind -m vi-insert '"\e[63173u": redraw-current-line'
+            fi
+            [[ ":$SHELLOPTS:" == *:emacs:* || ":$SHELLOPTS:" == *:vi:* ]] || builtin return 0
+            builtin shopt -q promptvars || builtin return 0
+            [[ -d "${_ksi_prompt[input_dir]}" && -O "${_ksi_prompt[input_dir]}" && ! -L "${_ksi_prompt[input_dir]}" ]] || builtin return 0
+            if [[ -n "$SRANDOM" ]]; then
+                builtin printf -v tok '%08x%08x%08x%08x' "$SRANDOM" "$SRANDOM" "$SRANDOM" "$SRANDOM"
+            else
+                builtin printf -v tok '%04x%04x%04x%04x%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM"
+            fi
+            # Unread type-ahead would reach readline before the engine's key.
+            builtin read -t 0 && pending=1
+            _ksi_prompt[input_token]="$tok"
+            builtin printf '\eP@kitty-input|ready;v=1;pid=%s;token=%s;pending=%s\e\\' "$$" "$tok" "$pending" > /dev/tty
+        }
+
+        _ksi_input_submit() {
+            builtin local - tok="${_ksi_prompt[input_token]}" cmd=''
+            builtin local req="${_ksi_prompt[input_dir]}/request-$tok" claim="${_ksi_prompt[input_dir]}/claim-$tok"
+            # One key, one answer: this prompt cannot be used again.
+            _ksi_prompt[input_token]=''
+            builtin bind -m "$1" '"\e[63173u": redraw-current-line'
+            if [[ -z "$tok" ]]; then builtin return 0; fi
+            if [[ -n "$READLINE_LINE" ]]; then _ksi_input_reply "$tok" refused draft; builtin return 0; fi
+            if (( _ksi_input_cont )); then _ksi_input_reply "$tok" refused continuation; builtin return 0; fi
+            if ! builtin shopt -q promptvars || [[ "$PS2" != *'_ksi_input_cont=1'* ]]; then
+                _ksi_input_reply "$tok" refused unverifiable; builtin return 0
+            fi
+            if [[ ! -f "$req" || -L "$req" || ! -O "$req" ]]; then _ksi_input_reply "$tok" refused no_request; builtin return 0; fi
+            builtin set -C
+            if ! { : > "$claim"; } 2> /dev/null; then _ksi_input_reply "$tok" refused claimed; builtin return 0; fi
+            IFS= builtin read -r -d '' cmd < "$req"
+            if [[ -z "$cmd" || "$cmd" == *[[:cntrl:]]* ]]; then _ksi_input_reply "$tok" refused invalid_command; builtin return 0; fi
+            READLINE_LINE="$cmd"
+            READLINE_POINT=${#cmd}
+            builtin bind -m "$1" '"\e[63173u": accept-line'
+            _ksi_prompt[input_armed]=y
+            _ksi_input_reply "$tok" accepted
+        }
+
+        _ksi_input_refuse() {
+            builtin local tok="${_ksi_prompt[input_token]}"
+            _ksi_prompt[input_token]=''
+            if [[ -n "$tok" ]]; then _ksi_input_reply "$tok" refused "$1"; fi
+        }
+
+        builtin local _ksi_m
+        for _ksi_m in emacs vi-insert; do
+            builtin bind -m "$_ksi_m" -x "\"\\e[63172u\": _ksi_input_submit $_ksi_m"
+            builtin bind -m "$_ksi_m" '"\e[63173u": redraw-current-line'
+            builtin bind -m "$_ksi_m" '"\e[63171u": "\e[63172u\e[63173u"'
+        done
+        builtin bind -m vi-command -x '"\e[63171u": _ksi_input_refuse vi_command'
+        # Type-ahead can leave a prefix key pending when the prompt appears; the
+        # key must then refuse instead of combining with it into other input.
+        builtin bind -m emacs -x '"\e\e[63171u": _ksi_input_refuse pending_key'
+        builtin bind -m emacs -x '"\C-x\e[63171u": _ksi_input_refuse pending_key'
+    fi
+    builtin unset KITTY_SHELL_INPUT_DIR
 
     builtin alias edit-in-kitty="kitten edit-in-kitty"
 

@@ -511,6 +511,7 @@ static const unsigned write_buf_limit = 100 * 1024 * 1024;
                 screen->write_buf_used += szval; \
             } \
             va_end(ap); \
+            if (sz) { screen->input_bytes_queued += sz; screen->last_input_queued_at = monotonic(); } \
             if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) { \
                 screen->write_buf_sz = BUFSIZ; \
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz); \
@@ -547,6 +548,7 @@ schedule_write_to_child_if_possible(id_type id, const char *data, size_t sz, boo
             *found = true;
             memcpy(screen->write_buf + screen->write_buf_used, data, sz);
             screen->write_buf_used += sz;
+            if (sz) { screen->input_bytes_queued += sz; screen->last_input_queued_at = monotonic(); }
             if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) {
                 screen->write_buf_sz = BUFSIZ;
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);
