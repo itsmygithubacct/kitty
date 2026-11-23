@@ -165,8 +165,10 @@ def state_of(window: Window) -> ShellInputState:
 
 
 def _queue_state(window: Window) -> tuple[int, float, int]:
-    """Bytes ever queued to the child, when the last was queued, and how many
-    of them the engine has not yet written to the pane."""
+    """Bytes ever queued to the child; when the last byte other than Enter,
+    newline or Ctrl-C was queued; and how many bytes the engine has not yet
+    written to the pane. Those three keys, arriving late at a fresh prompt,
+    only end it and so start a new prompt with a new token."""
     count, at, unwritten = window.screen.input_queue_state()
     return count, at / 1e9, unwritten
 

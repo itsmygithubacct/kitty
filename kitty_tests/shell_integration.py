@@ -672,7 +672,6 @@ PS1="{ps1}"
         # With flow control and reprint off, Ctrl-S, Ctrl-Q and Ctrl-R typed
         # ahead are kept by the terminal for readline: a search, a quoted insert.
         rc = f"""PS1='{ps1}'\nHISTFILE=/dev/null\nhistory -s 'echo seed_history'\nstty -ixon rprnt undef"""
-        import time
         for name, value in (('directory', lambda: folder), ('shell_in_foreground', lambda *a, **k: True),
                             ('add_timer', lambda *a: 1), ('remove_timer', lambda *a: None)):
             patcher = mock.patch.object(shell_input, name, value)
@@ -695,9 +694,12 @@ PS1="{ps1}"
                 self.pty, self.screen = pty, Counter()
 
             def write_to_child(self, data):
+                # As the engine accounts input (child-monitor.c, account_input).
                 self.pty.write_to_child(data)
+                data = data.encode() if isinstance(data, str) else data
                 self.screen.count += len(data)
-                self.screen.at = int(time.monotonic() * 1e9)
+                if data.strip(b'\r\n\x03'):
+                    self.screen.at = int(shell_input.monotonic() * 1e9)  # the engine's clock
 
         def readies(pty):
             return [f for k, f in pty.callbacks.shell_input if k == 'ready']
@@ -787,24 +789,43 @@ PS1="{ps1}"
                     pane.write_to_child('seed')
                     shows(pty, shown[1:], "`seed'", *(["echo seed_history"] if keys == '\x12' else []))
                     self.assertFalse(os.path.exists(marker))
-        # 3. With nothing typed, the same engine and shell accept exactly once.
+        # 3. With nothing typed, the same engine and shell accept exactly
+        # once, also right after an empty Enter or a draft abandoned with
+        # Ctrl-C: those keys only end a line, so arriving late they could
+        # only start a new prompt with a new token.
+        for i, ended_by in enumerate(('', '\r', 'echo abandoned\x03')):
+            with self.subTest(ended_by=ended_by), self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+                pane = Pane(pty)
+                report(pane, next_ready(pty, 1))
+                drain(pty, 2)
+                if ended_by:
+                    pane.write_to_child(ended_by[:-1])
+                    drain(pty, 3)
+                    pane.screen.at -= int(10e9)  # typed long before the line ended
+                    pane.write_to_child(ended_by[-1])
+                    report(pane, next_ready(pty, 2))
+                    drain(pty, 2)
+                self.assertTrue(shell_input.describe(pane)['verifiable'], shell_input.describe(pane))
+                answers = []
+                marker = os.path.join(self.home_dir, f'marker-{i}')
+                shell_input.submit(pane, f'echo ran >> {marker}', '', lambda r, e: answers.append((r, e)))
+                pty.wait_till(lambda: [k for k, f in pty.callbacks.shell_input if k == 'result'])
+                for k, f in pty.callbacks.shell_input:
+                    if k == 'result':
+                        shell_input.handle_message(pane, 'result;' + ';'.join(f'{a}={b}' for a, b in f.items()))
+                self.ae([e for r, e in answers], [None])
+                pty.wait_till(lambda: os.path.exists(marker))
+                drain(pty)
+                with open(marker) as f:
+                    self.ae(f.read(), 'ran\n')
+        # A key other than those, even one that leaves the line empty, still
+        # makes a prompt reported right after it unverifiable.
         with self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
             pane = Pane(pty)
             report(pane, next_ready(pty, 1))
-            drain(pty, 2)
-            answers = []
-            marker = os.path.join(self.home_dir, 'marker')
-            shell_input.submit(pane, f'echo ran >> {marker}', '', lambda r, e: answers.append((r, e)))
-            pty.wait_till(lambda: [k for k, f in pty.callbacks.shell_input if k == 'result'])
-            for k, f in pty.callbacks.shell_input:
-                if k == 'result':
-                    shell_input.handle_message(pane, 'result;' + ';'.join(f'{a}={b}' for a, b in f.items()))
-            self.ae([e for r, e in answers], [None])
-            pty.wait_till(lambda: os.path.exists(marker))
-            drain(pty)
-            with open(marker) as f:
-                self.ae(f.read(), 'ran\n')
-
+            pane.write_to_child('x\x7f\r')
+            report(pane, next_ready(pty, 2))
+            self.ae(shell_input.describe(pane)['code'], 'input')
 
 class ShellIntegrationWithKitten(ShellIntegration):
     with_kitten = True

@@ -148,7 +148,9 @@ typedef struct {
     // queued. Guarded by write_buf_lock. Shell input verification compares
     // these against the values seen when the shell reported a fresh prompt.
     unsigned long long input_bytes_queued;
-    monotonic_t last_input_queued_at;
+    // When input other than Enter, newline or Ctrl-C was last queued: those
+    // three can only end a fresh prompt's line, so they cannot hide in it.
+    monotonic_t last_editing_input_at;
 
     CursorRenderInfo cursor_render_info;
     struct { index_type x, y; uint8_t shape; } mouse_cursor;  // kilix: software mouse cursor (shape 0 = not drawn)

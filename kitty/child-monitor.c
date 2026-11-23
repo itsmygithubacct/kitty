@@ -477,6 +477,22 @@ add_child(ChildMonitor *self, PyObject *args) {
 
 static const unsigned write_buf_limit = 100 * 1024 * 1024;
 
+// Account input for verified shell submission (shell_input.py). Enter, newline
+// and Ctrl-C reaching a fresh, empty prompt late only end it (a new prompt, so
+// a new token); any other byte could leave the line editor in another state.
+static inline void
+account_input(Screen *screen, const void *bytes, size_t sz) {
+    if (!sz) return;
+    const unsigned char *data = bytes;
+    screen->input_bytes_queued += sz;
+    for (size_t i = 0; i < sz; i++) {
+        if (data[i] != '\r' && data[i] != '\n' && data[i] != 0x03) {
+            screen->last_editing_input_at = monotonic();
+            break;
+        }
+    }
+}
+
 #define schedule_write_to_child_generic(id, num, va_start, get_next_arg, va_end, found, too_much_data) \
     ChildMonitor *self = the_monitor; \
     const char *data; \
@@ -511,7 +527,7 @@ static const unsigned write_buf_limit = 100 * 1024 * 1024;
                 screen->write_buf_used += szval; \
             } \
             va_end(ap); \
-            if (sz) { screen->input_bytes_queued += sz; screen->last_input_queued_at = monotonic(); } \
+            account_input(screen, screen->write_buf + screen->write_buf_used - sz, sz); \
             if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) { \
                 screen->write_buf_sz = BUFSIZ; \
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz); \
@@ -548,7 +564,7 @@ schedule_write_to_child_if_possible(id_type id, const char *data, size_t sz, boo
             *found = true;
             memcpy(screen->write_buf + screen->write_buf_used, data, sz);
             screen->write_buf_used += sz;
-            if (sz) { screen->input_bytes_queued += sz; screen->last_input_queued_at = monotonic(); }
+            account_input(screen, data, sz);
             if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) {
                 screen->write_buf_sz = BUFSIZ;
                 screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);
