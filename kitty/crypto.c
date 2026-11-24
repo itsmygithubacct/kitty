@@ -19,9 +19,15 @@
 #include <structmember.h>
 
 #ifdef LIBRESSL_VERSION_NUMBER
+#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+/* The BSD libcs provide explicit_bzero(3) themselves; LibreSSL built for
+ * them exports no libressl_explicit_bzero compatibility alias. */
+#include <string.h>
+#else
 /* from: https://github.com/libressl/portable/blob/master/include/compat/string.h#L63 */
 #define explicit_bzero libressl_explicit_bzero
 void explicit_bzero(void *, size_t);
+#endif
 /* from: https://github.com/libressl/portable/blob/master/crypto/compat/freezero.c */
 void
 freezero(void *ptr, size_t sz) {
