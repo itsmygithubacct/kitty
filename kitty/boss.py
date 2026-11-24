@@ -647,7 +647,10 @@ class Boss:
             ser_opts = default_save_as_session_opts()
         matched_windows = frozenset(self.match_windows(ser_opts.match)) if ser_opts.match else None
         s = {current_focused_os_window_id(): 2, last_focused_os_window_id(): 1}
-        for i, os_window_id in enumerate(sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))):
+        # kilix: the embed host's windows belong to the programs drawing them,
+        # which start them again themselves; a session never reopens them.
+        saved = [wid for wid in self.os_window_map if not getattr(self.os_window_map[wid], 'is_embed_host', False)]
+        for i, os_window_id in enumerate(sorted(saved, key=lambda wid: s.get(wid, 0))):
             tm = self.os_window_map[os_window_id]
             yield from tm.serialize_state_as_session(session_path, matched_windows, is_first=i==0, ser_opts=ser_opts)
 
