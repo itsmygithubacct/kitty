@@ -54,6 +54,12 @@ class TestKilixEmbed(BaseTest):
         with self.assertRaises(ValueError):
             EmbedState.from_launch_options('big', '')
 
+    def test_an_ordinary_window_is_not_embedded(self):
+        from kitty.window import Window
+        window = object.__new__(Window)
+        self.assertIsNone(window.embed)
+        self.assertIsNone(Window.next_embed)
+
     def test_map_folder_is_private(self):
         with tempfile.TemporaryDirectory() as d, patch('kitty.embed.runtime_dir', return_value=d):
             path = embed_dir()

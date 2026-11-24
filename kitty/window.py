@@ -752,6 +752,9 @@ class Window:
                 cls.initial_ignore_focus_changes_context_manager_in_operation = False
 
     next_embed: 'EmbedState | None' = None
+    # This window's own embed state, None for an ordinary window (a class
+    # default too, for windows made without __init__).
+    embed: 'EmbedState | None' = None
 
     def __init__(
         self,
@@ -824,7 +827,7 @@ class Window:
         opts = get_options()
         self.screen: Screen = Screen(self, 24, 80, opts.scrollback_lines, cell_width, cell_height, self.id)
         # kilix: --type=embed. Set by launch just before this window is made.
-        self.embed: 'EmbedState | None' = Window.next_embed
+        self.embed = Window.next_embed
         Window.next_embed = None
         if self.embed is not None:
             self.embed.attach(self.id, child.pid or 0)
