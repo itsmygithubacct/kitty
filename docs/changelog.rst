@@ -188,6 +188,11 @@ Detailed list of changes
 Unreleased
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+- Kilix integration: Start ▸ Software ▸ Kilix components has a Local models
+  (llama.cpp) menu to chat, see which llama.cpp build is in use, update it to
+  the newest release, roll back, or install and build it ahead of first use,
+  all through ``kilix llama``
+
 - Kilix integration: A camera button on each pane's title bar screenshots the
   pane at full resolution and opens a Save As dialog. Right-clicking it opens
   a menu to record the pane, and to choose the screenshot format (PNG, JPEG,

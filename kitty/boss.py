@@ -1809,15 +1809,33 @@ class Boss:
     def _kilix_start_components(self, window: 'Window') -> None:
         self._kilix_start_choose(window, 'Software — Kilix components', (
             'v:Voice / dictation', 'm:Memory monitor', 't:Temperature dashboard',
-            'b:Bonsai / BitNet', 'c:Kilix Cap', 'x:Tmux Manager', 'z:◂ Back [Z]',
+            'b:Bonsai / BitNet', 'l:▸ Local models (llama.cpp)', 'c:Kilix Cap',
+            'x:Tmux Manager', 'z:◂ Back [Z]',
         ), {
             'v': 'launch --type=tab --hold kilix voice',
             'm': 'launch --type=tab --title "Kilix Memory" kilix memory',
             't': 'launch --type=tab --title "Kilix Temps" kilix temps',
             'b': 'launch --type=tab --hold kilix bonsai',
+            'l': self._kilix_start_llama,
             'c': 'launch --type=tab --title "Kilix Cap" kilix cap',
             'x': 'launch --type=tab --title "Tmux Manager" kilix tmux',
             'z': self._kilix_start_software,
+        })
+
+    def _kilix_start_llama(self, window: 'Window') -> None:
+        # `kilix llama` installs kilix-llm on first use, and its first chat
+        # builds llama.cpp, so every row works on a machine with neither.
+        self._kilix_start_choose(window, 'Kilix components — Local models (llama.cpp)', (
+            'c:Chat with a local model', 's:Status: which llama.cpp is in use',
+            'u:Update llama.cpp to its newest release', 'r:Roll back the last update',
+            'i:Install and build now', 'z:◂ Back [Z]',
+        ), {
+            'c': 'launch --type=tab --hold --title "Local model chat" kilix llama chat',
+            's': 'launch --type=tab --hold --title "llama.cpp status" kilix llama status',
+            'u': 'launch --type=tab --hold --title "Update llama.cpp" kilix llama update',
+            'r': 'launch --type=tab --hold --title "Roll back llama.cpp" kilix llama rollback',
+            'i': 'launch --type=tab --hold --title "Install llama.cpp" kilix llama install',
+            'z': self._kilix_start_components,
         })
 
     def _kilix_start_tools(self, window: 'Window') -> None:
