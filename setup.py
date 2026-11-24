@@ -416,6 +416,11 @@ def cc_version() -> Tuple[List[str], Tuple[int, int]]:
                 raise SystemExit('No C compiler found. On Windows, install Visual Studio (MSVC) or MinGW-w64 (gcc/clang).')
         elif is_macos:
             q = 'clang'
+        elif is_freebsd:
+            # The base system compiler matches the base system headers; a
+            # ports gcc does not (its _FORTIFY_SOURCE wrappers clash with
+            # FreeBSD's own ssp headers).
+            q = 'cc'
         else:
             if shutil.which('gcc'):
                 q = 'gcc'
