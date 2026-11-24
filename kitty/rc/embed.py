@@ -16,6 +16,7 @@ class Embed(RemoteCommand):
     token/str: The token returned when the window was launched with --type=embed
     size/str: New size in cells, COLUMNSxROWS, or empty to keep it
     cell_size/str: The embedding program's cell size in pixels, WIDTHxHEIGHT, or empty to keep it
+    selection/bool: Also answer with the window's selected text
     '''
 
     short_desc = 'Resize an embedded window or describe it'
@@ -36,6 +37,12 @@ New size in cells, :code:`COLUMNSxROWS`.
 
 --cell-size
 The embedding program's cell size in pixels, :code:`WIDTHxHEIGHT`.
+
+
+--selection
+type=bool-set
+Also answer with the window's selected text, as :code:`selection`. Sent on the
+connection that carried the window's mouse input, it sees every event before it.
 '''
 
     def message_to_kitty(self, global_opts: RCOptions, opts: 'CLIOptions', args: ArgsType) -> PayloadType:
@@ -43,7 +50,8 @@ The embedding program's cell size in pixels, :code:`WIDTHxHEIGHT`.
             self.fatal('--match is required')
         if not opts.token:
             self.fatal('--token is required')
-        return {'match': opts.match, 'token': opts.token, 'size': opts.size, 'cell_size': opts.cell_size}
+        return {'match': opts.match, 'token': opts.token, 'size': opts.size, 'cell_size': opts.cell_size,
+                'selection': opts.selection}
 
     def response_from_kitty(self, boss: Boss, window: Window | None, payload_get: PayloadGetType) -> ResponseType:
         import json
@@ -65,6 +73,8 @@ The embedding program's cell size in pixels, :code:`WIDTHxHEIGHT`.
             w.set_geometry(w.geometry)
         ans = state.as_dict(w.id)
         ans['pid'] = w.child.pid or 0
+        if payload_get('selection'):
+            ans['selection'] = w.text_for_selection()
         return json.dumps(ans)
 
 

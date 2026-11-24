@@ -8,7 +8,7 @@ from .base import MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadTy
 if TYPE_CHECKING:
     from kitty.cli_stub import EmbedInputRCOptions as CLIOptions
 
-KINDS = ('text', 'bytes', 'paste', 'key', 'mouse', 'scroll', 'focus')
+KINDS = ('text', 'bytes', 'paste', 'key', 'mouse', 'scroll', 'scroll-to', 'focus')
 
 
 class EmbedInput(RemoteCommand):
@@ -31,7 +31,8 @@ class EmbedInput(RemoteCommand):
         ' :code:`key KEY...` sends keys such as :code:`ctrl+c`;'
         ' :code:`mouse ACTION BUTTON X Y [PX PY [LEFT_HALF]]` with ACTION 0 press, 1 release, 2 move and BUTTON'
         ' 0 left, 1 right, 2 middle or -1 none; :code:`scroll LINES X Y [PX PY]` with LINES positive to scroll'
-        ' back; :code:`focus in|out`. X and Y are cells, PX and PY pixels from the window\'s top left.'
+        ' back; :code:`scroll-to OFFSET` shows the history OFFSET lines up from the live rows (0 is live),'
+        ' whatever the program asked for; :code:`focus in|out`. X and Y are cells, PX and PY pixels from the window\'s top left.'
     )
     options_spec = MATCH_WINDOW_OPTION + '''\n
 --token
@@ -84,6 +85,14 @@ Modifier bits for mouse and scroll: 1 shift, 2 alt, 4 ctrl, 8 super.
             embed_mouse_event(w.id, f['action'], f['button'], mods, f['x'], f['y'], f['px'], f['py'], f['left_half'])
         elif kind == 'scroll':
             embed_scroll_event(w.id, f['lines'], mods, f['x'], f['y'], f['px'], f['py'])
+        elif kind == 'scroll-to':
+            # Absolute, from where the view is when this arrives: a scrollbar
+            # dragged faster than frames come back never drifts.
+            screen = w.screen
+            if screen.is_main_linebuf():
+                delta = f['offset'] - screen.scrolled_by
+                if delta:
+                    screen.scroll(abs(delta), delta > 0)
         else:
             w.focus_changed(f['focused'])
         return None
@@ -132,6 +141,11 @@ def parse_event(args: list[str]) -> tuple[str, dict]:
             raise ValueError('scroll needs X, Y >= 0')
         px, py = (v[3], v[4]) if len(v) == 5 else (0, 0)
         return kind, {'lines': v[0], 'x': v[1], 'y': v[2], 'px': px, 'py': py}
+    if kind == 'scroll-to':
+        offset = ints(rest, 1, 1)[0]
+        if not 0 <= offset <= 100_000_000:
+            raise ValueError('scroll-to needs an OFFSET from 0')
+        return kind, {'offset': offset}
     if rest not in (['in'], ['out']):
         raise ValueError('focus takes in or out')
     return kind, {'focused': rest == ['in']}
