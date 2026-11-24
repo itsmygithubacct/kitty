@@ -71,8 +71,11 @@ typedef struct kepm_header {
     uint32_t reserved1;             /* explicit, so frames is 8-aligned at 104 */
     uint64_t frames;                /* frames written */
     uint32_t child_pid;
-    uint8_t reserved[256 - 116];
+    uint32_t title_len;             /* bytes of title used */
+    char title[128];                /* the window's title, UTF-8, cut at a character boundary */
+    uint8_t reserved[256 - 248];
 } kepm_header;
+static_assert(offsetof(kepm_header, title) == 120, "kepm_header layout");
 static_assert(offsetof(kepm_header, frames) == 104, "kepm_header layout");
 static_assert(sizeof(kepm_header) == KEPM_HEADER_SIZE, "kepm_header is 256 bytes");
 
@@ -211,6 +214,14 @@ write_frame(Window *w, Screen *s) {
     h->mouse_tracking_mode = (uint8_t)s->modes.mouse_tracking_mode;
     h->mouse_tracking_protocol = (uint8_t)s->modes.mouse_tracking_protocol;
     h->key_encoding_flags = s->key_encoding_flags[7] & 0x7f;
+    Py_ssize_t tlen = 0;
+    const char *title = w->title ? PyUnicode_AsUTF8AndSize(w->title, &tlen) : NULL;
+    if (!title) { PyErr_Clear(); tlen = 0; }
+    size_t tn = (size_t)tlen < sizeof h->title ? (size_t)tlen : sizeof h->title;
+    while (tn && tn < (size_t)tlen && (title[tn] & 0xc0) == 0x80) tn--;  /* do not split a character */
+    if (tn) memcpy(h->title, title, tn);
+    h->title_len = (uint32_t)tn;
+    w->embed.last_title = (uintptr_t)w->title;
     h->frames++;
     atomic_fetch_add_explicit(&h->seq, 1, memory_order_release);   /* even: complete */
     free(row_buf); free(sel);
@@ -227,7 +238,8 @@ needs_frame(const Window *w, Screen *s) {
     return w->embed.force || s->is_dirty || s->scroll_changed || screen_is_selection_dirty(s)
         || w->embed.last_cursor_x != s->cursor->x || w->embed.last_cursor_y != s->cursor->y
         || w->embed.last_cursor_visible != screen_is_cursor_visible(s)
-        || w->embed.last_scrolled_by != s->scrolled_by || w->embed.last_focus != s->has_focus;
+        || w->embed.last_scrolled_by != s->scrolled_by || w->embed.last_focus != s->has_focus
+        || w->embed.last_title != (uintptr_t)w->title;
 }
 
 void

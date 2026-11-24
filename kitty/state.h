@@ -277,6 +277,7 @@ typedef struct Window {
         uint8_t *map; size_t map_size;
         unsigned int last_cursor_x, last_cursor_y, last_scrolled_by;
         bool last_cursor_visible, last_focus, force;
+        uintptr_t last_title;  // identity of the title object last published
     } embed;  // kilix: --type=embed windows publish their cells (embed-export.c)
     WindowLogoRenderData window_logo;
     MousePosition mouse_pos;

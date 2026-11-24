@@ -8,7 +8,7 @@ from .base import MATCH_WINDOW_OPTION, ArgsType, Boss, PayloadGetType, PayloadTy
 if TYPE_CHECKING:
     from kitty.cli_stub import EmbedInputRCOptions as CLIOptions
 
-KINDS = ('text', 'paste', 'key', 'mouse', 'scroll', 'focus')
+KINDS = ('text', 'bytes', 'paste', 'key', 'mouse', 'scroll', 'focus')
 
 
 class EmbedInput(RemoteCommand):
@@ -26,7 +26,8 @@ class EmbedInput(RemoteCommand):
         ' :code:`launch --type=embed`, as if it came from the window on screen: mouse tracking programs get'
         ' their encoding, otherwise the engine selects text, opens links and scrolls back. The token printed'
         ' by the launch is required. The event is KIND then its arguments:\n\n'
-        ':code:`text TEXT...` types the text; :code:`paste TEXT...` pastes it (bracketed when the program asked);'
+        ':code:`text TEXT...` types the text; :code:`bytes BASE64` writes those bytes unchanged (keys the caller'
+        ' already encoded); :code:`paste TEXT...` pastes it (bracketed when the program asked);'
         ' :code:`key KEY...` sends keys such as :code:`ctrl+c`;'
         ' :code:`mouse ACTION BUTTON X Y [PX PY [LEFT_HALF]]` with ACTION 0 press, 1 release, 2 move and BUTTON'
         ' 0 left, 1 right, 2 middle or -1 none; :code:`scroll LINES X Y [PX PY]` with LINES positive to scroll'
@@ -69,6 +70,10 @@ Modifier bits for mouse and scroll: 1 shift, 2 alt, 4 ctrl, 8 super.
             if f['text']:
                 w.write_to_child(f['text'])
                 w.scroll_end()
+        elif kind == 'bytes':
+            if f['data']:
+                w.write_to_child(f['data'])
+                w.scroll_end()
         elif kind == 'paste':
             if f['text']:
                 w.paste_text(f['text'])
@@ -100,6 +105,15 @@ def parse_event(args: list[str]) -> tuple[str, dict]:
 
     if kind in ('text', 'paste'):
         return kind, {'text': ' '.join(rest)}
+    if kind == 'bytes':
+        import base64
+        import binascii
+        if len(rest) != 1 or len(rest[0]) > 87384:
+            raise ValueError('bytes takes one base64 argument of at most 64 KiB')
+        try:
+            return kind, {'data': base64.b64decode(rest[0], validate=True)}
+        except (binascii.Error, ValueError):
+            raise ValueError('bytes needs valid base64') from None
     if kind == 'key':
         if len(rest) > 64:
             raise ValueError('At most 64 keys at a time')
