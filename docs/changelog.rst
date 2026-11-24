@@ -188,6 +188,17 @@ Detailed list of changes
 Unreleased
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+- Kilix integration: A camera button on each pane's title bar screenshots the
+  pane at full resolution and opens a Save As dialog. Right-clicking it opens
+  a menu to record the pane, and to choose the screenshot format (PNG, JPEG,
+  WebP, TIFF or BMP) and the recording format (MP4, WebM, MKV, GIF, APNG or
+  animated WebP). Typing another extension in the dialog also changes the
+  format. Formats other than PNG need ffmpeg.
+
+- choose-files kitten: Add ``--start-with-name`` to open a save dialog on its
+  file name prompt, and show ``--title`` when ``--display-title`` is set (the
+  title was ignored).
+
 - X11: Repair asynchronous native drag selection delivery, including bounded
   INCR transfers, negotiated COPY/MOVE completion and cancellation. Terminal
   drag clients can bridge independent private application displays through

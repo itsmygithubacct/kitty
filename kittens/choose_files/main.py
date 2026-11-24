@@ -237,6 +237,13 @@ A suggested name when picking a save file.
 Path to an existing file to use as the save file.
 
 
+--start-with-name
+type=bool-set
+In :code:`save-file` mode, open on the file name prompt, filled in with
+:code:`--suggested-save-file-name`, instead of the file browser. Pressing
+:kbd:`Esc` at the prompt shows the file browser.
+
+
 --title
 Window title to use for this chooser
 

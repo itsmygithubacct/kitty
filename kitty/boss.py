@@ -1331,6 +1331,28 @@ class Boss:
                 [launcher, 'transcript', 'view', session_id],
                 override_title=f'Log: {window.title}', env=env), as_neighbor=True)
 
+    @ac('win', 'Screenshot the clicked pane and choose where to save it')
+    def kilix_pane_screenshot(self) -> None:
+        from .kilix_capture import take_screenshot
+        if (window := self.window_for_dispatch or self.active_window) is not None:
+            take_screenshot(self, window)
+
+    @ac('win', 'Start recording the clicked pane, or stop and choose where to save it')
+    def kilix_pane_record(self) -> None:
+        from .kilix_capture import toggle_recording
+        if (window := self.window_for_dispatch or self.active_window) is not None:
+            toggle_recording(self, window)
+
+    @ac('win', 'Show the screenshot and recording menu for the clicked pane')
+    def kilix_pane_capture_menu(self) -> None:
+        from .kilix_capture import show_menu
+        if (window := self.window_for_dispatch or self.active_window) is not None:
+            show_menu(self, window)
+
+    def kilix_capture_frame(self, os_window_id: int, window_id: int, pixels: bytes, width: int, height: int) -> None:
+        from .kilix_capture import on_frame
+        on_frame(os_window_id, window_id, pixels, width, height)
+
     @ac('win', 'Close the currently active window')
     def close_window(self) -> None:
         self.mark_window_for_close(self.window_for_dispatch)

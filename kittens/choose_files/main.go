@@ -114,6 +114,7 @@ type State struct {
 	mode                                Mode
 	suggested_save_file_name            string
 	suggested_save_file_path            string
+	start_with_name                     bool
 	window_title                        string
 	screen                              Screen
 	current_filter                      string
@@ -379,6 +380,11 @@ func (h *Handler) OnInitialize() (ans string, err error) {
 				}
 			}
 		}
+	}
+	if h.state.start_with_name && h.state.mode == SELECT_SAVE_FILE {
+		// kilix fork: open a Save As on its file name prompt, pre-filled with
+		// the suggested name; Esc there returns to browsing folders.
+		h.initialize_save_file_name(h.state.suggested_save_file_name)
 	}
 	err = h.graphics_handler.Initialize(h.lp)
 	h.result_manager.set_root_dir()
@@ -764,6 +770,7 @@ func (h *Handler) set_state_from_config(conf *Config, opts *Options) (err error)
 	}
 	h.state.suggested_save_file_name = opts.SuggestedSaveFileName
 	h.state.suggested_save_file_path = opts.SuggestedSaveFilePath
+	h.state.start_with_name = opts.StartWithName
 	h.state.filter_map = nil
 	h.state.current_filter = ""
 	if len(opts.FileFilter) > 0 {
@@ -844,6 +851,7 @@ func (h *Handler) set_state_from_config(conf *Config, opts *Options) (err error)
 	}
 	h.state.keyboard_shortcuts = conf.KeyboardShortcuts
 	h.state.display_title = opts.DisplayTitle
+	h.state.window_title = opts.Title  // kilix fork: --display-title shows --title
 	h.state.pygments_style = conf.Pygments_style
 	h.state.dark_pygments_style = conf.Dark_pygments_style
 	h.state.syntax_aliases = conf.Syntax_aliases

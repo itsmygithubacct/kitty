@@ -1204,6 +1204,7 @@ class Window:
         tab = self.tabref()
         is_maximized = bool(tab is not None and tab.current_layout.name == 'stack')
         is_overlay = tab is not None and tab.overlay_parent(self) is not None
+        from .kilix_capture import title_state as kilix_capture_state
         from .kilix_cpu import pane_cpu_label
         from .kilix_gpu import pane_gpu_segment
         from .kilix_memory import pane_memory_segment
@@ -1227,6 +1228,7 @@ class Window:
             pane_memory_text=memory_segment[0] if memory_segment else '',
             pane_cpu_text=cpu_label,
             pane_gpu_text=gpu_segment[0] if gpu_segment else '',
+            capture_state='' if is_overlay else kilix_capture_state(self.id),
         )
         # If template evaluates to empty string, zero title bar geometry to hide it
         if pts.render(data, progress_percent):
