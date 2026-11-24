@@ -1199,6 +1199,7 @@ render(monotonic_t now, bool input_read) {
         }
 
     }
+    export_embedded_windows();
     last_render_at = now;
     call_boss(cache_process_data, "O", Py_False);
 #undef TD

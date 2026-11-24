@@ -1337,6 +1337,7 @@ class WindowBeingDropped(NamedTuple):
 class TabManager:  # {{{
 
     confirm_close_window_id: int = 0
+    is_embed_host: bool = False  # kilix: the hidden OS window of --type=embed windows
     num_of_windows_with_progress: int = 0
     total_progress: int = 0
     has_indeterminate_progress: bool = False

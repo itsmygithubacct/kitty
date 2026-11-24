@@ -273,6 +273,11 @@ typedef struct Window {
     PyObject *title;
     WindowRenderData render_data;
     WindowRenderData window_title_render_data;
+    struct {
+        uint8_t *map; size_t map_size;
+        unsigned int last_cursor_x, last_cursor_y, last_scrolled_by;
+        bool last_cursor_visible, last_focus, force;
+    } embed;  // kilix: --type=embed windows publish their cells (embed-export.c)
     WindowLogoRenderData window_logo;
     MousePosition mouse_pos;
     struct {
@@ -589,6 +594,8 @@ bool make_window_context_current(id_type);
 void hide_mouse(OSWindow *w);
 bool is_mouse_hidden(OSWindow *w);
 void destroy_os_window(OSWindow *w);
+void export_embedded_windows(void);
+void embed_release(Window *w);
 void focus_os_window(OSWindow *w, bool also_raise, const char *activation_token);
 void run_with_activation_token_in_os_window(OSWindow *w, PyObject *callback);
 void set_os_window_title(OSWindow *w, const char *title);

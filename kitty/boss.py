@@ -559,6 +559,17 @@ class Boss:
                 self._pty_broker_startup_session_id = session_id
         specification.launch_spec = replacement
 
+    def embed_host_os_window(self) -> int:
+        """The hidden OS window that holds --type=embed windows, made on first use."""
+        for oswid, tm in self.os_window_map.items():
+            if getattr(tm, 'is_embed_host', False):
+                return oswid
+        from .embed import EMBED_HOST_CLASS
+        oswid = self.add_os_window(
+            wclass=EMBED_HOST_CLASS, wname=EMBED_HOST_CLASS, window_state='hidden', override_title='Kilix embedded windows')
+        self.os_window_map[oswid].is_embed_host = True
+        return oswid
+
     def add_os_window(
         self,
         startup_session: Session | None = None,
@@ -2893,7 +2904,12 @@ class Boss:
     ) -> None:
         tm = self.os_window_map.pop(os_window_id, None)
         opts = get_options()
-        if not is_layer_shell:
+        was_embed_host = getattr(tm, 'is_embed_host', False)
+        if not was_embed_host and self.os_window_map and all(getattr(t, 'is_embed_host', False) for t in self.os_window_map.values()):
+            # Embedded windows serve programs in visible windows; with none left, end them too.
+            for host_id in tuple(self.os_window_map):
+                mark_os_window_for_close(host_id)
+        if not is_layer_shell and not was_embed_host:
             if opts.remember_window_position and not is_wayland() and not self.os_window_map:
                 self.cached_values['window-pos'] = x, y
                 self.cached_values['monitor-workarea'] = glfw_get_monitor_workarea()

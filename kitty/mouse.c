@@ -1848,7 +1848,101 @@ send_mock_mouse_event_to_window(PyObject *self UNUSED, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+// kilix: input for --type=embed windows {{{
+// The embedding application owns the pointer, so these take the cell (and the
+// pixel inside the window) explicitly instead of reading the OS window's
+// cursor position. Everything after that is the engine's own handling: mouse
+// tracking encodes for the program; otherwise selection, clicks, links and
+// the mouse map run exactly as for a visible window.
+
+static void
+embed_set_position(Window *w, unsigned int x, unsigned int y, int px, int py, bool in_left_half, bool *cell_changed) {
+    *cell_changed = x != w->mouse_pos.cell_x || y != w->mouse_pos.cell_y || w->mouse_pos.in_left_half_of_cell != in_left_half;
+    w->mouse_pos.cell_x = x; w->mouse_pos.cell_y = y;
+    w->mouse_pos.global_x = px; w->mouse_pos.global_y = py;
+    w->mouse_pos.in_left_half_of_cell = in_left_half;
+}
+
+// embed_mouse_event(window_id, action, button, mods, cell_x, cell_y, pixel_x, pixel_y, in_left_half)
+// action: 0 press, 1 release, 2 move (button is the held button, or -1)
+static PyObject*
+embed_mouse_event(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long id; int action, button, modifiers, px, py, in_left_half;
+    unsigned int x, y;
+    if (!PyArg_ParseTuple(args, "KiiiIIiip", &id, &action, &button, &modifiers, &x, &y, &px, &py, &in_left_half)) return NULL;
+    Window *w = window_for_window_id(id);
+    if (!w || !w->render_data.screen || !w->embed.map) Py_RETURN_FALSE;
+    Screen *screen = w->render_data.screen;
+    if (x >= screen->columns || y >= screen->lines) Py_RETURN_FALSE;
+    if (button > GLFW_MOUSE_BUTTON_LAST) Py_RETURN_FALSE;
+    modifiers &= ~GLFW_LOCK_MASK;
+    bool cell_changed;
+    embed_set_position(w, x, y, px, py, in_left_half, &cell_changed);
+    if (action == 2) {
+        if (OPT(detect_urls)) detect_url(screen, x, y);
+        if (should_handle_in_kitty(w, screen, button)) handle_mouse_movement_in_kitty(w, button, cell_changed);
+        else if (cell_changed || screen->modes.mouse_tracking_protocol == SGR_PIXEL_PROTOCOL) {
+            int sz = encode_mouse_button(w, button, button >= 0 ? DRAG : MOVE, modifiers);
+            if (sz > 0) { mouse_event_buf[sz] = 0; write_escape_code_to_child(screen, ESC_CSI, mouse_event_buf); }
+        }
+        Py_RETURN_TRUE;
+    }
+    if (button < 0) Py_RETURN_FALSE;
+    const bool is_release = action == 1;
+    if (is_release && global_state.active_drag_in_window == w->id && button == global_state.active_drag_button) {
+        end_drag(w);
+        Py_RETURN_TRUE;
+    }
+    id_type wid = w->id;
+    if (!dispatch_mouse_event(w, button, is_release ? -1 : 1, modifiers, screen->modes.mouse_tracking_mode != 0)) {
+        if (screen->modes.mouse_tracking_mode != 0) {
+            int sz = encode_mouse_button(w, button, is_release ? RELEASE : PRESS, modifiers);
+            if (sz > 0) { mouse_event_buf[sz] = 0; write_escape_code_to_child(screen, ESC_CSI, mouse_event_buf); }
+        }
+    }
+    // dispatch_mouse_event runs Python, which may move the windows array
+    w = window_for_window_id(wid);
+    if (w) {
+        if (is_release) dispatch_possible_click(w, button, modifiers);
+        else add_press(w, button, modifiers);
+    }
+    Py_RETURN_TRUE;
+}
+
+// embed_scroll_event(window_id, lines, mods, cell_x, cell_y, pixel_x, pixel_y)
+// lines > 0 scrolls up (back through history), < 0 down. Horizontal is not handled.
+static PyObject*
+embed_scroll_event(PyObject *self UNUSED, PyObject *args) {
+    unsigned long long id; int lines, modifiers, px, py;
+    unsigned int x, y;
+    if (!PyArg_ParseTuple(args, "KiiIIii", &id, &lines, &modifiers, &x, &y, &px, &py)) return NULL;
+    Window *w = window_for_window_id(id);
+    if (!w || !w->render_data.screen || !w->embed.map || !lines) Py_RETURN_FALSE;
+    Screen *screen = w->render_data.screen;
+    if (x >= screen->columns || y >= screen->lines) Py_RETURN_FALSE;
+    modifiers &= ~GLFW_LOCK_MASK;
+    bool cell_changed;
+    embed_set_position(w, x, y, px, py, true, &cell_changed);
+    const bool upwards = lines > 0;
+    int n = abs(lines);
+    if (n > 1000) n = 1000;
+    if (screen->modes.mouse_tracking_mode) {
+        int sz = encode_mouse_scroll(w, upwards ? 4 : 5, modifiers);
+        if (sz > 0) {
+            mouse_event_buf[sz] = 0;
+            for (; n > 0; n--) write_escape_code_to_child(screen, ESC_CSI, mouse_event_buf);
+        }
+    } else if (screen->linebuf == screen->main_linebuf) {
+        screen_history_scroll(screen, n, upwards);
+        if (screen->selections.in_progress) update_drag(w);
+    } else fake_scroll(w, n, upwards);
+    Py_RETURN_TRUE;
+}
+// }}}
+
 static PyMethodDef module_methods[] = {
+    METHODB(embed_mouse_event, METH_VARARGS),
+    METHODB(embed_scroll_event, METH_VARARGS),
     {"send_mouse_event", (PyCFunction)(void (*) (void))(send_mouse_event), METH_VARARGS | METH_KEYWORDS, NULL},
     METHODB(test_encode_mouse, METH_VARARGS),
     METHODB(test_scale_scroll, METH_VARARGS),

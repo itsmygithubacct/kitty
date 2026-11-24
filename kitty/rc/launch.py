@@ -31,7 +31,7 @@ class Launch(RemoteCommand):
     var/list.str: List of user variables of the form NAME=VALUE
     os_panel/list.str: List of panel settings
     tab_title/str: Title for the new tab
-    type/choices.window.tab.os-window.os-panel.overlay.overlay-main.background.clipboard.primary: The type of window to open
+    type/choices.window.tab.os-window.os-panel.overlay.overlay-main.background.clipboard.primary.embed: The type of window to open
     keep_focus/bool: Boolean indicating whether the current window should retain focus or not
     copy_colors/bool: Boolean indicating whether to copy the colors from the current window
     copy_cmdline/bool: Boolean indicating whether to copy the cmdline from the current window
@@ -55,6 +55,8 @@ class Launch(RemoteCommand):
     os_window_class/str: WM_CLASS for OS Window
     os_window_state/choices.normal.fullscreen.maximized.minimized: The initial state for OS Window
     os_window_position/str: The position for OS Window
+    embed_size/str: For --type=embed: the size in cells, COLUMNSxROWS
+    embed_cell_size/str: For --type=embed: the embedding program's cell size in pixels, WIDTHxHEIGHT
     color/list.str: list of color specifications such as foreground=red
     watcher/list.str: list of paths to watcher files
     bias/float: The bias with which to create the new window in the current layout
@@ -157,6 +159,9 @@ instead of the active tab
             return None
 
         if not payload_get('wait_for_child_to_exit'):
+            if w is not None and getattr(w, 'embed', None) is not None:
+                import json
+                return json.dumps(w.embed.as_dict(w.id, include_token=True))
             return str(0 if w is None else w.id)
 
         return AsyncResponse()
