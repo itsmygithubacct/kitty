@@ -190,7 +190,9 @@ write_frame(Window *w, Screen *s) {
     h->combining_len = comb_len;
     const Cursor *cur = s->cursor;
     h->cursor_x = (int32_t)cur->x; h->cursor_y = (int32_t)cur->y + (int32_t)s->scrolled_by;
-    h->cursor_shape = (uint8_t)(cur->shape ? cur->shape : OPT(cursor_shape));
+    /* kep_cells.h numbering: block 0, beam 1, underline 2, hollow 3 (the engine's are one higher) */
+    const unsigned shape = cur->shape ? cur->shape : OPT(cursor_shape);
+    h->cursor_shape = (uint8_t)(shape >= CURSOR_BLOCK && shape <= CURSOR_HOLLOW ? shape - CURSOR_BLOCK : 0);
     h->cursor_visible = screen_is_cursor_visible(s) && h->cursor_y < (int32_t)rows;
     h->cursor_blink = !cur->non_blinking;
     h->cursor_focused = s->has_focus;
