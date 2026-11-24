@@ -913,6 +913,9 @@ class Tab:  # {{{
             use_pty_broker=(
                 overlay_for is None and not overlay_behind
                 and not (env and env.get('KITTY_PTY_BROKER_BYPASS') == '1')
+                # An embedded window lives only as long as the program drawing
+                # it: no detached broker session is left when the engine stops.
+                and Window.next_embed is None
             ),
         )
         window = Window(

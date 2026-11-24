@@ -21,7 +21,7 @@ import secrets
 from typing import Any
 
 from .constants import runtime_dir
-from .fast_data_types import EMBED_MAX_COLS, EMBED_MAX_ROWS, embed_attach_map, embed_detach_map, embed_force_frame
+from .fast_data_types import EMBED_MAX_COLS, EMBED_MAX_ROWS, embed_attach_map, embed_detach_map, embed_force_frame, embed_set_child_pid
 from .types import WindowGeometry
 
 EMBED_HOST_CLASS = 'kilix-embed-host'
@@ -75,11 +75,13 @@ class EmbedState:
     def token_matches(self, token: Any) -> bool:
         return isinstance(token, str) and hmac.compare_digest(token.encode(), self.token.encode())
 
-    def attach(self, window_id: int) -> None:
+    def attach(self, window_id: int, child_pid: int = 0) -> None:
         path = os.path.join(embed_dir(), f'{os.getpid()}-{window_id}-{secrets.token_hex(6)}.kepm')
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
             embed_attach_map(window_id, fd)
+            if child_pid > 0:
+                embed_set_child_pid(window_id, child_pid)
         except Exception:
             os.unlink(path)
             raise

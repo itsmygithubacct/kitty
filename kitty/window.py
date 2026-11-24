@@ -827,7 +827,7 @@ class Window:
         self.embed: 'EmbedState | None' = Window.next_embed
         Window.next_embed = None
         if self.embed is not None:
-            self.embed.attach(self.id)
+            self.embed.attach(self.id, child.pid or 0)
         if copy_colors_from is not None:
             self.screen.copy_colors_from(copy_colors_from.screen)
         self.remote_control_passwords = remote_control_passwords

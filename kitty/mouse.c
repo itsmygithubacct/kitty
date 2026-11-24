@@ -1926,7 +1926,9 @@ embed_scroll_event(PyObject *self UNUSED, PyObject *args) {
     const bool upwards = lines > 0;
     int n = abs(lines);
     if (n > 1000) n = 1000;
-    if (screen->modes.mouse_tracking_mode) {
+    // As with the pointer: the program has the wheel when it asked for the
+    // mouse, unless Shift is held.
+    if (screen->modes.mouse_tracking_mode && !(modifiers & GLFW_MOD_SHIFT)) {
         int sz = encode_mouse_scroll(w, upwards ? 4 : 5, modifiers);
         if (sz > 0) {
             mouse_event_buf[sz] = 0;
