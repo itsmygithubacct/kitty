@@ -223,6 +223,9 @@ def set_font_family(opts: Options | None = None, override_font_size: float | Non
         indices['bold'], indices['italic'], indices['bi'], num_symbol_fonts,
         sm, sz, ns
     )
+    # kilix fork: the chrome symbols that Neuronte nets draw
+    from kitty.kilix_neuronte import install as install_neuronte_symbols
+    install_neuronte_symbols()
 
 
 if TYPE_CHECKING:

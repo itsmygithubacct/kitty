@@ -13,7 +13,7 @@
 
 GlobalState global_state = {{0}};
 
-#define KILIX_TAB_BAR_TABS_PER_ROW 10
+#define KILIX_TAB_BAR_TABS_PER_ROW 8
 
 #define REMOVER(array, qid, count, destroy, capacity) { \
     for (size_t i = 0; i < count; i++) { \
@@ -1676,6 +1676,20 @@ PYWRAP0(destroy_global_data) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+kilix_software_rendering(PyObject *self UNUSED, PyObject *args) {
+    // With no argument: is this terminal's screen drawn by a software
+    // renderer (False until the first window exists). With a renderer name,
+    // or None for "the driver gave no name": would that one be.
+    PyObject *name = NULL;
+    if (!PyArg_ParseTuple(args, "|O", &name)) return NULL;
+    if (name == NULL) return Py_NewRef(global_state.kilix_software_rendering ? Py_True : Py_False);
+    if (name == Py_None) return Py_NewRef(gl_renderer_is_software(NULL) ? Py_True : Py_False);
+    const char *renderer = PyUnicode_AsUTF8(name);
+    if (renderer == NULL) return NULL;
+    return Py_NewRef(gl_renderer_is_software(renderer) ? Py_True : Py_False);
+}
+
 PYWRAP0(wakeup_main_loop) {
     wakeup_main_loop();
     Py_RETURN_NONE;
@@ -1993,6 +2007,7 @@ static PyMethodDef module_methods[] = {
     MW(create_mock_window, METH_VARARGS),
     MW(destroy_global_data, METH_NOARGS),
     MW(wakeup_main_loop, METH_NOARGS),
+    {"kilix_software_rendering", (PyCFunction)kilix_software_rendering, METH_VARARGS, ""},
 
     {NULL, NULL, 0, NULL}        /* Sentinel */
 };

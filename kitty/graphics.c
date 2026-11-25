@@ -1043,24 +1043,6 @@ import_gpu_frame(GraphicsManager *self UNUSED, Image *img UNUSED,
 #endif
 
 static bool
-renderer_is_software(const char *renderer) {
-    static const char *software_renderers[] = {
-        "llvmpipe", "softpipe", "swrast", "software rasterizer"
-    };
-    if (!renderer) return true;
-    const size_t renderer_length = strlen(renderer);
-    for (size_t i = 0; i < arraysz(software_renderers); i++) {
-        const char *needle = software_renderers[i];
-        const size_t needle_length = strlen(needle);
-        if (needle_length > renderer_length) continue;
-        for (size_t offset = 0; offset <= renderer_length - needle_length; offset++) {
-            if (strncasecmp(renderer + offset, needle, needle_length) == 0) return true;
-        }
-    }
-    return false;
-}
-
-static bool
 gpu_compose_context_is_available(GraphicsManager *self) {
     if (self->gpu_compose_disabled) return false;
     if (!self->context_made_current_for_this_command) {
@@ -1070,7 +1052,7 @@ gpu_compose_context_is_available(GraphicsManager *self) {
     if (!self->gpu_compose_checked) {
         const char *renderer = (const char*)glad_glGetString(GL_RENDERER);
         self->gpu_compose_available = GLAD_GL_ARB_copy_image &&
-            !renderer_is_software(renderer);
+            !gl_renderer_is_software(renderer);
         self->gpu_compose_checked = true;
         if (global_state.debug_rendering) {
             timed_debug_print("Kilix GPU compose: %s (%s)",

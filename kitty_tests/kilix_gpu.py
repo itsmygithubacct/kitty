@@ -10,6 +10,7 @@ from kitty import kilix_gpu as gpu
 from kitty import kilix_memory
 from kitty import kilix_system_load as system
 from kitty.kilix_memory import GIB, MEMORY_GLYPH, MEMORY_WIDGET_ACTION, MIB
+from kitty.kilix_tab_status import parse_settings
 from kitty.types import WindowGeometry
 from kitty.window_title_bar import WindowTitleBarScreen, WindowTitleData, pane_resource_text
 
@@ -669,6 +670,7 @@ class TestGpuRefresh(GpuTestCase):
                 patch('kitty.kilix_memory.pane_memory_mode', return_value='off'), \
                 patch('kitty.kilix_cpu.pane_cpu_mode', return_value='off'), \
                 patch('kitty.kilix_gpu.pane_gpu_label', side_effect=lambda pid: next(labels)), \
+                patch('kitty.kilix_tab_status.settings', return_value=parse_settings(lambda key, default: '0')), \
                 patch('kitty.kilix_telemetry.refresh_panes') as refresh:
             kilix_memory._LAST_LABELS = {1: ('', '', '')}
             kilix_memory._memory_timer()
@@ -679,7 +681,8 @@ class TestGpuRefresh(GpuTestCase):
             tab.update_window_title_bars.assert_called_once_with()
             # A changed chip is rendered now, not at the next unrelated event.
             self.wake.assert_called_once_with()
-        # GPU alone needs no RAM/CPU telemetry refresh.
+        # GPU alone needs no RAM/CPU telemetry refresh (the tab status mark,
+        # which does need the CPU sample, is off here).
         refresh.assert_not_called()
         kilix_memory._LAST_LABELS = {}
 

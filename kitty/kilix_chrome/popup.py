@@ -11,6 +11,9 @@ if TYPE_CHECKING:
     from ..window import Window
 
 
+TAB_STATUS_ACTION = 'kilix_tab_status'  # 'kilix_tab_status:<tab id>'
+
+
 @dataclass
 class ChromePopup:
     action: str
@@ -56,7 +59,14 @@ def layout_popups(tab: 'Tab') -> None:
         bar = manager.tab_bar
         anchor = (central.left, central.top)
         if bar.laid_out_once:
-            action = popup.action.partition(':')[0]
+            action, _, argument = popup.action.partition(':')
+            if action == TAB_STATUS_ACTION:
+                # A card about one tab hangs from that tab, not from a widget.
+                for tab_extent in bar.tab_extents:
+                    if str(tab_extent.tab_id) == argument:
+                        anchor = (bar.window_geometry.left + tab_extent.x.start * cw,
+                                  bar.window_geometry.top + tab_extent.y.start * ch)
+                        break
             for extent in bar.action_extents:
                 if extent.action == action:
                     anchor = (bar.window_geometry.left + extent.x.start * cw,

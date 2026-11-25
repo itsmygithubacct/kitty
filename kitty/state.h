@@ -512,6 +512,7 @@ typedef struct GlobalState {
     WindowLogoTable *all_window_logos;
     int gl_version;
     bool supports_framebuffer_srgb;
+    bool kilix_software_rendering;  // kilix fork: set by gl_init()
     PyObject *options_object;
 
     struct {
@@ -570,6 +571,7 @@ sprite_index_to_pos(unsigned idx, unsigned xnum, unsigned ynum, unsigned *x, uns
 
 
 void gl_init(void);
+bool gl_renderer_is_software(const char *renderer);
 void remove_vao(ssize_t vao_idx);
 bool remove_os_window(id_type os_window_id);
 void* make_os_window_context_current(OSWindow *w);

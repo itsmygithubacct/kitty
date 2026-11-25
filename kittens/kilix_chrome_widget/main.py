@@ -65,16 +65,21 @@ def card(kind: str) -> tuple[str, ...]:
 
 
 class ChromeCard(Handler):
+    refresh_seconds = 2.0
+
     def __init__(self, kind: str) -> None:
         self.kind = kind
         self._timer: Any = None
+
+    def lines(self) -> tuple[str, ...]:
+        return card(self.kind)
 
     def initialize(self) -> None:
         self.cmd.set_cursor_visible(False)
         self.cmd.set_line_wrapping(False)
         self.cmd.set_window_title(self.kind.title())
         self.draw_screen()
-        self._timer = self.asyncio_loop.call_later(2.0, self._tick)
+        self._timer = self.asyncio_loop.call_later(self.refresh_seconds, self._tick)
 
     def finalize(self) -> None:
         if self._timer is not None:
@@ -82,11 +87,11 @@ class ChromeCard(Handler):
 
     def _tick(self) -> None:
         self.draw_screen()
-        self._timer = self.asyncio_loop.call_later(2.0, self._tick)
+        self._timer = self.asyncio_loop.call_later(self.refresh_seconds, self._tick)
 
     @Handler.atomic_update
     def draw_screen(self) -> None:
-        lines = card(self.kind)
+        lines = self.lines()
         width = min(self.screen_size.cols, max(38, max(map(wcswidth, lines)) + 4))
         if width < 4 or self.screen_size.rows < 3:
             self.cmd.clear_screen()
@@ -120,11 +125,37 @@ class ChromeCard(Handler):
     on_interrupt = on_eot = lambda self: self.quit_loop(0)
 
 
+class TabCard(ChromeCard):
+    """How long one tab has been idle. The count runs on in this process."""
+
+    refresh_seconds = 1.0
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__('tab')
+        self.payload = payload
+
+    def lines(self) -> tuple[str, ...]:
+        import time
+
+        from kitty.kilix_tab_status import card_lines
+        return card_lines(self.payload, time.time())
+
+
 def main(args: list[str]) -> None:
     kind = args[1] if len(args) > 1 else 'network'
-    if kind not in ('network', 'battery', 'temperature', 'weather', 'gpu'):
+    if kind not in ('network', 'battery', 'temperature', 'weather', 'gpu', 'tab'):
         raise SystemExit(f'Unknown Kilix chrome widget: {kind}')
     loop = Loop()
+    if kind == 'tab':
+        import json
+        try:
+            payload = json.loads(args[2])
+        except (IndexError, ValueError):
+            raise SystemExit('The tab card needs its JSON payload')
+        if not isinstance(payload, dict):
+            raise SystemExit('The tab card needs its JSON payload')
+        loop.loop(TabCard(payload))
+        raise SystemExit(loop.return_code)
     loop.loop(ChromeCard(kind))
     raise SystemExit(loop.return_code)
 
@@ -133,7 +164,7 @@ if __name__ == '__main__':
     main(sys.argv)
 elif __name__ == '__doc__':
     cd = sys.cli_docs  # type: ignore
-    cd['usage'] = '[network|battery|temperature|weather|gpu]'
+    cd['usage'] = '[network|battery|temperature|weather|gpu|tab JSON]'
     cd['options'] = lambda: ''
     cd['help_text'] = 'Show a compact Kilix top-bar status card'
     cd['short_desc'] = 'Show a Kilix chrome widget'

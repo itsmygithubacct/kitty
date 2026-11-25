@@ -7,6 +7,7 @@
 
 #include "gl.h"
 #include <string.h>
+#include <strings.h>
 #include <stddef.h>
 #include "glfw-wrapper.h"
 #include "state.h"
@@ -49,6 +50,25 @@ gl_version_string(void) {
     return buf;
 }
 
+bool
+gl_renderer_is_software(const char *renderer) {
+    // No graphics card behind this name: every pixel is computed by the CPU.
+    static const char *software_renderers[] = {
+        "llvmpipe", "softpipe", "swrast", "software rasterizer"
+    };
+    if (!renderer) return true;
+    const size_t renderer_length = strlen(renderer);
+    for (size_t i = 0; i < arraysz(software_renderers); i++) {
+        const char *needle = software_renderers[i];
+        const size_t needle_length = strlen(needle);
+        if (needle_length > renderer_length) continue;
+        for (size_t offset = 0; offset <= renderer_length - needle_length; offset++) {
+            if (strncasecmp(renderer + offset, needle, needle_length) == 0) return true;
+        }
+    }
+    return false;
+}
+
 void
 gl_init(void) {
     static bool glad_loaded = false;
@@ -75,6 +95,8 @@ gl_init(void) {
         global_state.supports_framebuffer_srgb = (GLAD_GL_ARB_framebuffer_sRGB + GLAD_GL_EXT_framebuffer_sRGB) != 0;
 #endif
         glad_loaded = true;
+        // kilix fork: where a frame is CPU time, animation steps more slowly.
+        global_state.kilix_software_rendering = gl_renderer_is_software((const char*)glGetString(GL_RENDERER));
         int gl_major = GLAD_VERSION_MAJOR(global_state.gl_version);
         int gl_minor = GLAD_VERSION_MINOR(global_state.gl_version);
         if (global_state.debug_rendering) printf("[%.3f] GL version string: %s\n", monotonic_t_to_s_double(monotonic()), gl_version_string());

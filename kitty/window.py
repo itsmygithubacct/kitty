@@ -1640,6 +1640,15 @@ class Window:
     def has_activity_since_last_focus(self) -> bool:
         return self.screen.has_activity_since_last_focus()
 
+    def on_output_after_quiet(self) -> bool:
+        # kilix fork: the first output after a quiet second, for the tab
+        # status mark. A program redrawing after a resize is not at work.
+        if (monotonic() - self.last_resized_at) <= 0.5:
+            return False
+        from .kilix_tab_status import note_output
+        note_output(self)
+        return True
+
     def on_activity_since_last_focus(self) -> bool:
         if get_options().tab_activity_symbol and (monotonic() - self.last_resized_at) > 0.5:
             # Ignore activity soon after a resize as the child program is probably redrawing the screen

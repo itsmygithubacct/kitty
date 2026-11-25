@@ -1081,8 +1081,32 @@ draw_combining_char(Screen *self, text_loop_state *s, char_type ch) {
     }
 }
 
+// kilix fork: the tab status mark needs to know when a pane last printed. The
+// time is one assignment per drawn run of text. The first output after a
+// quiet second is also reported to Python, so that an idle terminal learns
+// that a tab came back to life without polling for it.
+#define KILIX_OUTPUT_QUIET_SPELL s_double_to_monotonic_t(1.0)
+
+static void
+kilix_note_output(Screen *self) {
+    if (self->callbacks == Py_None) return;
+    const monotonic_t now = self->parsing_at, previous = self->kilix_last_output_at;
+    self->kilix_last_output_at = now;
+    if (previous && now - previous <= KILIX_OUTPUT_QUIET_SPELL) return;
+    PyObject *callback = PyObject_GetAttrString(self->callbacks, "on_output_after_quiet");
+    if (callback == NULL) { PyErr_Clear(); return; }  // a test double without the hook
+    PyObject *ret = PyObject_CallNoArgs(callback);
+    Py_DECREF(callback);
+    if (ret == NULL) { PyErr_Print(); return; }
+    // False: this was not the program working (it redrew after a resize), so
+    // the time is put back and the next output is reported again.
+    if (ret == Py_False) self->kilix_last_output_at = previous;
+    Py_DECREF(ret);
+}
+
 static void
 screen_on_input(Screen *self) {
+    kilix_note_output(self);
     if (!self->has_activity_since_last_focus && !self->has_focus && self->callbacks != Py_None) {
         PyObject *ret = PyObject_CallMethod(self->callbacks, "on_activity_since_last_focus", NULL);
         if (ret == NULL) PyErr_Print();
@@ -3743,7 +3767,7 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
             for (index_type y = 0; y < self->lines; y++) {
                 linebuf_init_line(linebuf, y);
                 if (linebuf->line->attrs.has_dirty_text) {
-                    render_line(fonts_data, linebuf->line, y, &self->paused_rendering.cursor, self->disable_ligatures, self->lc);
+                    render_line(fonts_data, linebuf->line, y, &self->paused_rendering.cursor, self->disable_ligatures, self->lc, self->kilix_bar);
                     screen_render_line_graphics(self, linebuf->line, y);
                     if (linebuf->line->attrs.has_dirty_text && screen_has_marker(self)) mark_text_in_line(
                             self->marker, linebuf->line, &self->as_ansi_buf);
@@ -3778,14 +3802,14 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
             // the unicode placeholder was first scanned can alter it.
             screen_render_line_graphics(self, linep, virtual_y - (int)self->scrolled_by);
             if (force_history_render || linep->attrs.has_dirty_text) {
-                render_line(fonts_data, linep, lnum, self->cursor, self->disable_ligatures, self->lc);
+                render_line(fonts_data, linep, lnum, self->cursor, self->disable_ligatures, self->lc, self->kilix_bar);
                 if (screen_has_marker(self)) mark_text_in_line(self->marker, linep, &self->as_ansi_buf);
                 historybuf_mark_line_clean(self->historybuf, lnum);
             }
         } else {
             if (linep->attrs.has_dirty_text ||
                 (cursor_has_moved && (self->cursor->y == lnum || self->last_rendered.cursor.y == lnum))) {
-                render_line(fonts_data, linep, lnum, self->cursor, self->disable_ligatures, self->lc);
+                render_line(fonts_data, linep, lnum, self->cursor, self->disable_ligatures, self->lc, self->kilix_bar);
                 screen_render_line_graphics(self, linep, virtual_y - (int)self->scrolled_by);
                 if (linep->attrs.has_dirty_text && screen_has_marker(self)) mark_text_in_line(
                         self->marker, linep, &self->as_ansi_buf);
@@ -4514,7 +4538,7 @@ render_overlay_line(Screen *self, Line *line, FONTS_DATA_HANDLE fonts_data) {
 #define ol self->overlay_line
     line_save_cells(line, 0, line->xnum, ol.original_line.gpu_cells, ol.original_line.cpu_cells);
     screen_draw_overlay_line(self);
-    render_line(fonts_data, line, ol.ynum, self->cursor, self->disable_ligatures, self->lc);
+    render_line(fonts_data, line, ol.ynum, self->cursor, self->disable_ligatures, self->lc, self->kilix_bar);
     line_save_cells(line, 0, line->xnum, ol.gpu_cells, ol.cpu_cells);
     line_reset_cells(line, 0, line->xnum, ol.original_line.gpu_cells, ol.original_line.cpu_cells);
     ol.is_dirty = false;
@@ -6095,6 +6119,12 @@ has_focus(Screen *self, PyObject *args UNUSED) {
 }
 
 static PyObject*
+kilix_last_output_at(Screen *self, PyObject *args UNUSED) {
+    // When the child last printed, in monotonic() seconds; 0.0 if it never has.
+    return PyFloat_FromDouble(monotonic_t_to_s_double(self->kilix_last_output_at));
+}
+
+static PyObject*
 has_activity_since_last_focus(Screen *self, PyObject *args UNUSED) {
     if (self->has_activity_since_last_focus) Py_RETURN_TRUE;
     Py_RETURN_FALSE;
@@ -6465,6 +6495,7 @@ static PyMethodDef methods[] = {
     MND(focus_changed, METH_O)
     MND(has_focus, METH_NOARGS)
     MND(has_activity_since_last_focus, METH_NOARGS)
+    MND(kilix_last_output_at, METH_NOARGS)
     MND(copy_colors_from, METH_O)
     MND(set_marker, METH_VARARGS)
     MND(marked_cells, METH_NOARGS)
@@ -6516,6 +6547,7 @@ static PyMemberDef members[] = {
     {"margin_top", T_UINT, offsetof(Screen, margin_top), READONLY, "margin_top"},
     {"margin_bottom", T_UINT, offsetof(Screen, margin_bottom), READONLY, "margin_bottom"},
     {"history_line_added_count", T_UINT, offsetof(Screen, history_line_added_count), 0, "history_line_added_count"},
+    {"kilix_bar", T_BOOL, offsetof(Screen, kilix_bar), 0, "kilix fork: this screen is one of Kilix's own bars, not a window's text"},
     {NULL}
 };
 

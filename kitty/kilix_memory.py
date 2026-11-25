@@ -335,13 +335,19 @@ def _memory_timer(timer_id: int | None = None) -> None:
     memory_mode = pane_memory_mode()
     cpu_mode = pane_cpu_mode()
     gpu_mode = pane_gpu_mode()
-    if memory_mode == 'off' and cpu_mode == 'off' and gpu_mode == 'off':
+    # The tab status mark colours each tab by this same sample, so the pass
+    # still runs with every chip turned off while the mark is on.
+    from . import kilix_tab_status
+    tab_status = kilix_tab_status.settings().enabled
+    if memory_mode == 'off' and cpu_mode == 'off' and gpu_mode == 'off' and not tab_status:
         _LAST_LABELS = {}
         return
     current: dict[int, tuple[str, ...]] = {}
     try:
         boss = get_boss()
     except Exception:
+        return
+    if boss is None:
         return
     roots: set[int] = set()
     for manager in boss.all_tab_managers:
@@ -354,7 +360,7 @@ def _memory_timer(timer_id: int | None = None) -> None:
                     pid = 0
                 if pid > 0:
                     roots.add(pid)
-    if memory_mode != 'off' or cpu_mode != 'off':
+    if memory_mode != 'off' or cpu_mode != 'off' or tab_status:
         from .kilix_telemetry import refresh_panes
         shared = refresh_panes(tuple(roots), register=memory_mode != 'off')
         if not shared:
@@ -387,6 +393,8 @@ def _memory_timer(timer_id: int | None = None) -> None:
         # This timer fires inside the event wait, which does not run a render
         # pass; without a wakeup an idle pane keeps its old chips on screen.
         wakeup_main_loop()
+    if tab_status:
+        kilix_tab_status.note_loads(pane_cpu_cores)
 
 
 def ensure_pane_memory_timer() -> None:

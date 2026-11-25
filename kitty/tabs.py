@@ -1979,7 +1979,12 @@ class TabManager:  # {{{
         if action == GLFW_PRESS:
             from .kilix_chrome.registry import GESTURE_ACTIONS, START_MENU_ACTION
             if tab_action not in GESTURE_ACTIONS and tab_action != START_MENU_ACTION and (tab := self.active_tab) is not None:
-                dismiss_popup(tab)
+                from .kilix_tab_status import card_open_for
+                # A second right click on a tab closes its card on release;
+                # closing it here as well would only open it again.
+                if not (button == GLFW_MOUSE_BUTTON_RIGHT and tab_action is None and card_open_for(
+                        tab, self.tab_bar.tab_id_at(int(x), int(y)))):
+                    dismiss_popup(tab)
         if tab_action is not None:
             self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, -2)
             drag_started = get_tab_being_dragged()[1]
@@ -2071,6 +2076,13 @@ class TabManager:  # {{{
                 set_tab_being_dragged()  # clear potential drag from a press on a tab
             if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 2:
                 self.new_tab()
+                self.recent_tab_bar_mouse_events.clear()
+            return
+        if button == GLFW_MOUSE_BUTTON_RIGHT:
+            # kilix fork: a card under the tab saying how long it has been idle
+            if action == GLFW_RELEASE and self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_RIGHT):
+                from .kilix_tab_status import show_card
+                show_card(self, tab)
                 self.recent_tab_bar_mouse_events.clear()
             return
         if button == GLFW_MOUSE_BUTTON_LEFT:
