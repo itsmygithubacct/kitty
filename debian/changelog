@@ -1,0 +1,13 @@
+kilix-engine (0.48.2+git20261123.c76d1297-1) UNRELEASED; urgency=medium
+
+  * Add kitten @ shell-submit, which runs one command line in an existing
+    pane only when the Bash integration verifies a fresh, empty primary
+    prompt at submission, and refuses in every other state.
+
+ -- itsmygithubacct <itsmygithubacct@users.noreply.github.com>  Mon, 23 Nov 2026 22:16:23 +0000
+
+kilix-engine (0.48.2+git20261112.f8a7dccf-1) UNRELEASED; urgency=medium
+
+  * First Debian packaging of the Kilix terminal engine.
+
+ -- itsmygithubacct <itsmygithubacct@users.noreply.github.com>  Tue, 17 Nov 2026 05:00:00 +0000
