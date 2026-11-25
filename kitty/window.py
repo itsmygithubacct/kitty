@@ -142,6 +142,7 @@ class ScrollAnimation:
 if TYPE_CHECKING:
     from kittens.tui.handler import OpenUrlHandler
 
+    from .embed import EmbedState
     from .fast_data_types import MousePosition
     from .file_transmission import FileTransmission
     from .notifications import OnlyWhen
@@ -751,6 +752,11 @@ class Window:
                 cls.initial_ignore_focus_changes = orig
                 cls.initial_ignore_focus_changes_context_manager_in_operation = False
 
+    next_embed: 'EmbedState | None' = None
+    # This window's own embed state, None for an ordinary window (a class
+    # default too, for windows made without __init__).
+    embed: 'EmbedState | None' = None
+
     def __init__(
         self,
         tab: TabType,
@@ -821,6 +827,11 @@ class Window:
         cell_width, cell_height = cell_size_for_window(self.os_window_id)
         opts = get_options()
         self.screen: Screen = Screen(self, 24, 80, opts.scrollback_lines, cell_width, cell_height, self.id)
+        # kilix: --type=embed. Set by launch just before this window is made.
+        self.embed = Window.next_embed
+        Window.next_embed = None
+        if self.embed is not None:
+            self.embed.attach(self.id, child.pid or 0)
         if copy_colors_from is not None:
             self.screen.copy_colors_from(copy_colors_from.screen)
         self.remote_control_passwords = remote_control_passwords
@@ -1074,6 +1085,8 @@ class Window:
     def set_geometry(self, new_geometry: WindowGeometry) -> None:
         if self.destroyed:
             return
+        if self.embed is not None:
+            new_geometry = self.embed.geometry(new_geometry, cell_size_for_window(self.os_window_id))
         # Determine if we need a title bar and compute adjusted dimensions
         opts = get_options()
         position = opts.window_title_bar
@@ -1181,7 +1194,7 @@ class Window:
             update_ime_position_for_window(self.id, True)
 
     def should_show_title_bar(self, geometry: WindowGeometry) -> bool:
-        return self.kilix_popup is None and self.show_title_bar and geometry.ynum > 1 and not is_os_window_fullscreen(self.os_window_id)
+        return self.embed is None and self.kilix_popup is None and self.show_title_bar and geometry.ynum > 1 and not is_os_window_fullscreen(self.os_window_id)
 
     def update_title_bar(self, is_active: bool = False) -> None:
         if (pts := self._title_bar_screen) is None:
@@ -2200,6 +2213,8 @@ class Window:
         self.destroyed = True
         from .shell_input import abandon
         abandon(self)
+        if self.embed is not None:
+            self.embed.detach(self.id)
         self.clipboard_request_manager.close()
         del self.kitten_result_processors
         if hasattr(self, 'screen'):

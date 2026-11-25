@@ -913,6 +913,9 @@ class Tab:  # {{{
             use_pty_broker=(
                 overlay_for is None and not overlay_behind
                 and not (env and env.get('KITTY_PTY_BROKER_BYPASS') == '1')
+                # An embedded window lives only as long as the program drawing
+                # it: no detached broker session is left when the engine stops.
+                and Window.next_embed is None
             ),
         )
         window = Window(
@@ -1337,6 +1340,7 @@ class WindowBeingDropped(NamedTuple):
 class TabManager:  # {{{
 
     confirm_close_window_id: int = 0
+    is_embed_host: bool = False  # kilix: the hidden OS window of --type=embed windows
     num_of_windows_with_progress: int = 0
     total_progress: int = 0
     has_indeterminate_progress: bool = False

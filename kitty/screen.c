@@ -823,6 +823,9 @@ visual_line_(Screen *self, int y_) {
     return init_line(self, y);
 }
 
+Line*
+screen_visual_line_for_export(Screen *self, index_type y) { return visual_line_(self, (int)y); }
+
 static bool
 visual_line_is_continued(Screen *self, int y_) {
     index_type y = MAX(0, y_);

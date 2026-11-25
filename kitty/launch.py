@@ -83,7 +83,7 @@ of the active window in the tab is used as the tab title. The special value
 --type
 type=choices
 default=window
-choices=window,tab,os-window,os-panel,overlay,overlay-main,background,clipboard,primary
+choices=window,tab,os-window,os-panel,overlay,overlay-main,background,clipboard,primary,embed
 Where to launch the child process:
 
 :code:`window`
@@ -117,6 +117,14 @@ Where to launch the child process:
 :code:`clipboard`, :code:`primary`
     These two are meant to work with :option:`--stdin-source <launch --stdin-source>` to copy
     data to the :italic:`system clipboard` or :italic:`primary selection`.
+
+:code:`embed`
+    A window drawn by another program instead of on screen. It lives in a hidden
+    OS window, takes its size from :option:`--embed-size <launch --embed-size>`
+    and publishes its cells in a file the embedding program maps (see
+    :code:`kitten @ embed`). It is listed, read and typed into like any window.
+    The response is a JSON object with the window id, the map file and the
+    token that :code:`kitten @ embed` and :code:`kitten @ embed-input` require.
 
 :code:`os-panel`
     Similar to :code:`os-window`, except that it creates the new OS Window as a desktop panel.
@@ -355,6 +363,19 @@ copy the title from the OS Window containing the
 :option:`source window <launch --source-window>`.
 
 
+--embed-size
+default=80x24
+The size in cells, :code:`COLUMNSxROWS`, of a window launched with
+:code:`--type=embed`.
+
+
+--embed-cell-size
+default=
+The cell size in pixels, :code:`WIDTHxHEIGHT`, of the program drawing an
+embedded window. Programs in the window that ask for their size in pixels get
+these numbers. Defaults to the engine's own cell size.
+
+
 --os-window-state
 type=choices
 default=normal
@@ -502,6 +523,10 @@ def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, n
         tab = create_tab(tm)
     elif opts.type in ('os-window', 'os-panel'):
         tab = create_tab()
+    elif opts.type == 'embed':
+        tm = boss.os_window_map.get(boss.embed_host_os_window())
+        assert tm is not None
+        tab = create_tab(tm)
     else:
         if target_tab is not None:
             tab = target_tab
@@ -825,6 +850,9 @@ def _launch(
         else:
             tab = tab_for_window(boss, opts, target_tab, next_to, add_to_session)
         watchers = load_watch_modules(opts.watcher)
+        if opts.type == 'embed':
+            from .embed import EmbedState
+            Window.next_embed = EmbedState.from_launch_options(opts.embed_size, opts.embed_cell_size)
         with Window.set_ignore_focus_changes_for_new_windows(opts.keep_focus):
             new_window: Window = tab.new_window(
                 env=env or None, watchers=watchers or None, is_clone_launch=is_clone_launch, next_to=next_to,
@@ -875,6 +903,8 @@ def launch(
     child_death_callback: Callable[[int, Exception | None], None] | None = None,
     startup_command_via_shell_integration: Sequence[str] | str = (),
 ) -> Window | None:
+    if opts.type == 'embed':
+        opts.keep_focus = True  # an embedded window never takes focus from a visible one
     active = boss.active_window
     if opts.keep_focus and active:
         orig, active.ignore_focus_changes = active.ignore_focus_changes, True

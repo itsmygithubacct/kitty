@@ -781,6 +781,7 @@ extern bool init_keys(PyObject *module);
 extern bool init_graphics(PyObject *module);
 extern bool init_shaders(PyObject *module);
 extern bool init_mouse(PyObject *module);
+extern bool init_embed_export(PyObject *module);
 extern bool init_kittens(PyObject *module);
 extern bool init_logging(PyObject *module);
 extern bool init_png_reader(PyObject *module);
@@ -838,6 +839,7 @@ PyInit_fast_data_types(void) {
     if (!init_graphics(m)) return NULL;
     if (!init_shaders(m)) return NULL;
     if (!init_mouse(m)) return NULL;
+    if (!init_embed_export(m)) return NULL;
     if (!init_kittens(m)) return NULL;
     if (!init_png_reader(m)) return NULL;
 #ifdef _WIN32
