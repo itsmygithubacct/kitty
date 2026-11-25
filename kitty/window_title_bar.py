@@ -11,6 +11,8 @@ from .fast_data_types import (
     Screen,
     get_options,
 )
+from .kilix_capture import BUTTON_KEY as CAPTURE_BUTTON_KEY
+from .kilix_capture import RECORD_RGB, button as capture_button
 from .kilix_chrome.settings import chrome_enabled
 from .kilix_gpu import GPU_CHIP_RGB, GPU_WIDGET_ACTION
 from .kilix_memory import MEMORY_GLYPH, MEMORY_WIDGET_ACTION
@@ -21,6 +23,7 @@ from .utils import color_as_int, log_error
 
 _MEMORY_CHIP_COLOR = (color_as_int(color_from_int(0x8ae234)) << 8) | 2
 _GPU_CHIP_COLOR = (color_as_int(color_from_int(GPU_CHIP_RGB)) << 8) | 2
+_RECORD_COLOR = (color_as_int(color_from_int(RECORD_RGB)) << 8) | 2
 
 
 def pane_resource_text(cpu_text: str, memory_text: str) -> str:
@@ -105,6 +108,7 @@ class WindowTitleData(NamedTuple):
     pane_memory_text: str = ''  # kilix fork: dynamic process-tree memory chip
     pane_cpu_text: str = ''  # kilix fork: pane CPU cores left of the RAM chip
     pane_gpu_text: str = ''  # kilix fork: pane GPU memory right of the RAM measurement
+    capture_state: str = ''  # kilix fork: kilix_capture.title_state() for the camera button
 
 
 @run_once
@@ -243,11 +247,17 @@ class WindowTitleBarScreen:
             # that only a keybinding could perform.
             resource_text = pane_resource_text(
                 data.pane_cpu_text, data.pane_memory_text)
+            # kilix fork: the camera screenshots the pane (right click: record,
+            # formats). While recording it is a red timer that stops and saves,
+            # shown even when the button is turned off so it can be stopped.
+            capture_text, capture_action, capture_rgb, capture_always = capture_button(data.capture_state)
             candidates = (
                 (None, resource_text, MEMORY_WIDGET_ACTION, _MEMORY_CHIP_COLOR),  # CPU load · shared chip · pane RAM
                 # GPU glyph · pane GPU memory, right of the RAM measurement
                 (None, data.pane_gpu_text, GPU_WIDGET_ACTION, _GPU_CHIP_COLOR),
                 ('KILIX_CHROME_BUTTON_LOG', f' {chr(0xf0219)} ', 'kilix_show_pane_log', None),  # full saved pane log in a new tab
+                (None if capture_always else CAPTURE_BUTTON_KEY, capture_text, capture_action,
+                 _RECORD_COLOR if capture_rgb is not None else None),
                 # Join/leave synchronized keyboard input.
                 ('KILIX_CHROME_BUTTON_SYNCHRONIZE_INPUT', f' {chr(0xf030c)} ',
                  'kilix_toggle_synchronized_input', None),

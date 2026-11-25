@@ -567,6 +567,53 @@ resetScrollValuators(void) {
     }
 }
 
+// Refresh invalidated baselines before input resumes, not from the first
+// scroll event (which would discard that event's delta). Keep device metadata
+// and scroll-type detection; only update matching, uninitialized valuators.
+// Only call this while the pointer is inside one of our windows: a device's
+// valuators keep moving when the user scrolls other windows, and no event
+// tells us, so a baseline taken while the pointer is elsewhere goes stale.
+static void
+refreshScrollValuators(void) {
+    bool needs_refresh = false;
+    for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
+        const XIScrollDevice *d = &_glfw.x11.xi.scroll_devices[i];
+        for (unsigned k = 0; k < d->num_valuators; k++)
+            if (!d->valuators[k].initialized) needs_refresh = true;
+    }
+    if (!needs_refresh) return;
+    // One query covers every device. A query per device costs a round trip
+    // plus the XSync that releases the error handler, for each scroll device.
+    int count = 0;
+    _glfwGrabErrorHandlerX11();
+    const unsigned long serial = XNextRequest(_glfw.x11.display);
+    XIDeviceInfo *devices = XIQueryDevice(_glfw.x11.display, XIAllDevices, &count);
+    if (devices) {
+        for (int n = 0; n < count; n++) {
+            XIDeviceInfo *device = devices + n;
+            for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
+                XIScrollDevice *d = &_glfw.x11.xi.scroll_devices[i];
+                if (device->deviceid != d->deviceid) continue;
+                for (int c = 0; c < device->num_classes; c++) {
+                    if (device->classes[c]->type != XIValuatorClass) continue;
+                    XIValuatorClassInfo *vi = (XIValuatorClassInfo*)device->classes[c];
+                    if (vi->sourceid != d->sourceid || !isfinite(vi->value)) continue;
+                    for (unsigned k = 0; k < d->num_valuators; k++) {
+                        XIScrollValuator *v = d->valuators + k;
+                        if (!v->initialized && v->number == vi->number) {
+                            v->value = vi->value;
+                            v->initialized = true;
+                            v->refresh_serial = serial;
+                        }
+                    }
+                }
+            }
+        }
+        XIFreeDeviceInfo(devices);
+    }
+    _glfwReleaseErrorHandlerX11();
+}
+
 // Apply disabled cursor mode to a focused window
 //
 static void disableCursor(_GLFWwindow* window)
@@ -1383,10 +1430,29 @@ number_has_fractional_part(double x) {
     return fabs(x - round(x)) >= 1e-6;
 }
 
+static bool
+is_master_pointer(int deviceid) {
+    for (unsigned i = 0; i < _glfw.x11.xi.num_master_pointers; i++)
+        if (_glfw.x11.xi.master_pointer_ids[i] == deviceid) return true;
+    return false;
+}
+
 static void
 handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
+    if (is_master_pointer(de->deviceid)) {
+        // Slave XI_Motion can carry the master's previous position. Only the
+        // master event has authoritative window coordinates for pointer motion.
+        // Scroll-only master events must not cancel momentum started by a slave.
+        const int x = (int)de->event_x, y = (int)de->event_y;
+        if (x != window->x11.lastCursorPosX || y != window->x11.lastCursorPosY) {
+            x11_cancel_momentum_scroll_timer();
+            glfw_cancel_momentum_scroll();
+        }
+        handle_mouse_move_event(window, x, y);
+        return;
+    }
+    // Slave events supply per-device scroll valuators, never pointer position.
     XIScrollDevice *d = NULL;
-    bool scroll_valuator_found = false;
     for (unsigned i = 0; i < _glfw.x11.xi.num_scroll_devices; i++) {
         XIScrollDevice *t = &_glfw.x11.xi.scroll_devices[i];
         if (t->deviceid == de->deviceid && t->sourceid == de->sourceid) {
@@ -1407,7 +1473,14 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
                 if (t->number == i) { v = t; break; }
             }
             if (!v) continue;
-            scroll_valuator_found = true;
+            // A queried baseline already counts every event the server
+            // generated before it answered, and those events can still be
+            // queued behind the EnterNotify or FocusIn. Measured against it
+            // their deltas are zero or reversed, so the first of them becomes
+            // the baseline instead, as for an uninitialized valuator.
+            if (v->refresh_serial && (long)(de->serial - v->refresh_serial) < 0)
+                v->initialized = false;
+            v->refresh_serial = 0;
             if (!v->initialized) {
                 v->initialized = true;
                 v->value = value;
@@ -1485,11 +1558,6 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
                 _glfwInputScroll(window, &ev);
             }
         }
-    }
-    if (!scroll_valuator_found) {
-        x11_cancel_momentum_scroll_timer();
-        glfw_cancel_momentum_scroll();
-        handle_mouse_move_event(window, (int)de->event_x, (int)de->event_y);
     }
 }
 
@@ -2216,12 +2284,10 @@ static void processEvent(XEvent *event)
                 else if (event->xcookie.evtype == XI_Motion)
                 {
                     XIDeviceEvent* de = (XIDeviceEvent*)event->xcookie.data;
-                    if (de->deviceid != _glfw.x11.xi.master_pointer_id) {
-                        // Find the window for this event
-                        _GLFWwindow* window = NULL;
-                        if (XFindContext(_glfw.x11.display, de->event, _glfw.x11.context, (XPointer*)&window) == 0)
-                            handle_xi_motion_event(window, de);
-                    }
+                    // Route master position and slave scroll valuators separately.
+                    _GLFWwindow* window = NULL;
+                    if (XFindContext(_glfw.x11.display, de->event, _glfw.x11.context, (XPointer*)&window) == 0)
+                        handle_xi_motion_event(window, de);
                 }
                 // Handle XI_HierarchyChanged for device hotplug
                 else if (event->xcookie.evtype == XI_HierarchyChanged)
@@ -2390,6 +2456,16 @@ static void processEvent(XEvent *event)
 
         case ButtonPress:
         {
+            // With a scroll-class device present, scrolling comes from its XI
+            // valuators and core wheel buttons are taken to be the server's
+            // emulation of them, whose coordinates can differ from the XI
+            // position. This is a heuristic: XIPointerEmulated is not visible
+            // here, so wheel buttons from a device without scroll classes
+            // (XTest, some tablet pads) are dropped too, as they were before.
+            // Ignore the whole event before it can generate a spurious motion.
+            if (_glfw.x11.xi.num_scroll_devices &&
+                event->xbutton.button >= Button4 && event->xbutton.button <= Button7)
+                return;
             const int mods = translateState(event->xbutton.state);
 
             // A pointer warp or window move need not deliver a preceding
@@ -2451,6 +2527,16 @@ static void processEvent(XEvent *event)
 
         case ButtonRelease:
         {
+            // With a scroll-class device present, scrolling comes from its XI
+            // valuators and core wheel buttons are taken to be the server's
+            // emulation of them, whose coordinates can differ from the XI
+            // position. This is a heuristic: XIPointerEmulated is not visible
+            // here, so wheel buttons from a device without scroll classes
+            // (XTest, some tablet pads) are dropped too, as they were before.
+            // Ignore the whole event before it can generate a spurious motion.
+            if (_glfw.x11.xi.num_scroll_devices &&
+                event->xbutton.button >= Button4 && event->xbutton.button <= Button7)
+                return;
             const int mods = translateState(event->xbutton.state);
 
             // Handle drag drop on button release
@@ -2504,6 +2590,11 @@ static void processEvent(XEvent *event)
 
         case EnterNotify:
         {
+            // Scrolling done elsewhere moved the valuators without any event
+            // reaching us, so every entry discards the old baselines.
+            _glfw.x11.xi.pointer_window = window->x11.handle;
+            resetScrollValuators();
+            refreshScrollValuators();
             // XEnterWindowEvent is XCrossingEvent
             const int x = event->xcrossing.x;
             const int y = event->xcrossing.y;
@@ -2523,7 +2614,16 @@ static void processEvent(XEvent *event)
 
         case LeaveNotify:
         {
-            resetScrollValuators();
+            // Keep the baselines when pointer_window is another of our windows,
+            // whose EnterNotify was handled first. This is defensive for one
+            // pointer, whose LeaveNotify the server sends before its
+            // EnterNotify. It does happen with a second master pointer, which
+            // can set pointer_window (see the known limit in x11_platform.h).
+            if (_glfw.x11.xi.pointer_window == window->x11.handle ||
+                _glfw.x11.xi.pointer_window == None) {
+                _glfw.x11.xi.pointer_window = None;
+                resetScrollValuators();
+            }
             _glfwInputCursorEnter(window, false);
             return;
         }
@@ -2652,6 +2752,9 @@ static void processEvent(XEvent *event)
                 // key chords and window dragging
                 return;
             }
+
+            // Keyboard focus says nothing about where the pointer is.
+            if (_glfw.x11.xi.pointer_window != None) refreshScrollValuators();
 
             if (window->cursorMode == GLFW_CURSOR_DISABLED)
                 disableCursor(window);
@@ -2909,6 +3012,9 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
 {
     if (_glfw.x11.disabledCursorWindow == window)
         _glfw.x11.disabledCursorWindow = NULL;
+
+    if (window->x11.handle && _glfw.x11.xi.pointer_window == window->x11.handle)
+        _glfw.x11.xi.pointer_window = None;
 
     if (window->monitor)
         releaseMonitor(window);

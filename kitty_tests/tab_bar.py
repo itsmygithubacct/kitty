@@ -153,6 +153,20 @@ class TestTabBar(BaseTest):
         self.assertIn('tab_bar_edge=top', actions['t'])
         self.assertIn('tab_bar_edge=bottom', actions['b'])
 
+    def test_local_models_menu_runs_kilix_llama(self) -> None:
+        boss = object.__new__(Boss)
+        window = object()
+        with patch.object(boss, '_kilix_start_choose') as choose:
+            boss._kilix_start_components(window)  # type: ignore[arg-type]
+        self.ae(choose.call_args.args[3]['l'], boss._kilix_start_llama)
+        with patch.object(boss, '_kilix_start_choose') as choose:
+            boss._kilix_start_llama(window)  # type: ignore[arg-type]
+        actions = choose.call_args.args[3]
+        for key, verb in (('c', 'chat'), ('s', 'status'), ('u', 'update'),
+                          ('r', 'rollback'), ('i', 'install')):
+            self.assertTrue(actions[key].endswith(f' kilix llama {verb}'), actions[key])
+        self.ae(actions['z'], boss._kilix_start_components)
+
     def test_every_start_menu_accelerator_occurs_in_its_label(self) -> None:
         boss = object.__new__(Boss)
         window = object()
@@ -160,7 +174,7 @@ class TestTabBar(BaseTest):
             '_kilix_start_main', '_kilix_start_sessions',
             '_kilix_start_programs', '_kilix_start_options',
             '_kilix_start_tab_edge', '_kilix_start_software',
-            '_kilix_start_components', '_kilix_start_tools',
+            '_kilix_start_components', '_kilix_start_llama', '_kilix_start_tools',
             '_kilix_start_places', '_kilix_start_power',
         )
         for method in methods:

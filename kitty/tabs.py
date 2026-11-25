@@ -2127,6 +2127,18 @@ class TabManager:  # {{{
                 self._update_title_bar_hover(window_id, x)  # kilix fork: hover-highlight buttons
             return
         self.recent_title_bar_mouse_events.add(button, modifiers, action, x, y, window_id)
+        if button == GLFW_MOUSE_BUTTON_RIGHT and action == GLFW_RELEASE:
+            # kilix fork: a right click on the camera button opens its menu
+            # (screenshot, record, formats). Other buttons ignore it.
+            from .kilix_capture import BUTTON_ACTIONS
+            w = boss.window_id_map.get(window_id)
+            pts = getattr(w, '_title_bar_screen', None)
+            if w is not None and pts is not None and getattr(pts, 'cell_width', 0) and getattr(pts, 'geometry', None) is not None:
+                col = int((x - pts.geometry.left) // pts.cell_width)
+                if getattr(pts, 'button_cols', {}).get(col) in BUTTON_ACTIONS:
+                    boss.set_active_window(w, switch_os_window_if_needed=True)
+                    boss.combine('kilix_pane_capture_menu', window_for_dispatch=w)
+            return
         if button != GLFW_MOUSE_BUTTON_LEFT:
             return
         if action == GLFW_PRESS:

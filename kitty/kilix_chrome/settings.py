@@ -1,7 +1,10 @@
 """Shared, live-reloaded settings for Kilix chrome."""
 
 import os
+import re
+import stat
 import sys
+import tempfile
 from collections.abc import Callable
 
 _cache_signature: tuple[object, ...] | None = None
@@ -79,6 +82,76 @@ def chrome_value(name: str, default: str = '1') -> str:
 def chrome_enabled(name: str, default: str = '1') -> bool:
     return chrome_value(name, default).lower() not in (
         '', '0', 'no', 'false', 'off', 'disabled')
+
+
+SETTINGS_MARKER = '# -- Kilix clickable chrome --'
+SETTINGS_MAX_BYTES = 1 << 20
+
+
+def _open_regular(filename: str, flags: int) -> int:
+    fd = os.open(filename, flags | os.O_CLOEXEC | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f'{filename} is not a regular file')
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def set_chrome_value(name: str, value: str) -> None:
+    """Persist one chrome choice the user made, keeping every other line.
+
+    This follows the Kilix settings writer's protocol (kilix_sdk.settings):
+    an exclusive lock on settings.conf.lock, a private temporary file in the
+    same directory, then an atomic rename. A new key goes under the clickable
+    chrome section, or at the end when the file has none.
+    """
+    import fcntl
+    if not re.fullmatch(r'[A-Z][A-Z0-9_]*', name):
+        raise ValueError(f'invalid setting name: {name!r}')
+    value = value.replace('\r', ' ').replace('\n', ' ').strip()
+    target = path()
+    directory = os.path.dirname(target)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    lock = _open_regular(target + '.lock', os.O_RDWR | os.O_CREAT)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            fd = _open_regular(target, os.O_RDONLY)
+        except FileNotFoundError:
+            text = ''
+        else:
+            with os.fdopen(fd, encoding='utf-8', errors='replace') as stream:
+                text = stream.read(SETTINGS_MAX_BYTES + 1)
+            if len(text) > SETTINGS_MAX_BYTES:
+                raise OSError(f'{target} is larger than {SETTINGS_MAX_BYTES} bytes')
+        line = f'{name}={value}'
+        matches = list(re.finditer(rf'^[ \t]*{re.escape(name)}=.*$', text, re.MULTILINE))
+        if matches:
+            last = matches[-1]
+            text = text[:last.start()] + line + text[last.end():]
+        elif (marker := text.find(SETTINGS_MARKER + '\n')) >= 0:
+            end = marker + len(SETTINGS_MARKER) + 1
+            text = text[:end] + line + '\n' + text[end:]
+        else:
+            if text and not text.endswith('\n'):
+                text += '\n'
+            text += f'{SETTINGS_MARKER}\n{line}\n'
+        fd, temporary = tempfile.mkstemp(prefix=f'.{os.path.basename(target)}.', dir=directory)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+            temporary = ''
+        finally:
+            if temporary:
+                os.unlink(temporary)
+    finally:
+        os.close(lock)
+    values()
 
 
 def ensure_timer(invalidate: Callable[[], None]) -> None:

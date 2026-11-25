@@ -529,6 +529,303 @@ PS1="{ps1}"
         }.items():
             self.ae(decode_ansi_c_quoted_string(f"$'{q}'"), e, f'Failed to decode: {q!r}')
 
+    @unittest.skipUnless(bash_ok(), 'bash not installed, too old, or debug build')
+    def test_bash_verified_input(self):
+        # The test plays the engine: it writes the request file and queues the
+        # key sequence itself, without the engine's own checks, so every
+        # verdict below is the shell's.
+        from kitty.shell_input import TRIGGER
+        if self.with_kitten:
+            return
+        folder = tempfile.mkdtemp()
+        os.chmod(folder, 0o700)
+        self.addCleanup(shutil.rmtree, folder, True)
+        ps1, ps2 = 'prompt> ', 'more> '
+        rc = f"""PS1='{ps1}'\nPS2='{ps2}'\nHISTFILE=/dev/null\nhistory -s 'echo seed_history'"""
+
+        def readies(pty):
+            return [f for k, f in pty.callbacks.shell_input if k == 'ready']
+
+        def results(pty):
+            return [f for k, f in pty.callbacks.shell_input if k == 'result']
+
+        def wait_ready(pty, count):
+            pty.wait_till(lambda: len(readies(pty)) >= count, timeout_msg=lambda: f'{pty.callbacks.shell_input} {pty.screen_contents()!r}')
+            return readies(pty)[-1]
+
+        def submit(pty, ready, command, expected, reason='', answered_by=None):
+            before = len(results(pty))
+            marker = os.path.join(self.home_dir, 'marker')
+            with open(os.path.join(folder, f'request-{ready["token"]}'), 'w') as f:
+                f.write(command.format(marker=marker))
+            pty.write_to_child(TRIGGER)
+            pty.wait_till(lambda: len(results(pty)) > before, timeout_msg=lambda: f'no result: {pty.screen_contents()!r}')
+            r = results(pty)[-1]
+            self.ae((r['token'], r['status'], r.get('reason', '')), ((answered_by or ready)['token'], expected, reason))
+            return marker
+
+        def settle(pty, text):
+            pty.wait_till(lambda: text in pty.screen_contents(), timeout_msg=lambda: f'{text!r} not in {pty.screen_contents()!r}')
+            # vi mode switches need readline's keyseq-timeout to pass
+            for i in range(8):
+                pty.process_input_from_child(0.1)
+            return pty.screen_contents()
+
+        def assert_refused(pty, keys, shown, reason, vi=False, after=None):
+            ready = wait_ready(pty, len(readies(pty)))
+            if vi:
+                pty.send_cmd_to_child('set -o vi')
+                ready = wait_ready(pty, len(readies(pty)) + 1)
+            # Keys sent before readline takes the terminal are echoed by the tty.
+            settle(pty, ps1)
+            pty.write_to_child(keys)
+            before = settle(pty, shown)
+            marker = submit(pty, ready, 'touch {marker}', 'refused', reason)
+            for i in range(5):
+                pty.process_input_from_child(0.1)
+            self.ae(pty.screen_contents(), after or before)
+            self.assertFalse(os.path.exists(marker))
+            self.assertTrue(os.path.exists(os.path.join(folder, f'request-{ready["token"]}')))
+            self.assertFalse(os.path.exists(os.path.join(folder, f'claim-{ready["token"]}')))
+
+        env = {'KITTY_SHELL_INPUT_DIR': folder}
+        with self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+            ready = wait_ready(pty, 1)
+            self.ae((ready['v'], ready['pid'], ready['pending']), ('1', str(pty.child_pid), '0'))
+            pty.callbacks.clear()
+            marker = submit(pty, ready, 'echo ran >> {marker}', 'accepted')
+            nxt = wait_ready(pty, 1)
+            self.assertNotEqual(nxt['token'], ready['token'])
+            with open(marker) as f:
+                self.ae(f.read(), 'ran\n')
+            self.assert_command(pty, f'echo ran >> {marker}')
+            # The used prompt cannot be used again: the shell answers for its
+            # current prompt, which has no request.
+            submit(pty, ready, 'touch {marker}.again', 'refused', 'no_request', answered_by=nxt)
+            self.assertFalse(os.path.exists(marker + '.again'))
+        for keys, shown, reason, vi, after in (
+            ('echo keep_draft', 'keep_draft', 'draft', False, None),
+            (' ', ps1 + ' ', 'draft', False, None),
+            ('echo keep_suffix\x1b[D', 'keep_suffix', 'draft', True, None),
+            ('echo keep_normal\x1b', 'keep_normal', 'vi_command', True, None),
+            ('\x1b', ps1, 'vi_command', True, None),
+            ("echo 'open\r", ps2, 'continuation', False, None),
+            ('echo keep_prefix\x1b', 'keep_prefix', 'pending_key', False, None),
+            ('echo keep_ctrl_x\x18', 'keep_ctrl_x', 'pending_key', False, None),
+            # Readline ends a search before any bound key runs, so the shell
+            # sees the match as a draft and keeps it, but the search itself is
+            # over. Only the engine, which sends nothing once a key has been
+            # typed at the prompt, keeps a search open.
+            ('\x12seed_history', 'seed_history', 'draft', False, ps1 + 'echo seed_history'),
+        ):
+            with self.subTest(keys=keys), self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+                assert_refused(pty, keys, shown, reason, vi, after)
+        with self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+            # The engine cancels by claiming first; the shell then runs nothing.
+            ready = wait_ready(pty, 1)
+            open(os.path.join(folder, f'claim-{ready["token"]}'), 'w').close()
+            marker = submit(pty, ready, 'touch {marker}', 'refused', 'claimed')
+            self.assertFalse(os.path.exists(marker))
+            # A continuation abandoned with Ctrl-C leaves a primary prompt that works again.
+            pty.write_to_child("echo 'open\r")
+            settle(pty, ps2)
+            pty.write_to_child('\x03')
+            ready = wait_ready(pty, len(readies(pty)) + 1)
+            marker = submit(pty, ready, 'echo ok >> {marker}', 'accepted')
+            pty.wait_till(lambda: os.path.exists(marker))
+            # Type-ahead waiting when the prompt is drawn is reported.
+            pty.send_cmd_to_child('sleep 0.5')
+            pty.write_to_child('echo typeahead')
+            ready = wait_ready(pty, len(readies(pty)) + 1)
+            self.ae(ready['pending'], '1')
+        with self.run_shell(shell='bash', rc=rc + '\nshopt -u promptvars', extra_env=env) as pty:
+            pty.wait_till(lambda: ps1 in pty.screen_contents())
+            for i in range(5):
+                pty.process_input_from_child(0.1)
+            self.ae(readies(pty), [])
+        with self.run_shell(shell='bash', rc=rc + '\nset +o emacs', extra_env=env) as pty:
+            pty.wait_till(lambda: ps1 in pty.screen_contents())
+            for i in range(5):
+                pty.process_input_from_child(0.1)
+            self.ae(readies(pty), [])
+        with self.run_shell(shell='bash', rc=rc) as pty:
+            pty.wait_till(lambda: ps1 in pty.screen_contents())
+            for i in range(5):
+                pty.process_input_from_child(0.1)
+            self.ae(readies(pty), [])
+
+    def test_bash_verified_input_with_the_engine(self):
+        # Real bash and the engine's own checks (kitty.shell_input): the test
+        # decides exactly when each key reaches the terminal relative to the
+        # shell's prompt report, so the windows in which a key could reach
+        # readline before the engine's key are reproduced deterministically.
+        from unittest import mock
+
+        from kitty import shell_input
+        from kitty.shell_input import ShellInputRefused
+        if self.with_kitten:
+            return
+        folder = tempfile.mkdtemp()
+        os.chmod(folder, 0o700)
+        self.addCleanup(shutil.rmtree, folder, True)
+        ps1 = 'prompt> '
+        # With flow control and reprint off, Ctrl-S, Ctrl-Q and Ctrl-R typed
+        # ahead are kept by the terminal for readline: a search, a quoted insert.
+        rc = f"""PS1='{ps1}'\nHISTFILE=/dev/null\nhistory -s 'echo seed_history'\nstty -ixon rprnt undef"""
+        for name, value in (('directory', lambda: folder), ('shell_in_foreground', lambda *a, **k: True),
+                            ('add_timer', lambda *a: 1), ('remove_timer', lambda *a: None)):
+            patcher = mock.patch.object(shell_input, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        class Counter:
+            def __init__(self) -> None:
+                self.count, self.at = 0, 0
+
+            def input_queue_state(self):
+                return self.count, self.at, 0
+
+            def is_using_alternate_linebuf(self):
+                return False
+
+        class Pane:
+            # What the engine sees of a window: every byte sent to the shell is counted.
+            def __init__(self, pty) -> None:
+                self.pty, self.screen = pty, Counter()
+
+            def write_to_child(self, data):
+                # As the engine accounts input (child-monitor.c, account_input).
+                self.pty.write_to_child(data)
+                data = data.encode() if isinstance(data, str) else data
+                self.screen.count += len(data)
+                if data.strip(b'\r\n\x03'):
+                    self.screen.at = int(shell_input.monotonic() * 1e9)  # the engine's clock
+
+        def readies(pty):
+            return [f for k, f in pty.callbacks.shell_input if k == 'ready']
+
+        def report(pane, ready):
+            shell_input.handle_message(pane, 'ready;' + ';'.join(f'{k}={v}' for k, v in ready.items()))
+
+        def drain(pty, n=6):
+            for i in range(n):
+                pty.process_input_from_child(0.1)
+            return pty.screen_contents()
+
+        def shows(pty, *texts):
+            # The last screen line, once it holds every one of texts.
+            last = lambda: (pty.screen_contents().splitlines() or [''])[-1]
+            pty.wait_till(lambda: all(t in last() for t in texts), timeout_msg=lambda: f'{texts} not in {last()!r}')
+            drain(pty, 2)
+            return last()
+
+        def next_ready(pty, count):
+            pty.wait_till(lambda: len(readies(pty)) >= count, timeout_msg=lambda: f'{pty.callbacks.shell_input} {pty.screen_contents()!r}')
+            return readies(pty)[-1]
+
+        def refused(pane, code, command='touch {marker}'):
+            marker = os.path.join(self.home_dir, 'marker')
+            before = pane.screen.count
+            with self.assertRaises(ShellInputRefused) as cm:
+                shell_input.submit(pane, command.format(marker=marker), '', lambda *a: None)
+            self.ae(cm.exception.code, code)
+            self.ae(pane.screen.count, before)  # nothing was sent
+            self.ae(os.listdir(folder), [f for f in os.listdir(folder) if f.startswith('tty-')])
+            return marker
+
+        env = {'KITTY_SHELL_INPUT_DIR': folder}
+        # 1. Keys typed ahead while a command runs wait in the terminal's
+        # partial line, where read -t 0 cannot see them. The shell's report
+        # still says input is pending, so nothing is sent and readline then
+        # gets exactly what was typed.
+        for keys, shown in (('echo ec', 'echo ec'), ('\x13', '(i-search)'), ('\x12', '(reverse-i-search)'), ('\x11', None)):
+            with self.subTest(type_ahead=keys), self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+                pane = Pane(pty)
+                report(pane, next_ready(pty, 1))
+                pane.write_to_child('sleep 0.8\r')
+                drain(pty, 3)
+                pane.write_to_child(keys)
+                drain(pty, 2)
+                pane.screen.at -= int(10e9)  # long ago: only the shell's own look can catch it
+                ready = next_ready(pty, 2)
+                self.ae(ready['pending'], '1')
+                report(pane, ready)
+                self.ae(shell_input.describe(pane)['code'], 'input')
+                marker = refused(pane, 'input')
+                drain(pty)
+                if shown:
+                    shows(pty, shown)
+                # The typed-ahead state is intact: a quoted insert still takes the
+                # next key literally; the search and the draft go on as typed.
+                pane.write_to_child('x' if shown is None else 'seed')
+                # (the terminal echoed the type-ahead before the prompt)
+                if keys == 'echo ec':
+                    self.assertTrue(shows(pty, 'ecseed').endswith(ps1 + 'echo ecseed'))
+                elif shown:
+                    shows(pty, shown[1:], "`seed'")  # still searching, now for the new text
+                else:
+                    self.assertTrue(shows(pty, ps1 + 'x').endswith(ps1 + 'x'))
+                self.assertFalse(os.path.exists(marker))
+        # 2. A key that reaches readline after the shell looked but before the
+        # engine read the report (the search race): queued just before the
+        # report is read, it makes the prompt unverifiable; queued after, the
+        # prompt has changed. Either way the search stays open with its text.
+        for when in ('before the report is read', 'after the report is read'):
+            for keys, shown in (('\x12', '(reverse-i-search)'), ('\x13', '(i-search)')):
+                with self.subTest(race=when, keys=keys), self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+                    pane = Pane(pty)
+                    ready = next_ready(pty, 1)
+                    self.ae(ready['pending'], '0')
+                    drain(pty, 2)
+                    if when == 'after the report is read':
+                        report(pane, ready)
+                        self.assertTrue(shell_input.describe(pane)['verifiable'])
+                    pane.write_to_child(keys)
+                    if when == 'before the report is read':
+                        report(pane, ready)
+                        self.ae(shell_input.describe(pane)['code'], 'input')
+                    shows(pty, shown)
+                    marker = refused(pane, 'input')
+                    pane.write_to_child('seed')
+                    shows(pty, shown[1:], "`seed'", *(["echo seed_history"] if keys == '\x12' else []))
+                    self.assertFalse(os.path.exists(marker))
+        # 3. With nothing typed, the same engine and shell accept exactly
+        # once, also right after an empty Enter or a draft abandoned with
+        # Ctrl-C: those keys only end a line, so arriving late they could
+        # only start a new prompt with a new token.
+        for i, ended_by in enumerate(('', '\r', 'echo abandoned\x03')):
+            with self.subTest(ended_by=ended_by), self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+                pane = Pane(pty)
+                report(pane, next_ready(pty, 1))
+                drain(pty, 2)
+                if ended_by:
+                    pane.write_to_child(ended_by[:-1])
+                    drain(pty, 3)
+                    pane.screen.at -= int(10e9)  # typed long before the line ended
+                    pane.write_to_child(ended_by[-1])
+                    report(pane, next_ready(pty, 2))
+                    drain(pty, 2)
+                self.assertTrue(shell_input.describe(pane)['verifiable'], shell_input.describe(pane))
+                answers = []
+                marker = os.path.join(self.home_dir, f'marker-{i}')
+                shell_input.submit(pane, f'echo ran >> {marker}', '', lambda r, e: answers.append((r, e)))
+                pty.wait_till(lambda: [k for k, f in pty.callbacks.shell_input if k == 'result'])
+                for k, f in pty.callbacks.shell_input:
+                    if k == 'result':
+                        shell_input.handle_message(pane, 'result;' + ';'.join(f'{a}={b}' for a, b in f.items()))
+                self.ae([e for r, e in answers], [None])
+                pty.wait_till(lambda: os.path.exists(marker))
+                drain(pty)
+                with open(marker) as f:
+                    self.ae(f.read(), 'ran\n')
+        # A key other than those, even one that leaves the line empty, still
+        # makes a prompt reported right after it unverifiable.
+        with self.run_shell(shell='bash', rc=rc, extra_env=env) as pty:
+            pane = Pane(pty)
+            report(pane, next_ready(pty, 1))
+            pane.write_to_child('x\x7f\r')
+            report(pane, next_ready(pty, 2))
+            self.ae(shell_input.describe(pane)['code'], 'input')
 
 class ShellIntegrationWithKitten(ShellIntegration):
     with_kitten = True

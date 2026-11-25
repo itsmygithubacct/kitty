@@ -144,6 +144,13 @@ typedef struct {
     uint8_t *write_buf;
     size_t write_buf_sz, write_buf_used;
     pthread_mutex_t write_buf_lock;
+    // kilix: every byte ever queued for the child, and when the last one was
+    // queued. Guarded by write_buf_lock. Shell input verification compares
+    // these against the values seen when the shell reported a fresh prompt.
+    unsigned long long input_bytes_queued;
+    // When input other than Enter, newline or Ctrl-C was last queued: those
+    // three can only end a fresh prompt's line, so they cannot hide in it.
+    monotonic_t last_editing_input_at;
 
     CursorRenderInfo cursor_render_info;
     struct { index_type x, y; uint8_t shape; } mouse_cursor;  // kilix: software mouse cursor (shape 0 = not drawn)
